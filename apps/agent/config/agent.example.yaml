@@ -1,0 +1,13 @@
+cloud:
+  gateway_url: ws://localhost:4100/agent
+  tenant_id: ""
+data_dir: ./.data/agent
+display_name: local-dev-agent
+inventory_interval: 5m
+providers:
+  - id: local-mcs
+    type: mcsmanager
+    endpoint: https://panel.example.com
+    daemon_ids:
+      - replace-with-daemon-id
+

@@ -1,0 +1,29 @@
+{
+  "name": "@mcai/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "nest build",
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "test": "npm run build -w @mcai/contracts && vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mcai/contracts": "*",
+    "@nestjs/common": "latest",
+    "@nestjs/core": "latest",
+    "@nestjs/platform-express": "latest",
+    "reflect-metadata": "latest",
+    "rxjs": "latest",
+    "ws": "latest"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "latest",
+    "@types/express": "latest",
+    "@types/node": "latest",
+    "@types/ws": "latest",
+    "typescript": "^6.0.0",
+    "vitest": "latest"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "MCAI Sidecar",
+  "short_name": "MCAI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f6fb",
+  "theme_color": "#071a3d",
+  "description": "安全、可审计、可回滚的 Minecraft AI 运维层",
+  "icons": [
+    {
+      "src": "/brand/mcai-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/brand/mcai-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

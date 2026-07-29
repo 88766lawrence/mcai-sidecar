@@ -1,0 +1,22 @@
+[Unit]
+Description=MCAI Minecraft operations sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcai
+Group=mcai
+ExecStart=/opt/mcai/current/mcai-agent -config /etc/mcai/agent.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mcai /var/log/mcai
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+

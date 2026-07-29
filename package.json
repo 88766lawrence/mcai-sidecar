@@ -1,0 +1,25 @@
+{
+  "name": "mcai-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minecraft AI operations sidecar monorepo",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @mcai/contracts && npm run build -w @mcai/cloud && npm run build -w @mcai/web",
+    "dev": "concurrently -n cloud,web -c cyan,green \"npm run dev -w @mcai/cloud\" \"npm run dev -w @mcai/web\"",
+    "dev:cloud": "npm run dev -w @mcai/cloud",
+    "dev:web": "npm run dev -w @mcai/web",
+    "test": "npm run build -w @mcai/contracts && npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck -w @mcai/contracts && npm run typecheck -w @mcai/cloud && npm run typecheck -w @mcai/web"
+  },
+  "devDependencies": {
+    "concurrently": "latest",
+    "typescript": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

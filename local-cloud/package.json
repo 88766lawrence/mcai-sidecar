@@ -1,0 +1,19 @@
+{
+  "name": "mcai-local-model-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check agent.mjs && node --check server.mjs",
+    "test": "node --test agent.test.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.23",
+    "ai": "^7.0.41",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

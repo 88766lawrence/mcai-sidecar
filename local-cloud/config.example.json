@@ -1,0 +1,10 @@
+{
+  "listenHost": "127.0.0.1",
+  "listenPort": 4200,
+  "serviceToken": "replace-with-a-long-random-token",
+  "provider": {
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "replace-with-provider-api-key",
+    "model": "gpt-5-mini"
+  }
+}
