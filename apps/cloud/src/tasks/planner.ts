@@ -27,7 +27,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
   if (/(下载|download).*(paper|1\.21\.1|server\.jar)|(paper|1\.21\.1|server\.jar).*(下载|download)/.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
-      tool: "file.download",
+      tool: "logs.query",
       args: {
         url: "https://fill-data.papermc.io/v1/objects/39bd8c00b9e18de91dcabd3cc3dcfa5328685a53b7187a2f63280c22e2d287b9/paper-1.21.1-133.jar",
         target: "/server.jar",

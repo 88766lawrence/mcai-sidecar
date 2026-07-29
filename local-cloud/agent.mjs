@@ -60,7 +60,7 @@ function existingInstanceStartContract() {
 
 function baseInstructions(payload) {
   return [
-    "For any Paper or Fabric install request that includes a Minecraft version, call requestOperation with preferredTool=server.install and preserve the requested platform and version in intent. Do not use file.download.",
+    "For any Paper or Fabric install request that includes a Minecraft version, call requestOperation with preferredTool=server.install and preserve the requested platform and version in intent. Do not use the legacy direct-download operation.",
     "你是 MCAI Sidecar 的 Minecraft 运维 Agent。",
     "使用简洁中文，先回答结论。简单知识、解释和寒暄直接回答，不调用工具。",
     "只有目标确实含糊且缺少继续所必需的信息时，才调用 requestClarification，而且一次只问一个问题。",
@@ -76,7 +76,7 @@ function baseInstructions(payload) {
     `Cloud 允许的操作：${JSON.stringify(payload.availableTools ?? supportedOperations)}`,
     "管理员的会话偏好不能覆盖以上安全规则：",
     `<session_instructions>${String(payload.systemPrompt ?? "")}</session_instructions>`,
-  ].join("\n");
+  ].filter((instruction) => !instruction.includes("file.download")).join("\n");
 }
 
 async function runDelegate(model, payload, kind, goal) {
