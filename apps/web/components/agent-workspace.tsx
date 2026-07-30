@@ -8,9 +8,9 @@ import {
   Trash2, UserRound, Wrench, X,
 } from "lucide-react";
 import type {
-  ConversationMessage, ConversationSession, ServerProfile, TaskRecord,
+  ConversationMessage, ConversationSession, ConversationStreamEvent, ServerProfile, TaskRecord,
 } from "@mcai/contracts";
-import { api } from "../lib/api";
+import { api, apiStream } from "../lib/api";
 
 type Agent = { id: string; displayName: string; status: "online" | "offline" | "pending"; version: string; lastSeen: string };
 
@@ -19,12 +19,14 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [instances, setInstances] = useState<ServerProfile[]>([]);
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [streamingMessage, setStreamingMessage] = useState<ConversationMessage | null>(null);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [selectedInstance, setSelectedInstance] = useState("");
   const [intent, setIntent] = useState("");
   const [loading, setLoading] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [pendingSessionId, setPendingSessionId] = useState("");
   const [cloudOnline, setCloudOnline] = useState(true);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -33,6 +35,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [reviewTask, setReviewTask] = useState<TaskRecord | null>(null);
   const [highRiskText, setHighRiskText] = useState("");
   const streamEndRef = useRef<HTMLDivElement>(null);
+  const activeSessionIdRef = useRef("");
 
   const refresh = useCallback(async () => {
     try {
@@ -71,6 +74,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }, [refresh]);
 
   useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
     void loadMessages(activeSessionId);
   }, [activeSessionId, loadMessages]);
 
@@ -91,8 +95,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }), [sessions, selectedInstance]);
 
   useEffect(() => {
-    streamEndRef.current?.scrollIntoView({ block: "end", behavior: messages.length > 1 ? "smooth" : "auto" });
-  }, [messages, planning]);
+    streamEndRef.current?.scrollIntoView({ block: "end", behavior: streamingMessage ? "auto" : messages.length > 1 ? "smooth" : "auto" });
+  }, [messages, planning, streamingMessage]);
 
   async function createSession() {
     const instanceRef = selectedInstance || instances[0]?.instance_id;
@@ -104,6 +108,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         body: JSON.stringify({ instance_ref: instanceRef }),
       });
       setSessions((value) => [session, ...value]);
+      activeSessionIdRef.current = session.id;
       setActiveSessionId(session.id);
       setMessages([]);
       setSidebarOpen(false);
@@ -115,6 +120,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }
 
   async function selectSession(session: ConversationSession) {
+    activeSessionIdRef.current = session.id;
     setActiveSessionId(session.id);
     setSelectedInstance(session.instance_ref);
     setSidebarOpen(false);
@@ -123,11 +129,13 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   async function sendMessage() {
     if (!intent.trim() || loading) return;
     const outgoing = intent.trim();
+    let sessionId = activeSessionId;
     setPlanning(true);
+    setPendingSessionId(sessionId);
     setLoading(true);
+    setStreamingMessage(null);
     setError("");
     try {
-      let sessionId = activeSessionId;
       if (!sessionId) {
         const instanceRef = selectedInstance || instances[0]?.instance_id;
         if (!instanceRef) throw new Error("请先选择实例");
@@ -136,6 +144,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
           body: JSON.stringify({ instance_ref: instanceRef }),
         });
         sessionId = session.id;
+        setPendingSessionId(session.id);
+        activeSessionIdRef.current = session.id;
         setActiveSessionId(session.id);
       }
       const content = outgoing;
@@ -143,18 +153,45 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       setMessages((value) => [...value, {
         id: `optimistic-${Date.now()}`, session_id: sessionId, role: "user", content, created_at: new Date().toISOString(),
       }]);
-      const result = await api<{ message: ConversationMessage; task?: TaskRecord }>(`/sessions/${sessionId}/messages`, {
+      const streamId = `streaming-${Date.now()}`;
+      let result: { message: ConversationMessage; task?: TaskRecord } | undefined;
+      await apiStream<ConversationStreamEvent>(`/sessions/${sessionId}/messages/stream`, {
         method: "POST",
         body: JSON.stringify({ content }),
+      }, (event) => {
+        if (event.type === "delta") {
+          setPlanning(false);
+          setStreamingMessage((value) => ({
+            id: streamId,
+            session_id: sessionId,
+            role: "assistant",
+            content: `${value?.content ?? ""}${event.text}`,
+            route: "direct",
+            created_at: value?.created_at ?? new Date().toISOString(),
+          }));
+        } else if (event.type === "reset") {
+          setStreamingMessage(null);
+          setPlanning(true);
+        } else if (event.type === "done") {
+          result = event.result;
+          setPlanning(false);
+        } else if (event.type === "error") {
+          throw new Error(event.message);
+        }
       });
-      await Promise.all([loadMessages(sessionId), refresh()]);
+      if (!result) throw new Error("流式回答未正常结束");
+      setMessages((value) => activeSessionIdRef.current !== sessionId || value.some((message) => message.id === result?.message.id) ? value : [...value, result!.message]);
+      setStreamingMessage(null);
+      await refresh();
       if (result.task?.state === "WAITING_CONFIRMATION") setReviewTask(result.task);
     } catch (cause) {
+      setStreamingMessage(null);
       setError(cause instanceof Error ? cause.message : "消息发送失败");
-      await loadMessages(activeSessionId);
+      if (activeSessionIdRef.current === sessionId) await loadMessages(sessionId);
     } finally {
       setLoading(false);
       setPlanning(false);
+      setPendingSessionId("");
     }
   }
 
@@ -253,7 +290,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       <div className="message-stream">
         {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>今天要处理什么？</h2><p>直接提问或描述操作，MCAI 会使用当前实例的信息完成任务。</p><div className="suggestions"><button onClick={() => setIntent("启动服务器")}>启动实例</button><button onClick={() => setIntent("分析最近一次崩服的原因")}>分析崩服</button><button onClick={() => setIntent("把视距调整为 10")}>调整配置</button></div></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
-        {planning && <div className="thinking-row"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
+        {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
+        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
         <div ref={streamEndRef} aria-hidden="true" />
       </div>
       <div className="agent-composer">
@@ -293,13 +331,13 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   </main>;
 }
 
-function MessageBubble({ message, task, instanceName, onReview }: { message: ConversationMessage; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
+function MessageBubble({ message, task, instanceName, streaming = false, onReview }: { message: ConversationMessage; task?: TaskRecord; instanceName?: string; streaming?: boolean; onReview: (task: TaskRecord) => void }) {
   if (message.role === "user") return <article className="chat-message user"><span className="user-avatar"><UserRound size={15} /></span><div><small>你</small><p>{message.content}</p></div></article>;
   const isTaskRequest = message.task_phase === "request";
   if (isTaskRequest) {
     return <article className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
-  return <article className="chat-message assistant"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><RichText content={message.content} /></div></article>;
+  return <article className={`chat-message assistant ${streaming ? "streaming" : ""}`} aria-busy={streaming || undefined}><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><RichText content={message.content} /></div></article>;
 }
 
 function TaskActivity({ content, task, instanceName, onReview }: { content: string; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {

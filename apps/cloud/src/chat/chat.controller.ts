@@ -1,5 +1,6 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req } from "@nestjs/common";
-import type { Request } from "express";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, Res } from "@nestjs/common";
+import type { ConversationStreamEvent } from "@mcai/contracts";
+import type { Request, Response } from "express";
 import { actorFrom } from "../http-context";
 import { ChatService } from "./chat.service";
 
@@ -27,6 +28,38 @@ export class ChatController {
     return this.chat.send(id, actorFrom(request).tenantId, body.content ?? "");
   }
 
+  @Post(":id/messages/stream")
+  async sendStream(
+    @Param("id") id: string,
+    @Body() body: { content?: string },
+    @Req() request: Request,
+    @Res() response: Response,
+  ) {
+    response.status(200);
+    response.set({
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+    });
+    response.flushHeaders();
+    try {
+      const result = await this.chat.sendStream(
+        id,
+        actorFrom(request).tenantId,
+        body.content ?? "",
+        (event) => writeEvent(response, event),
+      );
+      writeEvent(response, { type: "done", result });
+    } catch (cause) {
+      writeEvent(response, {
+        type: "error",
+        message: cause instanceof Error ? cause.message : "流式回答失败",
+      });
+    } finally {
+      response.end();
+    }
+  }
+
   @Patch(":id")
   update(
     @Param("id") id: string,
@@ -40,4 +73,8 @@ export class ChatController {
   remove(@Param("id") id: string, @Req() request: Request) {
     return this.chat.remove(id, actorFrom(request).tenantId);
   }
+}
+
+function writeEvent(response: Response, event: ConversationStreamEvent) {
+  if (!response.destroyed && !response.writableEnded) response.write(`${JSON.stringify(event)}\n`);
 }

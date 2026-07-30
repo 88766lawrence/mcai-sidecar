@@ -79,4 +79,35 @@ describe("ChatService", () => {
     expect(twice.filter((message) => message.task_phase === "completion")).toHaveLength(1);
     expect(tasks.complete).toHaveBeenCalledTimes(1);
   });
+
+  it("streams direct answer deltas and persists one complete assistant message", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = {
+      routeStream: vi.fn().mockImplementation(async (_input, onProgress) => {
+        onProgress({ type: "delta", text: "服务器" });
+        onProgress({ type: "delta", text: "正在运行。" });
+        return { route: "direct", answer: "服务器正在运行。" };
+      }),
+    } as unknown as ModelGatewayService;
+    const tasks = { create: vi.fn(), get: vi.fn() } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+    const progress: Array<{ type: string; text?: string }> = [];
+
+    const result = await service.sendStream(session.id, "tenant-1", "服务器运行正常吗？", (event) => progress.push(event));
+    const messages = await service.messages(session.id, "tenant-1");
+
+    expect(progress).toEqual([
+      { type: "delta", text: "服务器" },
+      { type: "delta", text: "正在运行。" },
+    ]);
+    expect(result.message).toMatchObject({ role: "assistant", content: "服务器正在运行。", route: "direct" });
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1);
+    expect(tasks.create).not.toHaveBeenCalled();
+  });
 });

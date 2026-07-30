@@ -16,6 +16,14 @@ export interface ChatDecision {
   trace?: ConversationMessage["trace"];
 }
 
+export type ChatStreamProgress =
+  | { type: "delta"; text: string }
+  | { type: "reset" };
+
+type ModelChatStreamEvent = ChatStreamProgress
+  | { type: "done"; decision: ChatDecision }
+  | { type: "error"; message?: string };
+
 @Injectable()
 export class ModelGatewayService {
   private readonly url = process.env.MCAI_MODEL_GATEWAY_URL ?? "http://127.0.0.1:4200";
@@ -116,29 +124,7 @@ export class ModelGatewayService {
           authorization: `Bearer ${this.token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({
-          message: input.message,
-          systemPrompt: input.systemPrompt,
-          history: input.history.slice(-12).map(({ role, content }) => ({ role, content })),
-          instance: {
-            id: input.instance.instance_id,
-            name: input.instance.name,
-            platform: input.instance.platform,
-            minecraftVersion: input.instance.minecraft_version,
-            loader: input.instance.loader,
-            state: input.instance.state,
-          },
-          availableTools: [
-            "logs.query",
-            "files.list",
-            "server.install",
-            "config.patch",
-            "plugin.resolve",
-            "plugin.install",
-            "instance.start",
-            "instance.restart",
-          ],
-        }),
+        body: JSON.stringify(chatPayload(input)),
         signal: AbortSignal.timeout(240_000),
       });
       const body = await response.json().catch(() => null) as ChatDecision | null;
@@ -154,4 +140,98 @@ export class ModelGatewayService {
       };
     }
   }
+
+  async routeStream(input: {
+    message: string;
+    systemPrompt: string;
+    history: ConversationMessage[];
+    instance: ServerProfile;
+  }, onProgress: (event: ChatStreamProgress) => void): Promise<ChatDecision> {
+    if (!this.token) {
+      const decision = { route: "direct" as const, answer: "本地模型云尚未配置，暂时无法回答。" };
+      onProgress({ type: "delta", text: decision.answer });
+      return decision;
+    }
+    try {
+      const response = await fetch(new URL("/v1/chat/stream", this.url), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(chatPayload(input)),
+        signal: AbortSignal.timeout(240_000),
+      });
+      if (!response.ok || !response.body) throw new Error(`MODEL_GATEWAY_${response.status}`);
+
+      let decision: ChatDecision | undefined;
+      await readNdjson(response.body, (event) => {
+        if (event.type === "delta" && typeof event.text === "string") onProgress(event);
+        else if (event.type === "reset") onProgress(event);
+        else if (event.type === "done") decision = event.decision;
+        else if (event.type === "error") throw new Error("MODEL_GATEWAY_STREAM");
+      });
+      if (!decision || !decision.answer || !["direct", "clarify", "delegate", "tool"].includes(decision.route)) {
+        throw new Error("MODEL_GATEWAY_STREAM_INVALID");
+      }
+      return decision;
+    } catch (error) {
+      console.error("[model-gateway] chat stream failed:", error instanceof Error ? error.message : "unknown error");
+      const decision = {
+        route: "direct" as const,
+        answer: "模型云暂时不可用。你可以稍后重试；现有 Agent 与任务执行不受影响。",
+      };
+      onProgress({ type: "reset" });
+      onProgress({ type: "delta", text: decision.answer });
+      return decision;
+    }
+  }
+}
+
+function chatPayload(input: {
+  message: string;
+  systemPrompt: string;
+  history: ConversationMessage[];
+  instance: ServerProfile;
+}) {
+  return {
+    message: input.message,
+    systemPrompt: input.systemPrompt,
+    history: input.history.slice(-12).map(({ role, content }) => ({ role, content })),
+    instance: {
+      id: input.instance.instance_id,
+      name: input.instance.name,
+      platform: input.instance.platform,
+      minecraftVersion: input.instance.minecraft_version,
+      loader: input.instance.loader,
+      state: input.instance.state,
+    },
+    availableTools: [
+      "logs.query",
+      "files.list",
+      "server.install",
+      "config.patch",
+      "plugin.resolve",
+      "plugin.install",
+      "instance.start",
+      "instance.restart",
+    ],
+  };
+}
+
+async function readNdjson(stream: ReadableStream<Uint8Array>, onEvent: (event: ModelChatStreamEvent) => void) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) onEvent(JSON.parse(line) as ModelChatStreamEvent);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) onEvent(JSON.parse(buffer) as ModelChatStreamEvent);
 }

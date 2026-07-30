@@ -1110,6 +1110,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .paper-ops .rich-message ul { margin-top: 18px; gap: 10px; }
 .paper-ops .rich-message li { color: #3d403e; font-size: 16px; line-height: 1.65; }
 .paper-ops .rich-message li::before { background: var(--paper-cyan); }
+.paper-ops .chat-message.streaming .rich-message > :last-child::after {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 4px;
+  vertical-align: -.12em;
+  content: "";
+  background: var(--paper-orange);
+  animation: stream-caret 900ms steps(1, end) infinite;
+}
+@keyframes stream-caret {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: .18; }
+}
 
 .paper-ops .task-request { margin-bottom: 26px; }
 .paper-ops .task-activity {
@@ -1298,4 +1312,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 @media (prefers-reduced-motion: reduce) {
   .paper-ops .task-activity > summary,
   .paper-ops .task-activity-chevron { transition: none; }
+  .paper-ops .chat-message.streaming .rich-message > :last-child::after { animation: none; }
 }

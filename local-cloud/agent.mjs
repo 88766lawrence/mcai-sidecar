@@ -66,6 +66,7 @@ function baseInstructions(payload) {
     "只有目标确实含糊且缺少继续所必需的信息时，才调用 requestClarification，而且一次只问一个问题。",
     "复杂分析且不需要实时服务器数据时，调用 delegateAnalysis，把工作交给 diagnostics 或 planner 子 Agent。",
     "需要实时日志、配置、状态或执行实例变更时，调用 requestOperation。",
+    "需要调用工具时，第一步直接调用工具，调用前不要输出任何文字；工具完成后只输出给用户的最终结论。",
     "requestOperation 只提交受控目标，不执行 Shell；Cloud 会继续做确定性计划、风险分级、确认和 Sidecar 校验。",
     "下载 Paper 1.21.1 并命名为 server.jar 时，必须选择 file.download；Cloud 会固定官方来源和目标路径。",
     "不得生成 Shell、SSH 命令，不得声称尚未执行的动作已经完成，不得绕过确认。",
@@ -149,6 +150,17 @@ function agentTools(model, payload) {
   };
 }
 
+function createOperationsAgent(model, payload) {
+  return new ToolLoopAgent({
+    id: "mcai-operations-agent",
+    model,
+    instructions: baseInstructions(payload),
+    tools: agentTools(model, payload),
+    stopWhen: stepCountIs(4),
+    temperature: 0.15,
+  });
+}
+
 export async function routeWithAgent(config, payload) {
   if (!providerConfigured(config)) {
     return {
@@ -163,14 +175,7 @@ export async function routeWithAgent(config, payload) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const model = modelFor(config, modelId);
-        const agent = new ToolLoopAgent({
-          id: "mcai-operations-agent",
-          model,
-          instructions: baseInstructions(payload),
-          tools: agentTools(model, payload),
-          stopWhen: stepCountIs(4),
-          temperature: 0.15,
-        });
+        const agent = createOperationsAgent(model, payload);
         const result = await agent.generate({
           messages: historyMessages(payload),
           abortSignal: AbortSignal.timeout(180_000),
@@ -188,6 +193,78 @@ export async function routeWithAgent(config, payload) {
     answer: friendlyModelError(lastError),
     requestId: crypto.randomUUID(),
   };
+}
+
+export async function routeWithAgentStream(config, payload, onEvent) {
+  if (!providerConfigured(config)) {
+    const decision = {
+      route: "direct",
+      answer: "本地模型云尚未配置模型供应商。",
+      requestId: crypto.randomUUID(),
+    };
+    onEvent({ type: "delta", text: decision.answer });
+    return decision;
+  }
+
+  let lastError;
+  for (const modelId of candidateModels(config)) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const model = modelFor(config, modelId);
+        const result = await createOperationsAgent(model, payload).stream({
+          messages: historyMessages(payload),
+          abortSignal: AbortSignal.timeout(180_000),
+        });
+        let streamedText = "";
+        let operationRequested = false;
+
+        for await (const part of result.stream) {
+          if (part.type === "tool-call" && part.toolName === "requestOperation") {
+            operationRequested = true;
+            streamedText = "";
+            onEvent({ type: "reset" });
+            continue;
+          }
+          if (part.type === "text-delta" && !operationRequested) {
+            streamedText += part.text;
+            onEvent({ type: "delta", text: part.text });
+            continue;
+          }
+          if (part.type === "error") {
+            throw part.error instanceof Error ? part.error : new Error(String(part.error));
+          }
+        }
+
+        const decision = decisionFromAgentResult({
+          text: await result.text,
+          steps: await result.steps,
+          response: await result.response,
+        });
+        if (decision.route === "tool") {
+          if (!operationRequested) onEvent({ type: "reset" });
+          return decision;
+        }
+        if (streamedText !== decision.answer) {
+          onEvent({ type: "reset" });
+          if (decision.answer) onEvent({ type: "delta", text: decision.answer });
+        }
+        return decision;
+      } catch (error) {
+        lastError = error;
+        onEvent({ type: "reset" });
+        if (!isCapacityError(error)) break;
+        await sleep(700 * (attempt + 1));
+      }
+    }
+  }
+
+  const decision = {
+    route: "direct",
+    answer: friendlyModelError(lastError),
+    requestId: crypto.randomUUID(),
+  };
+  onEvent({ type: "delta", text: decision.answer });
+  return decision;
 }
 
 export function decisionFromAgentResult(result) {

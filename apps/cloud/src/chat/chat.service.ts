@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ConversationMessage, ConversationSession } from "@mcai/contracts";
 import { CloudStore } from "../store/cloud.store";
-import { ModelGatewayService } from "../model-gateway/model-gateway.service";
+import { ModelGatewayService, type ChatStreamProgress } from "../model-gateway/model-gateway.service";
 import { TasksService } from "../tasks/tasks.service";
 
 const defaultSystemPrompt = [
@@ -130,6 +130,14 @@ export class ChatService implements OnModuleInit {
   }
 
   async send(sessionId: string, tenantId: string, contentInput: string) {
+    return this.sendInternal(sessionId, tenantId, contentInput);
+  }
+
+  async sendStream(sessionId: string, tenantId: string, contentInput: string, onProgress: (event: ChatStreamProgress) => void) {
+    return this.sendInternal(sessionId, tenantId, contentInput, onProgress);
+  }
+
+  private async sendInternal(sessionId: string, tenantId: string, contentInput: string, onProgress?: (event: ChatStreamProgress) => void) {
     const session = this.getSession(sessionId, tenantId);
     const content = contentInput.trim();
     if (!content || content.length > 4_000) throw new BadRequestException("消息需要 1-4000 个字符");
@@ -144,12 +152,15 @@ export class ChatService implements OnModuleInit {
       created_at: new Date().toISOString(),
     };
     list.push(userMessage);
-    const decision = await this.modelGateway.route({
+    const routeInput = {
       message: content,
       systemPrompt: session.system_prompt,
       history: list.slice(0, -1),
       instance,
-    });
+    };
+    const decision = onProgress
+      ? await this.modelGateway.routeStream(routeInput, onProgress)
+      : await this.modelGateway.route(routeInput);
     let taskId: string | undefined;
     if (decision.route === "tool") {
       const task = await this.tasks.create({

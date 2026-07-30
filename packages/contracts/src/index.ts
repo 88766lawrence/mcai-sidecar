@@ -119,6 +119,12 @@ export interface ConversationMessage {
   created_at: string;
 }
 
+export type ConversationStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "reset" }
+  | { type: "done"; result: { message: ConversationMessage; task?: TaskRecord } }
+  | { type: "error"; message: string };
+
 export const riskRank: Record<RiskLevel, number> = {
   read: 0,
   low: 1,
