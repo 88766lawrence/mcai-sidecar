@@ -168,4 +168,31 @@ describe("ChatService", () => {
     expect(retry.message.id).toBe(first.message.id);
     expect(model.route).toHaveBeenCalledTimes(1);
   });
+
+  it("routes an explicit console command immediately without waiting for the model", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = { route: vi.fn() } as unknown as ModelGatewayService;
+    const task = { id: "task-console", state: "SNAPSHOTTING" };
+    const tasks = {
+      create: vi.fn().mockResolvedValue(task),
+      get: vi.fn().mockReturnValue(task),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const result = await service.send(session.id, "tenant-1", "console command list");
+
+    expect(result.message).toMatchObject({ route: "tool", task_id: "task-console" });
+    expect(tasks.create).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-1",
+      instanceRef: "instance-1",
+      intent: "console command list",
+    }));
+    expect(model.route).not.toHaveBeenCalled();
+  });
 });

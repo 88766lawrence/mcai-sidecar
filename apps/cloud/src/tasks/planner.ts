@@ -35,7 +35,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
   if (/shell|ssh|私钥|任意命令/.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "forbidden.shell", args: {}, risk: "forbidden" }], []);
   }
-  const consoleCommand = extractConsoleCommand(intent);
+  const consoleCommand = extractConsoleCommandIntent(intent);
   if (consoleCommand) {
     const risk = consoleCommandRisk(consoleCommand);
     return plan(id, instanceRef, inventoryRevision, intent, [{
@@ -122,7 +122,7 @@ function acceptsMinecraftEula(intent: string) {
   return Boolean(consentMatch && eulaMatch && Math.abs((consentMatch.index ?? 0) - (eulaMatch.index ?? 0)) <= 80);
 }
 
-function extractConsoleCommand(intent: string) {
+export function extractConsoleCommandIntent(intent: string) {
   const patterns = [
     /(?:控制台|console)[^\r\n:：]{0,12}?(?:执行|输入|发送|运行|command|cmd)\s*[:：]?\s*(.+)$/i,
     /(?:执行|输入|发送|运行)\s*(?:到|至|在)?\s*(?:服务器|minecraft|mc)?\s*(?:控制台|console)(?:命令)?\s*[:：]?\s*(.+)$/i,

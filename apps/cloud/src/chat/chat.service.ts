@@ -4,8 +4,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ConversationMessage, ConversationSession } from "@mcai/contracts";
 import { CloudStore } from "../store/cloud.store";
-import { ModelGatewayService, type ChatStreamProgress } from "../model-gateway/model-gateway.service";
+import { ModelGatewayService, type ChatDecision, type ChatStreamProgress } from "../model-gateway/model-gateway.service";
 import { TasksService } from "../tasks/tasks.service";
+import { extractConsoleCommandIntent } from "../tasks/planner";
 
 const defaultSystemPrompt = [
   "你是 MCAI Sidecar 的 Minecraft 运维助手。",
@@ -217,9 +218,16 @@ export class ChatService implements OnModuleInit {
       history: list.filter((message) => message.id !== userMessage.id),
       instance,
     };
-    const decision = onProgress
+    const consoleCommand = extractConsoleCommandIntent(content);
+    const deterministicDecision: ChatDecision | undefined = consoleCommand
+      ? { route: "tool", answer: "控制台命令已提交。", toolIntent: content }
+      : undefined;
+    if (deterministicDecision && onProgress) {
+      onProgress({ type: "delta", text: deterministicDecision.answer });
+    }
+    const decision = deterministicDecision ?? (onProgress
       ? await this.modelGateway.routeStream(routeInput, onProgress)
-      : await this.modelGateway.route(routeInput);
+      : await this.modelGateway.route(routeInput));
     let taskId: string | undefined;
     if (decision.route === "tool") {
       const normalizedIntent = decision.toolIntent?.trim();
