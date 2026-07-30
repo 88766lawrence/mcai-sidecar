@@ -163,10 +163,12 @@ export class ChatService implements OnModuleInit {
       : await this.modelGateway.route(routeInput);
     let taskId: string | undefined;
     if (decision.route === "tool") {
+      const normalizedIntent = decision.toolIntent?.trim();
       const task = await this.tasks.create({
         tenantId,
         instanceRef: session.instance_ref,
-        intent: decision.toolIntent?.trim() || content,
+        // Preserve exact user authorization and version constraints when the model normalizes an operation.
+        intent: normalizedIntent && normalizedIntent !== content ? `${content}\n\nAgent operation: ${normalizedIntent}` : content,
         assistantResponse: decision.answer,
         modelRequestId: decision.requestId,
         modelStatus: "answered",

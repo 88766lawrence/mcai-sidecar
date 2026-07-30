@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mcai/sidecar-agent/internal/protocol"
@@ -19,6 +20,7 @@ type installProvider struct {
 	downloaded string
 	configured provider.StartConfig
 	started    bool
+	files      map[string][]byte
 }
 
 func (p *installProvider) ListInstances(context.Context) ([]provider.Instance, error) {
@@ -39,8 +41,16 @@ func (p *installProvider) UpdateStartConfig(_ context.Context, _ string, config 
 	p.configured = config
 	return nil
 }
-func (p *installProvider) ReadFile(context.Context, string, string) ([]byte, error) { return nil, nil }
-func (p *installProvider) WriteFile(context.Context, string, string, []byte) error  { return nil }
+func (p *installProvider) ReadFile(_ context.Context, _ string, path string) ([]byte, error) {
+	return p.files[path], nil
+}
+func (p *installProvider) WriteFile(_ context.Context, _ string, path string, contents []byte) error {
+	if p.files == nil {
+		p.files = make(map[string][]byte)
+	}
+	p.files[path] = append([]byte(nil), contents...)
+	return nil
+}
 func (p *installProvider) Start(context.Context, string) error {
 	p.started = true
 	return nil
@@ -60,7 +70,7 @@ func TestInstallServerDownloadsConfiguresAndStarts(t *testing.T) {
 	}))
 	plan := protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}
 	step := protocol.TaskStep{Tool: "server.install", Args: map[string]any{
-		"platform": "fabric", "minecraft_version": "1.20.4", "target": "/server.jar",
+		"platform": "fabric", "minecraft_version": "1.20.4", "target": "/server.jar", "accept_eula": true,
 	}}
 
 	if err := executor.installServer(context.Background(), p, plan, step, func(_, _, _ string) {}); err != nil {
@@ -69,8 +79,27 @@ func TestInstallServerDownloadsConfiguresAndStarts(t *testing.T) {
 	if p.downloaded != "/server.jar" || !p.started {
 		t.Fatalf("installer did not download and start: %#v", p)
 	}
+	if !hasAcceptedEULA(p.files["eula.txt"]) {
+		t.Fatal("installer did not persist verified EULA acceptance")
+	}
 	if p.configured.StartCommand != "/usr/bin/java -Xms512M -Xmx2G -jar server.jar nogui" || p.configured.StopCommand != "stop" || p.configured.StopTimeout != 30 {
 		t.Fatalf("unexpected start config: %#v", p.configured)
+	}
+}
+
+func TestInstallServerRequiresExplicitEULAAcceptance(t *testing.T) {
+	p := &installProvider{instance: provider.Instance{State: "stopped"}}
+	executor := NewWithReleaseResolver("", nil, resolverFunc(func(_ context.Context, platform, minecraftVersion string) (releaseArtifact, error) {
+		return releaseArtifact{Platform: platform, MinecraftVersion: minecraftVersion, URL: "https://fill-data.papermc.io/v1/objects/test/server.jar", Name: "server.jar"}, nil
+	}))
+	err := executor.installServer(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{Args: map[string]any{
+		"platform": "paper", "minecraft_version": "1.21.1", "target": "/server.jar", "accept_eula": false,
+	}}, func(_, _, _ string) {})
+	if err == nil || !strings.Contains(err.Error(), "explicitly agree") {
+		t.Fatalf("expected explicit EULA consent error, got %v", err)
+	}
+	if p.started {
+		t.Fatal("server must not start before explicit EULA acceptance")
 	}
 }
 

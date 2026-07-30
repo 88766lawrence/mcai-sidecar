@@ -38,3 +38,31 @@ func TestSanitizeDiagnostic(t *testing.T) {
 		t.Fatalf("sanitizeDiagnostic leaked a credential: %q", got)
 	}
 }
+
+func TestLatestServerAttemptIgnoresPriorLaunchFailure(t *testing.T) {
+	output := strings.Join([]string{
+		"Error: Invalid or corrupt jarfile server.jar",
+		"[13:34:08 INFO]: [bootstrap] Running Java 25",
+		"[13:34:35 INFO]: Done (29.175s)! For help, type \"help\"",
+	}, "\n")
+	if got := classifyFailure("server did not reach ready", output, "running"); strings.Contains(got, "JAR") {
+		t.Fatalf("prior launch error leaked into diagnosis: %q", got)
+	}
+	if !isServerReady(output) {
+		t.Fatal("expected current ready signal to be detected")
+	}
+}
+
+func TestLatestServerAttemptDetectsCurrentTerminalFailure(t *testing.T) {
+	output := strings.Join([]string{
+		"[13:34:35 INFO]: Done (29.175s)! For help, type \"help\"",
+		"> /usr/bin/java -jar server.jar nogui",
+		"Error: Invalid or corrupt jarfile server.jar",
+	}, "\n")
+	if isServerReady(output) {
+		t.Fatal("a previous ready signal must not satisfy the current launch")
+	}
+	if !hasTerminalStartupFailure(output) {
+		t.Fatal("expected the current launch failure to be detected")
+	}
+}

@@ -14,10 +14,12 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
         platform: install.platform,
         minecraft_version: install.minecraftVersion,
         target: "/server.jar",
+        accept_eula: acceptsMinecraftEula(normalized),
       },
       risk: "low",
     }], [
-      { type: "instance_state", expected: "running" },
+      // A current Minecraft ready signal is stronger than the panel's
+      // asynchronous process-status transition and is the actual user goal.
       { type: "server_ready" },
     ]);
   }
@@ -90,6 +92,14 @@ function parseServerInstallIntent(intent: string) {
   const minecraftVersion = intent.match(/(?:minecraft|mc|\u7248\u672c|version)?\s*(\d+\.\d+(?:\.\d+)?(?:-[a-z0-9._-]+)?)/i)?.[1];
   if (!platform || !minecraftVersion) return undefined;
   return { platform, minecraftVersion };
+}
+
+function acceptsMinecraftEula(intent: string) {
+  const consent = /(?:\b(?:i\s+)?accept\b|\bagree\b|同意|接受)/i;
+  const eula = /(?:minecraft\s+)?eula/i;
+  const consentMatch = intent.match(consent);
+  const eulaMatch = intent.match(eula);
+  return Boolean(consentMatch && eulaMatch && Math.abs((consentMatch.index ?? 0) - (eulaMatch.index ?? 0)) <= 80);
 }
 
 function plan(

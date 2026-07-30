@@ -12,13 +12,11 @@ describe("draftPlan", () => {
         platform: "paper",
         minecraft_version: "1.21.1",
         target: "/server.jar",
+        accept_eula: false,
       },
       risk: "low",
     }]);
-    expect(plan.acceptance).toEqual([
-      { type: "instance_state", expected: "running" },
-      { type: "server_ready" },
-    ]);
+    expect(plan.acceptance).toEqual([{ type: "server_ready" }]);
   });
 
   it("recognizes Chinese Fabric installation requests", () => {
@@ -27,6 +25,15 @@ describe("draftPlan", () => {
     expect(plan.steps[0]).toMatchObject({
       tool: "server.install",
       args: { platform: "fabric", minecraft_version: "1.20.4", target: "/server.jar" },
+    });
+  });
+
+  it("carries explicit Minecraft EULA consent into the controlled installer", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "我同意 Minecraft EULA，请安装 Paper 1.21.1");
+
+    expect(plan.steps[0]).toMatchObject({
+      tool: "server.install",
+      args: { platform: "paper", minecraft_version: "1.21.1", accept_eula: true },
     });
   });
 });

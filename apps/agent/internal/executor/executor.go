@@ -234,11 +234,11 @@ func (e *Executor) diagnoseFailure(ctx context.Context, p provider.Provider, ins
 		}
 		output = collected
 	}
-	return classifyFailure(cause.Error(), output, state)
+	return classifyFailure(cause.Error(), latestServerAttempt(output), state)
 }
 
 func classifyFailure(cause, output, state string) string {
-	combined := strings.ToLower(cause + "\n" + output)
+	combined := strings.ToLower(cause + "\n" + latestServerAttempt(output))
 	switch {
 	case strings.Contains(combined, "eula") || strings.Contains(combined, "agree to the eula"):
 		return "服务器未接受 Minecraft EULA，进程因此拒绝启动。"
@@ -358,6 +358,7 @@ func (e *Executor) installServer(ctx context.Context, p provider.Provider, plan 
 	platform := stringArg(step.Args, "platform")
 	minecraftVersion := stringArg(step.Args, "minecraft_version")
 	target := stringArg(step.Args, "target")
+	acceptEULA, _ := step.Args["accept_eula"].(bool)
 	if target != "/server.jar" {
 		return errors.New("server installer may only write /server.jar")
 	}
@@ -400,11 +401,32 @@ func (e *Executor) installServer(ctx context.Context, p provider.Provider, plan 
 		return fmt.Errorf("configure Minecraft start command: %w", err)
 	}
 	emit("", "instance", "Configured the Minecraft start command")
+	if !acceptEULA {
+		return errors.New("Minecraft EULA acceptance is required before start; the user must explicitly agree to the Minecraft EULA")
+	}
+	eula := []byte("# Accepted explicitly by the server administrator through MCAI\neula=true\n")
+	if err := p.WriteFile(ctx, plan.InstanceRef, "eula.txt", eula); err != nil {
+		return fmt.Errorf("write Minecraft EULA acceptance: %w", err)
+	}
+	readBack, err := p.ReadFile(ctx, plan.InstanceRef, "eula.txt")
+	if err != nil || !hasAcceptedEULA(readBack) {
+		return errors.New("Minecraft EULA acceptance read-back verification failed")
+	}
+	emit("", "eula", "已根据管理员的明确授权写入并验证 /eula.txt：eula=true")
 	if err := p.Start(ctx, plan.InstanceRef); err != nil {
 		return err
 	}
 	emit("", "instance", "Start request accepted by the panel")
 	return nil
+}
+
+func hasAcceptedEULA(contents []byte) bool {
+	for _, line := range strings.Split(string(contents), "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), "eula=true") {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Executor) configPatch(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
@@ -481,13 +503,13 @@ func (e *Executor) verify(ctx context.Context, p provider.Provider, plan protoco
 			for time.Now().Before(deadline) {
 				instance, instanceErr := p.GetInstance(ctx, plan.InstanceRef)
 				output, outputErr := p.ReadOutput(ctx, plan.InstanceRef, 256)
-				if outputErr == nil && isServerReady(output) && instanceErr == nil && instance.State == "running" {
+				if outputErr == nil && isServerReady(output) {
 					break
 				}
-				if outputErr == nil && strings.Contains(strings.ToLower(output), "eula") {
+				if outputErr == nil && strings.Contains(strings.ToLower(latestServerAttempt(output)), "eula") {
 					return errors.New("server requires Minecraft EULA acceptance before it can start")
 				}
-				if instanceErr == nil && instance.State == "stopped" {
+				if instanceErr == nil && instance.State == "stopped" && hasTerminalStartupFailure(output) {
 					return errors.New("server stopped before reaching its ready signal")
 				}
 				select {
@@ -496,9 +518,9 @@ func (e *Executor) verify(ctx context.Context, p provider.Provider, plan protoco
 				case <-time.After(2 * time.Second):
 				}
 			}
-			instance, instanceErr := p.GetInstance(ctx, plan.InstanceRef)
+			_, instanceErr := p.GetInstance(ctx, plan.InstanceRef)
 			output, outputErr := p.ReadOutput(ctx, plan.InstanceRef, 256)
-			if instanceErr != nil || outputErr != nil || instance.State != "running" || !isServerReady(output) {
+			if instanceErr != nil || outputErr != nil || !isServerReady(output) {
 				return errors.New("server did not reach the Minecraft ready signal within three minutes")
 			}
 		}
@@ -507,8 +529,44 @@ func (e *Executor) verify(ctx context.Context, p provider.Provider, plan protoco
 }
 
 func isServerReady(output string) bool {
-	lower := strings.ToLower(output)
+	lower := strings.ToLower(latestServerAttempt(output))
 	return strings.Contains(lower, "done (") || strings.Contains(lower, "for help, type \"help\"")
+}
+
+// latestServerAttempt prevents a prior launch's errors or ready signal from
+// being interpreted as evidence for the launch currently being verified.
+func latestServerAttempt(output string) string {
+	lower := strings.ToLower(output)
+	markers := []string{
+		"> /usr/bin/java",
+		"[bootstrap] running java",
+		"starting org.bukkit.craftbukkit.main",
+		"starting minecraft server version",
+	}
+	start := -1
+	for _, marker := range markers {
+		if index := strings.LastIndex(lower, marker); index > start {
+			start = index
+		}
+	}
+	if start < 0 {
+		return output
+	}
+	return output[start:]
+}
+
+func hasTerminalStartupFailure(output string) bool {
+	lower := strings.ToLower(latestServerAttempt(output))
+	for _, signal := range []string{
+		"invalid or corrupt jar", "unable to access jarfile", "address already in use",
+		"failed to bind", "unsupportedclassversion", "outofmemory", "permission denied",
+		"could not create the java virtual machine", "exception in server tick loop", "crash report",
+	} {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Executor) resolve(ref string) (provider.Provider, error) {
