@@ -1,189 +1,114 @@
 # MCAI 项目交接记录
 
-更新时间：2026-07-30 17:50（Asia/Hong_Kong）
+更新时间：2026-07-30 18:30（Asia/Hong_Kong）
 
-## 1. 当前结论
+## 当前结论
 
-项目已经可以在本地构建，并已部署到 Linux 测试服务器。当前正在处理的核心问题是：
+MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控制台。该能力已部署到 Linux 测试端，并在实例“测试”上完成真实端到端验收。
 
-> 用户在当前实例中发出明确操作指令时，Agent 仍可能追问目标实例或补充信息，而不是直接使用当前实例执行。
+控制台能力是受控工具 `console.command`，不是 Linux Shell。Cloud 做第一次风险分级，Go Agent 在服务器本地再次校验；MCSManager API Key 仍只由 Agent 本机读取。
 
-这个问题目前只完成了代码链路诊断，**尚未修改代码，也尚未部署修复**。本地 Git 工作树在创建本文档前是干净的。
+## 本轮已完成
 
-## 2. 已完成内容
+- Web 创建或发送会话时始终使用页面当前选择的实例。
+- 切换实例会自动切到该实例最近会话；没有会话时在首次发送时创建。
+- Cloud 能识别 `console command list`、`在控制台执行 list`、`控制台输入 say hello` 等明确指令。
+- 明确控制台指令使用本地确定性路由，不等待上游模型，避免模型容量或 240 秒超时阻塞执行。
+- Agent 新增 `console.command` 并调用 MCSManager `/api/protected_instance/command`。
+- 已按服务器安装的 MCSManager 10 源码确认契约：`daemonId`、`uuid` 和 `command` 均为查询参数。
+- 工具执行后不会直接结束；Cloud 会继续根据 Agent 回调生成最终成功结果或失败原因。
+- UI 工具名称显示为“发送控制台命令”，实例停止显示为“停止服务器”。
+- 同一请求使用 `request_id` 去重，防止重复点击或重试创建重复任务。
+- 消息发送中，发送按钮会切换为“停止发送”，用户可以立即中止并解锁输入框。
+- 浏览器发送等待上限为 65 秒；Cloud 模型路由上限为 60 秒，不再出现旧版本最长 240 秒占用发送按钮的情况。
 
-### Agent 与任务能力
+## 控制台安全规则
 
-- 对话支持多会话、系统提示词、流式输出和工具任务回调。
-- 工具执行后会根据回调结果继续生成最终回答，不会在调用工具后直接结束。
-- 已实现或接入实例启动、停止、重启、文件列表、服务端安装、配置修改、日志读取等受控操作。
-- Paper/Fabric 安装流程支持从自然语言提取平台和 Minecraft 版本。
-- Paper 1.21.1 已完成 EULA 受控安装与启动验收流程。
-- Agent 会周期上报实例库存，MCSManager 实例状态可同步到 Cloud。
-- MCSManager Daemon WebSocket 使用 `24444/tcp`，面板使用 `23333/tcp`。
+- 仅允许运行中实例执行命令。
+- 仅允许单行可打印命令，最多 256 字节。
+- 禁止把 `stop`、`restart`、`quit`、`end` 当普通控制台命令；必须走专用实例工具。
+- `list/help/version/plugins/pl/tps/mspt/seed` 为只读，无需确认。
+- `say/me` 为低风险，无需确认。
+- `time/weather/difficulty/gamerule/gamemode/give/tp/effect` 等为中风险，必须确认。
+- 未知命令及 `op` 等管理员命令按高风险处理，必须确认。
+- 审计只保存命令动词与 SHA-256，不保存完整敏感参数。
 
-### 对话 UI
-
-- 保留米黄色 Paper Ops 整体风格。
-- 最终结果使用明确的成功/失败区域展示。
-- 工具调用过程默认折叠，可展开查看步骤、目标实例、失败原因和下一步。
-- Agent 身份头像位于左侧栏，头像、名称、在线状态横向排列。
-- 底部聊天输入框已向左移动约 40px。
-- 修复了查看历史消息时页面自动跳回最新消息的问题。
-- 每次 UI 修改均通过桌面和手机截图检查；最新公网截图在 `.deploy/` 下。
-
-最近本地提交：
-
-```text
-6342062 Move agent composer left
-897b9d7 Place agent identity in sidebar
-81ea239 Improve agent results and tool process UI
-eba62c4 fix MCSManager terminal page scroll jumps
-b8b0a50 Report instance inventory periodically
-95c27c6 Add confirmed instance stop control
-1322c68 Fix EULA-controlled server installation verification
-4d17606 Loop through transient tool failures and verification
-```
-
-## 3. 当前部署状态
-
-### Linux 测试端
+## Linux 测试端
 
 - 主机：`191.40.37.148`
 - Web：`http://191.40.37.148:3000/`
 - MCSManager：`http://191.40.37.148:23333/`
-- 代码目录：`/opt/mcai-src`
-- Web 服务：`mcai-web.service`
-- Cloud 服务：`mcai-cloud.service`
-- 模型云服务：独立本地服务，Cloud 通过回环地址调用。
-- Node.js：`/opt/node-v22.17.0-linux-x64/bin`
+- 源码目录：`/opt/mcai-src`
+- Go：`/opt/go/bin/go`，版本 `go1.23.5`
+- 服务：`mcai-model-cloud.service`、`mcai-cloud.service`、`mcai-agent.service`、`mcai-web.service`
+- 2026-07-30 18:25 部署后四个服务均为 `active`。
 
-最近一次部署后 `mcai-web.service` 为 `active`，公网 3000 页面已通过 Playwright 加载与截图验证。
+## 真实验收结果
 
-部署辅助文件位于 `.deploy/`：
+通过 Cloud 会话 API 创建绑定实例“测试”的临时会话，并执行：
 
-- `.deploy/deploy-agent-ui.sh`
-- `.deploy/mcai-agent-ui-update.tar.gz`
-- `.deploy/capture-agent-ops.cjs`
+1. `console command list`
+2. `console command say MCAI console control ready`
 
-部署脚本已经加入服务启动等待重试，避免 systemd 刚重启、3000 端口尚未监听时产生假失败。
+两条任务均满足：
 
-### GitHub
+- 路由：`tool`
+- 工具：`console.command`
+- 状态：`SUCCEEDED`
+- 实例：`mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`
+- Agent 回调包含 `console` 证据
 
-- 远端：`origin -> https://github.com/88766lawrence/mcai-sidecar.git`
-- 当前分支：`main`
-- 上述最新提交尚未推送到 GitHub。
-- 推送曾被安全策略阻止。执行前需要用户明确授权具体提交推送到 `origin/main`，不要通过其他方式绕过。
-
-## 4. 正在排查的问题：Agent 不应重复询问实例
-
-用户的最新要求是：
-
-- 当前页面已经选中实例时，Agent 必须知道目标实例。
-- 用户发出明确操作指令时，执行优先，不要再次询问实例。
-- 仅当操作参数确实无法从指令和实例库存中获得时才追问。
-
-### 已确认的请求链路
-
-1. Web 创建会话时会传递 `instance_ref`：
-   - `apps/web/components/agent-workspace.tsx`
-2. `ConversationSession` 会永久保存 `instance_ref`：
-   - `packages/contracts/src/index.ts`
-   - `apps/cloud/src/chat/chat.service.ts`
-3. Cloud 发送消息时会通过会话找到实例，并把完整 `ServerProfile` 传给模型网关：
-   - `apps/cloud/src/chat/chat.service.ts:144`
-   - `apps/cloud/src/chat/chat.service.ts:155`
-4. 模型网关请求中已经包含：
-   - 实例 ID
-   - 实例名称
-   - 平台
-   - Minecraft 版本
-   - Loader
-   - 当前状态
-   - 位置：`apps/cloud/src/model-gateway/model-gateway.service.ts:191`
-
-因此，实例信息并不是完全没有传递。当前更可能是以下两个问题共同导致：
-
-### 问题 A：前端选择实例与活动会话可能不同步
-
-`agent-workspace.tsx` 中：
-
-- 下拉框直接修改 `selectedInstance`。
-- 但 `current` 优先使用 `activeSession.instance_ref`。
-- 修改下拉框后，没有同时切换或清空旧的 `activeSessionId`。
-- 发送消息仍使用旧的活动会话，因此操作可能绑定到旧实例。
-
-这会导致界面选择、当前会话和实际任务目标出现不一致，是下一步应优先修复的确定性问题。
-
-### 问题 B：模型路由策略允许过度追问
-
-Cloud 默认提示词当前包含：
+Minecraft `logs/latest.log` 已确认：
 
 ```text
-简单知识问题直接回答；目标含糊时先追问。
+[Server] MCAI console control ready
+There are 0 of a max of 20 players online:
 ```
 
-但没有明确告诉模型：
+## 验证状态
 
-- 当前请求中的 `instance` 就是已选定的执行目标。
-- 不得再次询问用户选择实例。
-- 明确操作指令应优先返回 `route=tool`。
-- 应先结合实例库存补全平台、版本和状态，再判断是否真的缺少参数。
+- 本机 `npm run typecheck`：通过
+- 本机 `npm test`：Cloud 15 项通过
+- 本机 `npm run build`：通过
+- 本机 `local-cloud npm test`：6 项通过
+- Linux `go test ./...`：通过
+- Linux Go Agent 构建：通过
+- Linux 全量 TypeScript 类型检查、测试和生产构建：通过
+- 公网 Web `/api` 流式代理：控制台消息约 27ms 返回任务，普通消息约 3.1 秒返回直接回答
+- `git diff --check`：通过
 
-模型云的 `/v1/chat` 路由提示词也需要检查，位置在 `local-cloud/`。本轮尚未完成这部分搜索。
+## 主要修改文件
 
-## 5. 建议的下一步实现顺序
+- `apps/agent/internal/executor/executor.go`
+- `apps/agent/internal/provider/provider.go`
+- `apps/agent/internal/provider/mcsmanager/client.go`
+- `apps/cloud/src/tasks/planner.ts`
+- `apps/cloud/src/chat/chat.service.ts`
+- `apps/cloud/src/model-gateway/model-gateway.service.ts`
+- `apps/web/components/agent-workspace.tsx`
+- `local-cloud/agent.mjs`
+- `packages/contracts/src/index.ts`
+- 对应 Go、Vitest 和 Node 测试文件
 
-1. 修复 Web 实例切换：
-   - 选择新实例时，自动切换到该实例最近的会话；若没有会话则清空活动会话并在发送时创建。
-   - 禁止界面显示实例 A、实际向实例 B 的会话发送消息。
-2. 强化 Cloud 默认系统提示词：
-   - 明确 `instance` 是当前选定且已经授权的目标。
-   - 明确操作意图优先 `tool`，不能询问已经存在于实例库存中的信息。
-3. 检查并修改 `local-cloud` 的 `/v1/chat` 路由提示词和结构化输出约束。
-4. 增加回归测试：
-   - “启动服务器”直接产生 `instance.start` 任务。
-   - “列出根目录文件”直接产生 `files.list` 任务。
-   - 切换实例后任务的 `instance_ref` 必须是新实例。
-   - 只有真正缺少版本等必要参数时才允许 `clarify`。
-5. 本地运行类型检查、测试、构建。
-6. 部署 Linux，并实际让 Agent 对当前实例执行启动或文件列表命令。
-7. 对 UI 变化必须截取桌面与 375px 手机截图并人工检查后再交付。
+部署与验收辅助文件：
 
-## 6. 常用验证命令
+- `.deploy/deploy-console-control.sh`
+- `.deploy/mcai-console-control-update.tar.gz`
+- `.deploy/verify-console-control.mjs`
 
-```powershell
-npm run typecheck
-npm test
-npm run build
-```
+## Git 状态与后续工作
 
-Web 单独验证：
+- 本轮功能源码已同步到 Windows 本地、Linux 测试端和 GitHub。
+- `origin/main` 当前为 `1b6b0d9 Route explicit console commands deterministically`。
+- 控制台主体提交：`d84cc2e Harden chat operations and response handling`。
+- MCSManager 查询参数修复：`e43b3c2 Fix MCSManager console command request`。
+- 确定性控制台路由：`1b6b0d9 Route explicit console commands deterministically`。
+- 当前仅本交接文档和 `recovery_test.go` 的远端 `gofmt` 格式差异尚未提交。
+- 后续可继续扩展更多明确操作的本地确定性路由，使启动、文件查询和安装等操作同样不受上游模型容量影响。
+- 中风险和高风险控制台命令仍应通过页面确认按钮进行人工验收，不能绕过确认策略。
 
-```powershell
-npm run typecheck -w @mcai/web
-npm run build -w @mcai/web
-```
+## 安全注意事项
 
-Cloud 单独验证：
-
-```powershell
-npm run typecheck -w @mcai/cloud
-npm run test -w @mcai/cloud
-```
-
-Linux 服务状态：
-
-```bash
-systemctl status mcai-web.service --no-pager
-systemctl status mcai-cloud.service --no-pager
-```
-
-## 7. 安全与操作注意事项
-
-- 不要在文档、日志或提交中写入模型 API Key、MCSManager API Key、管理员密码或 SSH 私钥内容。
-- 项目根目录存在服务器部署密钥文件，只能用于已授权的测试服务器，不要提交或输出其内容。
-- MCSManager API Key 只应由 Agent 本机读取。
-- 不要绕过任务风险确认、Minecraft EULA 确认和禁止任意 Shell 的策略。
-- Linux 端、Windows 本地代码和 GitHub 应保持同步；GitHub 推送仍需明确授权。
-
+- 不要在文档、日志、提交或聊天中写入模型 API Key、MCSManager API Key、管理员密码或 SSH 私钥内容。
+- 不开放任意 Shell，不允许模型生成或执行 SSH 命令。
+- 不绕过任务风险确认、Minecraft EULA 确认和实例生命周期专用工具。

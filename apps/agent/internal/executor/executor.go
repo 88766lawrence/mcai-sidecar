@@ -22,12 +22,13 @@ import (
 type EventSink func(state, kind, summary string)
 
 type Executor struct {
-	providers       map[string]provider.Provider
-	dataDir         string
-	audit           *audit.Writer
-	releaseResolver releaseResolver
-	maxAttempts     int
-	retryDelay      func(int) time.Duration
+	providers        map[string]provider.Provider
+	dataDir          string
+	audit            *audit.Writer
+	releaseResolver  releaseResolver
+	maxAttempts      int
+	retryDelay       func(int) time.Duration
+	consolePollDelay time.Duration
 }
 
 const paper1211URL = "https://fill-data.papermc.io/v1/objects/39bd8c00b9e18de91dcabd3cc3dcfa5328685a53b7187a2f63280c22e2d287b9/paper-1.21.1-133.jar"
@@ -42,11 +43,12 @@ func NewWithReleaseResolver(dataDir string, auditWriter *audit.Writer, resolver 
 		resolver = newOfficialReleaseResolver()
 	}
 	return &Executor{
-		providers:       make(map[string]provider.Provider),
-		dataDir:         dataDir,
-		audit:           auditWriter,
-		releaseResolver: resolver,
-		maxAttempts:     defaultMaxAttempts,
+		providers:        make(map[string]provider.Provider),
+		dataDir:          dataDir,
+		audit:            auditWriter,
+		releaseResolver:  resolver,
+		maxAttempts:      defaultMaxAttempts,
+		consolePollDelay: 250 * time.Millisecond,
 		retryDelay: func(attempt int) time.Duration {
 			return time.Duration(1<<min(attempt-1, 3)) * time.Second
 		},
@@ -323,6 +325,7 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		if instance.State != "running" {
 			return fmt.Errorf("console commands require a running instance; current state is %s", instance.State)
 		}
+		baseline, baselineErr := p.ReadOutput(ctx, plan.InstanceRef, 256)
 		if err := p.SendCommand(ctx, plan.InstanceRef, command); err != nil {
 			return err
 		}
@@ -334,7 +337,13 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 				"risk":           requiredRisk,
 			})
 		}
-		emit("", "console", fmt.Sprintf("控制台已接受 /%s 命令（sha256:%s）", verb, hex.EncodeToString(sum[:8])))
+		if baselineErr == nil {
+			if output := e.waitForConsoleOutput(ctx, p, plan.InstanceRef, baseline); output != "" {
+				emit("", "console", "控制台返回：\n"+sanitizeConsoleOutput(output))
+				return nil
+			}
+		}
+		emit("", "console", fmt.Sprintf("控制台已接受 /%s 命令，但在等待窗口内没有新的控制台输出（sha256:%s）", verb, hex.EncodeToString(sum[:8])))
 		return nil
 	case "instance.start":
 		if err := p.Start(ctx, plan.InstanceRef); err != nil {
@@ -664,4 +673,66 @@ func consoleRiskRank(risk string) int {
 	default:
 		return -1
 	}
+}
+
+func (e *Executor) waitForConsoleOutput(ctx context.Context, p provider.Provider, instanceRef, baseline string) string {
+	for attempt := 0; attempt < 12; attempt++ {
+		output, err := p.ReadOutput(ctx, instanceRef, 256)
+		if err == nil {
+			if delta := consoleOutputDelta(baseline, output); delta != "" {
+				return delta
+			}
+		}
+		if attempt == 11 {
+			break
+		}
+		timer := time.NewTimer(e.consolePollDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ""
+		case <-timer.C:
+		}
+	}
+	return ""
+}
+
+func consoleOutputDelta(before, after string) string {
+	before = strings.ReplaceAll(before, "\r\n", "\n")
+	after = strings.ReplaceAll(after, "\r\n", "\n")
+	if after == "" || after == before {
+		return ""
+	}
+	if strings.HasPrefix(after, before) {
+		return strings.TrimSpace(after[len(before):])
+	}
+	before = strings.TrimSpace(before)
+	if before != "" {
+		lastLine := before
+		if index := strings.LastIndex(before, "\n"); index >= 0 {
+			lastLine = before[index+1:]
+		}
+		if index := strings.LastIndex(after, lastLine); index >= 0 {
+			return strings.TrimSpace(after[index+len(lastLine):])
+		}
+	}
+	return strings.TrimSpace(after)
+}
+
+var consoleANSI = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+func sanitizeConsoleOutput(output string) string {
+	output = consoleANSI.ReplaceAllString(output, "")
+	output = sensitiveDiagnostic.ReplaceAllString(output, "$1=[REDACTED]")
+	output = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, output)
+	output = strings.TrimSpace(output)
+	if len(output) > 8*1024 {
+		output = output[len(output)-8*1024:]
+	}
+	return output
 }

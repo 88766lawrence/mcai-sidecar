@@ -1,10 +1,12 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import {
   AlertTriangle, Bot, CheckCircle2, ChevronDown, CircleAlert, ClipboardCheck,
   Cloud, FileClock, LoaderCircle, LogOut, Menu, MessageSquare,
-  Plus, RefreshCw, RotateCcw, Send, Server, Settings2, ShieldCheck, Sparkles,
+  Plus, RefreshCw, RotateCcw, Send, Server, Settings2, ShieldCheck, Sparkles, Square,
   Trash2, UserRound, Wrench, X,
 } from "lucide-react";
 import type {
@@ -13,6 +15,8 @@ import type {
 import { api, apiStream } from "../lib/api";
 
 type Agent = { id: string; displayName: string; status: "online" | "offline" | "pending"; version: string; lastSeen: string };
+
+gsap.registerPlugin(useGSAP);
 
 export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -25,6 +29,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [selectedInstance, setSelectedInstance] = useState("");
   const [intent, setIntent] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [pendingSessionId, setPendingSessionId] = useState("");
   const [cloudOnline, setCloudOnline] = useState(true);
@@ -35,10 +40,54 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [reviewTask, setReviewTask] = useState<TaskRecord | null>(null);
   const [highRiskText, setHighRiskText] = useState("");
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const workspaceRef = useRef<HTMLElement>(null);
   const messageStreamRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef("");
   const followLatestRef = useRef(true);
   const sendingRef = useRef(false);
+  const sendAbortRef = useRef<AbortController | null>(null);
+
+  useGSAP(() => {
+    const media = gsap.matchMedia();
+    media.add({
+      desktop: "(min-width: 761px)",
+      reduceMotion: "(prefers-reduced-motion: reduce)",
+    }, (context) => {
+      if (context.conditions?.reduceMotion) return;
+      const desktop = Boolean(context.conditions?.desktop);
+      gsap.fromTo(".agent-topbar", { autoAlpha: 0, y: -10 }, {
+        autoAlpha: 1, y: 0, duration: 0.38, ease: "power2.out", clearProps: "transform,opacity,visibility",
+      });
+      if (desktop) {
+        gsap.fromTo(".agent-sidebar", { autoAlpha: 0, x: -14 }, {
+          autoAlpha: 1, x: 0, duration: 0.46, delay: 0.04, ease: "power2.out", clearProps: "transform,opacity,visibility",
+        });
+      }
+      gsap.fromTo(".conversation-head, .agent-composer", { autoAlpha: 0, y: 10 }, {
+        autoAlpha: 1, y: 0, duration: 0.42, delay: 0.08, stagger: 0.06, ease: "power2.out", clearProps: "transform,opacity,visibility",
+      });
+      gsap.fromTo(".session-row", { autoAlpha: 0, x: -7 }, {
+        autoAlpha: 1, x: 0, duration: 0.3, delay: 0.12, stagger: 0.035, ease: "power1.out", clearProps: "transform,opacity,visibility",
+      });
+    }, workspaceRef.current ?? undefined);
+    return () => media.revert();
+  }, { scope: workspaceRef });
+
+  useGSAP(() => {
+    const backdrop = workspaceRef.current?.querySelector<HTMLElement>(".modal-backdrop");
+    const panel = backdrop?.querySelector<HTMLElement>(".modal");
+    if (!backdrop || !panel) return;
+    const media = gsap.matchMedia();
+    media.add("(prefers-reduced-motion: no-preference)", () => {
+      gsap.fromTo(backdrop, { autoAlpha: 0 }, {
+        autoAlpha: 1, duration: 0.2, ease: "power1.out", clearProps: "opacity,visibility",
+      });
+      gsap.fromTo(panel, { autoAlpha: 0, y: 14, scale: 0.985 }, {
+        autoAlpha: 1, y: 0, scale: 1, duration: 0.3, ease: "power2.out", clearProps: "transform,opacity,visibility",
+      });
+    }, backdrop);
+    return () => media.revert();
+  }, { dependencies: [promptOpen, reviewTask?.id], scope: workspaceRef, revertOnUpdate: true });
 
   const refresh = useCallback(async () => {
     try {
@@ -160,15 +209,19 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
 
   async function sendMessage() {
     if (!intent.trim() || sendingRef.current) return;
-    sendingRef.current = true;
     const outgoing = intent.trim();
-    const requestId = crypto.randomUUID();
+    const requestId = createRequestId();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 65_000);
+    sendingRef.current = true;
+    sendAbortRef.current = controller;
     let sessionId = activeSession?.id ?? "";
     followLatestRef.current = true;
     setShowScrollToLatest(false);
     setPlanning(true);
     setPendingSessionId(sessionId);
     setLoading(true);
+    setSending(true);
     setStreamingMessage(null);
     setError("");
     try {
@@ -194,6 +247,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       await apiStream<ConversationStreamEvent>(`/sessions/${sessionId}/messages/stream`, {
         method: "POST",
         body: JSON.stringify({ content, request_id: requestId }),
+        signal: controller.signal,
       }, (event) => {
         if (event.type === "delta") {
           setPlanning(false);
@@ -222,14 +276,21 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       if (result.task?.state === "WAITING_CONFIRMATION") setReviewTask(result.task);
     } catch (cause) {
       setStreamingMessage(null);
-      setError(cause instanceof Error ? cause.message : "消息发送失败");
+      setError(cause instanceof DOMException && cause.name === "AbortError" ? "消息发送已停止，请重新发送。" : cause instanceof Error ? cause.message : "消息发送失败");
       if (activeSessionIdRef.current === sessionId) await loadMessages(sessionId);
     } finally {
+      window.clearTimeout(timeout);
+      if (sendAbortRef.current === controller) sendAbortRef.current = null;
       sendingRef.current = false;
       setLoading(false);
+      setSending(false);
       setPlanning(false);
       setPendingSessionId("");
     }
+  }
+
+  function cancelMessage() {
+    sendAbortRef.current?.abort();
   }
 
   function openPrompt() {
@@ -282,7 +343,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     }
   }
 
-  return <main className={`agent-shell paper-ops ${activeTask ? "with-inspector" : "conversation-only"}`}>
+  return <main ref={workspaceRef} className={`agent-shell paper-ops ${activeTask ? "with-inspector" : "conversation-only"}`}>
     <header className="agent-topbar">
       <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开会话"><Menu size={19} /></button>
       <div className="brand"><span className="brand-symbol"><img src="/brand/mcai-symbol.png" alt="" /></span><strong>MCAI</strong><span>Agent 工作台</span></div>
@@ -340,7 +401,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
         <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="询问知识、诊断问题，或描述你想完成的操作…" rows={2} />
-        <button onClick={() => void sendMessage()} disabled={loading || !intent.trim()} aria-label="发送">{loading ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button>
+        <button onClick={sending ? cancelMessage : () => void sendMessage()} disabled={!sending && (loading || !intent.trim())} aria-label={sending ? "停止发送" : "发送"} title={sending ? "停止发送" : "发送"}>{sending ? <Square size={17} /> : <Send size={19} />}</button>
         <div className="composer-hint"><ShieldCheck size={13} />工具调用仍需策略校验，高风险操作必须确认</div>
       </div>
     </section>
@@ -376,14 +437,24 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
 }
 
 function MessageBubble({ message, task, instanceName, streaming = false, onReview }: { message: ConversationMessage; task?: TaskRecord; instanceName?: string; streaming?: boolean; onReview: (task: TaskRecord) => void }) {
-  if (message.role === "user") return <article className="chat-message user"><span className="user-avatar"><UserRound size={15} /></span><div><small>你</small><p>{message.content}</p></div></article>;
+  const messageRef = useRef<HTMLElement>(null);
+  useGSAP(() => {
+    const media = gsap.matchMedia();
+    media.add("(prefers-reduced-motion: no-preference)", () => {
+      gsap.fromTo(messageRef.current, { autoAlpha: 0, y: 9 }, {
+        autoAlpha: 1, y: 0, duration: 0.34, ease: "power2.out", clearProps: "transform,opacity,visibility",
+      });
+    }, messageRef.current ?? undefined);
+    return () => media.revert();
+  }, { scope: messageRef });
+  if (message.role === "user") return <article ref={messageRef} className="chat-message user"><span className="user-avatar"><UserRound size={15} /></span><div><small>你</small><p>{message.content}</p></div></article>;
   const isTaskRequest = message.task_phase === "request";
   if (isTaskRequest) {
-    return <article className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
+    return <article ref={messageRef} className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
   const completedTask = task && terminal(task.state);
   const failedTask = completedTask && task.state !== "SUCCEEDED";
-  return <article className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
+  return <article ref={messageRef} className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
     <span className="bot-avatar"><Bot size={16} /></span>
     <div>
       <div className="message-meta"><strong>MCAI</strong>{streaming && <span>正在回答</span>}</div>
@@ -471,4 +542,13 @@ function instanceMeta(instance: ServerProfile) {
     .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));
   if (values.length) return values.join(" · ");
   return instance.provider_type === "mcsmanager" ? "MCSManager" : "Pterodactyl";
+}
+
+function createRequestId() {
+  const cryptoApi = typeof globalThis.crypto === "object" ? globalThis.crypto : undefined;
+  if (globalThis.isSecureContext && typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  const entropy = new Uint32Array(3);
+  if (cryptoApi?.getRandomValues) cryptoApi.getRandomValues(entropy);
+  else entropy.set([Date.now(), Math.floor(Math.random() * 0xffffffff), Math.floor(Math.random() * 0xffffffff)]);
+  return `request_${Date.now().toString(36)}_${Array.from(entropy, (value) => value.toString(36)).join("_")}`;
 }

@@ -16,19 +16,26 @@ func (f resolverFunc) Resolve(ctx context.Context, platform, minecraftVersion st
 }
 
 type installProvider struct {
-	instance   provider.Instance
-	downloaded string
-	configured provider.StartConfig
-	started    bool
-	stopped    bool
-	commands   []string
-	files      map[string][]byte
+	instance     provider.Instance
+	downloaded   string
+	configured   provider.StartConfig
+	started      bool
+	stopped      bool
+	commands     []string
+	outputBefore string
+	outputAfter  string
+	files        map[string][]byte
 }
 
 func (p *installProvider) ListInstances(context.Context) ([]provider.Instance, error) {
 	return []provider.Instance{p.instance}, nil
 }
-func (p *installProvider) ReadOutput(context.Context, string, int) (string, error) { return "", nil }
+func (p *installProvider) ReadOutput(context.Context, string, int) (string, error) {
+	if len(p.commands) > 0 {
+		return p.outputAfter, nil
+	}
+	return p.outputBefore, nil
+}
 func (p *installProvider) ListFiles(context.Context, string, string) (string, error) {
 	return p.downloaded, nil
 }
@@ -72,17 +79,29 @@ func (p *installProvider) GetInstance(context.Context, string) (provider.Instanc
 }
 
 func TestConsoleCommandRequiresRiskAndConfirmation(t *testing.T) {
-	p := &installProvider{instance: provider.Instance{State: "running"}}
+	p := &installProvider{
+		instance:     provider.Instance{State: "running"},
+		outputBefore: "[Server thread/INFO]: previous line\n",
+		outputAfter:  "[Server thread/INFO]: previous line\n[Server thread/INFO]: There are 0 of a max of 20 players online:\n",
+	}
 	executor := NewWithReleaseResolver("", nil, nil)
 	plan := protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}
+	var consoleEvidence string
 
 	if err := executor.executeStep(context.Background(), p, plan, protocol.TaskStep{
 		Tool: "console.command", Args: map[string]any{"command": "list"}, Risk: "read",
-	}, func(_, _, _ string) {}); err != nil {
+	}, func(_, kind, summary string) {
+		if kind == "console" {
+			consoleEvidence = summary
+		}
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.commands) != 1 || p.commands[0] != "list" {
 		t.Fatalf("console command was not sent: %#v", p.commands)
+	}
+	if !strings.Contains(consoleEvidence, "There are 0 of a max of 20 players online") {
+		t.Fatalf("console output was not returned as evidence: %q", consoleEvidence)
 	}
 
 	err := executor.executeStep(context.Background(), p, plan, protocol.TaskStep{
