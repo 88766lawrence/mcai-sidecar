@@ -1278,7 +1278,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .paper-ops .thinking-dots i { background: var(--paper-orange); }
 
 .paper-ops .agent-composer {
-  flex: 0 0 auto; min-height: 82px; margin: 0 clamp(24px, 4.9vw, 70px) 28px clamp(42px, 6.4vw, 92px);
+  flex: 0 0 auto; min-height: 82px; margin: 0 clamp(24px, 4.9vw, 70px) 28px clamp(24px, 3.6vw, 52px);
   padding: 17px 58px 13px 0; border: 0; border-top: 1px solid var(--paper-line-strong);
   border-radius: 0; background: transparent; box-shadow: none;
 }
