@@ -108,12 +108,12 @@ There are 0 of a max of 20 players online:
 ## Git 状态与后续工作
 
 - 控制台回读与 Web 修复已同步到 Windows 本地、Linux 测试端和 GitHub，提交为 `26c712d Add console evidence and web motion`。
-- 自然语言只读路由已同步到 GitHub，提交为 `ade573b Route common server queries deterministically`；模型控制台工具说明与本交接文档等待提交。
-- `origin/main` 当前为 `ade573b Route common server queries deterministically`。
+- 自然语言只读路由已同步到 GitHub，提交为 `ade573b Route common server queries deterministically`；模型控制台工具说明与本交接文档已提交为 `322a22c Teach agent when to use the Minecraft console`。
+- `origin/main` 当前为 `322a22c Teach agent when to use the Minecraft console`。
 - 控制台主体提交：`d84cc2e Harden chat operations and response handling`。
 - MCSManager 查询参数修复：`e43b3c2 Fix MCSManager console command request`。
 - 确定性控制台路由：`1b6b0d9 Route explicit console commands deterministically`。
-- 当前未提交文件为模型控制台说明和本交接文档。
+- 当前源码、Linux 测试端和 GitHub 已同步，无未提交功能修改。
 - 后续可继续扩展更多明确操作的本地确定性路由，使启动、文件查询和安装等操作同样不受上游模型容量影响。
 - 中风险和高风险控制台命令仍应通过页面确认按钮进行人工验收，不能绕过确认策略。
 
