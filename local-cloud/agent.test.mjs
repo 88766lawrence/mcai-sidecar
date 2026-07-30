@@ -1,12 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conciseAnswer, decisionFromAgentResult, providerConfigured } from "./agent.mjs";
+import {
+  buildSystemInstructions,
+  conciseAnswer,
+  decisionFromAgentResult,
+  providerConfigured,
+} from "./agent.mjs";
 
 test("provider configuration requires all provider fields", () => {
   assert.equal(providerConfigured({ provider: {} }), false);
   assert.equal(providerConfigured({
     provider: { apiKey: "key", baseUrl: "https://example.test/v1", model: "model" },
   }), true);
+});
+
+test("system prompt uses layered execution and safety contracts", () => {
+  const prompt = buildSystemInstructions({
+    instance: { id: "mcs:daemon:instance", state: "running" },
+    availableTools: ["console.command", "instance.stop"],
+    systemPrompt: "回答使用简体中文。",
+  });
+  for (const section of ["## Tooling", "## Execution Bias", "## Minecraft Operations", "## Safety", "## Runtime Context"]) {
+    assert.match(prompt, new RegExp(section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(prompt, /命令已提交、任务正在运行都不等于完成/);
+  assert.match(prompt, /多阶段方案、系统性诊断、风险比较或验收标准，必须调用 delegateAnalysis/);
+  assert.match(prompt, /实时数据优先于分析委派/);
+  assert.match(prompt, /不得再次询问操作哪个实例/);
+  assert.match(prompt, /<current_instance>.*mcs:daemon:instance.*<\/current_instance>/);
+  assert.match(prompt, /<session_instructions>回答使用简体中文。<\/session_instructions>/);
+  assert.doesNotMatch(prompt, /preferredTool=file\.download/);
 });
 
 test("a plain response stays direct", () => {

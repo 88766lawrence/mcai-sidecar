@@ -13,5 +13,9 @@
 - 缺少关键范围时只提出一个澄清问题。
 - 需要实时数据或变更时调用 `requestOperation`，只提交受控运维目标。
 
+系统提示词采用受 OpenClaw 启发的分层结构：稳定的身份、工具、执行与安全规则位于前部，
+当前实例、可用操作和会话偏好位于动态尾部。MCAI 没有直接复制 OpenClaw 的通用个人助理提示词，
+而是保留其执行闭环与工具纪律，并改写为 Minecraft 运维、Cloud 风险策略和 Sidecar 本地校验契约。
+
 模型网关不执行 Minecraft 工具，也不能访问 MCSManager API Key。实际工具计划仍由
 MCAI Cloud 的确定性策略、风险确认和 Agent 本地校验控制。
