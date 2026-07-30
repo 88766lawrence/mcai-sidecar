@@ -83,3 +83,47 @@ func TestUpdateStartConfigSendsOnlyStartFields(t *testing.T) {
 		t.Fatalf("config update must remain scoped, got %#v", received)
 	}
 }
+
+func TestStopUsesProtectedStopEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/protected_instance/stop" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		if request.URL.Query().Get("daemonId") != "daemon" || request.URL.Query().Get("uuid") != "instance" {
+			t.Fatalf("unexpected instance query: %s", request.URL.RawQuery)
+		}
+		if request.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+			t.Fatal("missing MCSManager requested-with header")
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Stop(context.Background(), "mcs:daemon:instance"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProfileRevisionIgnoresRuntimeState(t *testing.T) {
+	detail := instanceDetail{InstanceUUID: "instance", Status: 0}
+	detail.Config.Nickname = "Paper"
+	detail.Config.StartCommand = "java -jar server.jar nogui"
+	detail.Config.Type = "universal"
+	detail.Info.Version = "1.21.1"
+
+	stopped := profile("daemon", detail)
+	detail.Status = 3
+	running := profile("daemon", detail)
+
+	if stopped.ProfileRevision != running.ProfileRevision {
+		t.Fatalf("runtime state changed profile revision: %s != %s", stopped.ProfileRevision, running.ProfileRevision)
+	}
+	if stopped.State != "stopped" || running.State != "running" {
+		t.Fatalf("unexpected state mapping: stopped=%s running=%s", stopped.State, running.State)
+	}
+}

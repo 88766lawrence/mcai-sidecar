@@ -36,4 +36,17 @@ describe("draftPlan", () => {
       args: { platform: "paper", minecraft_version: "1.21.1", accept_eula: true },
     });
   });
+
+  it("requires confirmation before stopping an instance", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "Stop the server");
+
+    expect(plan.steps).toEqual([{
+      id: "s1",
+      tool: "instance.stop",
+      args: { timeout_seconds: 120 },
+      risk: "high",
+      requires_confirmation: true,
+    }]);
+    expect(plan.acceptance).toEqual([{ type: "instance_state", expected: "stopped" }]);
+  });
 });

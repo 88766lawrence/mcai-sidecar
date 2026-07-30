@@ -316,6 +316,12 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		}
 		emit("", "instance", "Start request accepted by the panel")
 		return nil
+	case "instance.stop":
+		if err := p.Stop(ctx, plan.InstanceRef); err != nil {
+			return err
+		}
+		emit("", "instance", "Stop request accepted by the panel")
+		return nil
 	case "instance.restart":
 		if err := p.Restart(ctx, plan.InstanceRef); err != nil {
 			return err

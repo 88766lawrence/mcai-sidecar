@@ -20,6 +20,7 @@ type installProvider struct {
 	downloaded string
 	configured provider.StartConfig
 	started    bool
+	stopped    bool
 	files      map[string][]byte
 }
 
@@ -53,6 +54,11 @@ func (p *installProvider) WriteFile(_ context.Context, _ string, path string, co
 }
 func (p *installProvider) Start(context.Context, string) error {
 	p.started = true
+	return nil
+}
+func (p *installProvider) Stop(context.Context, string) error {
+	p.stopped = true
+	p.instance.State = "stopped"
 	return nil
 }
 func (p *installProvider) Restart(context.Context, string) error { return nil }
@@ -114,5 +120,16 @@ func TestInstallServerRequiresStoppedInstance(t *testing.T) {
 	}}, func(_, _, _ string) {})
 	if err == nil {
 		t.Fatal("expected a running instance to be rejected")
+	}
+}
+
+func TestExecuteStepStopsInstance(t *testing.T) {
+	p := &installProvider{instance: provider.Instance{State: "running"}}
+	executor := NewWithReleaseResolver(t.TempDir(), nil, nil)
+	if err := executor.executeStep(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{Tool: "instance.stop"}, func(_, _, _ string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !p.stopped || p.instance.State != "stopped" {
+		t.Fatalf("expected a normal stop request, got %#v", p)
 	}
 }

@@ -202,6 +202,15 @@ func (c *Client) Start(ctx context.Context, ref string) error {
 	return c.call(ctx, http.MethodGet, "/api/protected_instance/open", url.Values{"daemonId": {daemonID}, "uuid": {uuid}}, nil, &response)
 }
 
+func (c *Client) Stop(ctx context.Context, ref string) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	var response apiResponse[map[string]any]
+	return c.call(ctx, http.MethodGet, "/api/protected_instance/stop", url.Values{"daemonId": {daemonID}, "uuid": {uuid}}, nil, &response)
+}
+
 func (c *Client) call(ctx context.Context, method, endpoint string, query url.Values, body any, output any) error {
 	u := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 	query.Set("apikey", c.apiKey)
@@ -249,7 +258,18 @@ func (c *Client) call(ctx context.Context, method, endpoint string, query url.Va
 }
 
 func profile(daemonID string, detail instanceDetail) provider.Instance {
-	raw, _ := json.Marshal(detail)
+	// Process state changes as part of a normal start/stop operation. It must
+	// not invalidate a plan that was approved against the same instance config.
+	revision := struct {
+		InstanceUUID string `json:"instanceUuid"`
+		Config       any    `json:"config"`
+		Info         any    `json:"info"`
+	}{
+		InstanceUUID: detail.InstanceUUID,
+		Config:       detail.Config,
+		Info:         detail.Info,
+	}
+	raw, _ := json.Marshal(revision)
 	hash := sha256.Sum256(raw)
 	loader := inferLoader(detail.Config.Type + " " + detail.Config.StartCommand)
 	return provider.Instance{

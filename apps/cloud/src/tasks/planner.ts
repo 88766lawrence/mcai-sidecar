@@ -5,6 +5,15 @@ import { TASK_PLAN_SCHEMA_VERSION } from "@mcai/contracts";
 export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string): TaskPlan {
   const id = `task_${randomUUID()}`;
   const normalized = intent.toLowerCase();
+  if (/\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/.test(normalized)) {
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1",
+      tool: "instance.stop",
+      args: { timeout_seconds: 120 },
+      risk: "high",
+      requires_confirmation: true,
+    }], [{ type: "instance_state", expected: "stopped" }]);
+  }
   const install = parseServerInstallIntent(normalized);
   if (install) {
     return plan(id, instanceRef, inventoryRevision, intent, [{

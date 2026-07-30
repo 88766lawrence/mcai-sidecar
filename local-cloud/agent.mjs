@@ -10,6 +10,7 @@ const supportedOperations = [
   "plugin.resolve",
   "plugin.install",
   "instance.start",
+  "instance.stop",
   "instance.restart",
 ];
 
@@ -53,6 +54,7 @@ function existingInstanceStartContract() {
   return [
     "启动当前已有实例只需要实例引用和 Provider 可用，不需要平台、Minecraft 版本或加载器。",
     "当前实例 stopped 时，用户说启动、开机或开启，必须调用 requestOperation，preferredTool=instance.start。",
+    "For an explicit stop or shutdown request, call requestOperation with preferredTool=instance.stop. This is a confirmed operation.",
     "不得为启动已有实例追问 platform、minecraftVersion、loader 或 loaderVersion。",
     "当前实例 running 时直接说明已经运行；starting 时直接说明正在启动。",
   ].join("\n");
@@ -61,6 +63,7 @@ function existingInstanceStartContract() {
 function baseInstructions(payload) {
   return [
     "For any Paper or Fabric install request that includes a Minecraft version, call requestOperation with preferredTool=server.install and preserve the requested platform and version in intent. Do not use the legacy direct-download operation.",
+    "For an explicit stop or shutdown request, call requestOperation with preferredTool=instance.stop.",
     "Minecraft EULA consent is never implicit. If and only if the user explicitly says they agree to or accept the Minecraft EULA, preserve that exact consent in requestOperation.intent so Cloud can authorize the controlled eula.txt write.",
     "你是 MCAI Sidecar 的 Minecraft 运维 Agent。",
     "使用简洁中文，先回答结论。简单知识、解释和寒暄直接回答，不调用工具。",

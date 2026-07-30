@@ -31,6 +31,7 @@ type Provider interface {
 	ReadFile(context.Context, string, string) ([]byte, error)
 	WriteFile(context.Context, string, string, []byte) error
 	Start(context.Context, string) error
+	Stop(context.Context, string) error
 	Restart(context.Context, string) error
 	GetInstance(context.Context, string) (Instance, error)
 }
