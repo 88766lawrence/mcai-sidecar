@@ -25,9 +25,12 @@ type Executor struct {
 	dataDir         string
 	audit           *audit.Writer
 	releaseResolver releaseResolver
+	maxAttempts     int
+	retryDelay      func(int) time.Duration
 }
 
 const paper1211URL = "https://fill-data.papermc.io/v1/objects/39bd8c00b9e18de91dcabd3cc3dcfa5328685a53b7187a2f63280c22e2d287b9/paper-1.21.1-133.jar"
+const defaultMaxAttempts = 4
 
 func New(dataDir string, auditWriter *audit.Writer) *Executor {
 	return NewWithReleaseResolver(dataDir, auditWriter, newOfficialReleaseResolver())
@@ -37,7 +40,16 @@ func NewWithReleaseResolver(dataDir string, auditWriter *audit.Writer, resolver 
 	if resolver == nil {
 		resolver = newOfficialReleaseResolver()
 	}
-	return &Executor{providers: make(map[string]provider.Provider), dataDir: dataDir, audit: auditWriter, releaseResolver: resolver}
+	return &Executor{
+		providers:       make(map[string]provider.Provider),
+		dataDir:         dataDir,
+		audit:           auditWriter,
+		releaseResolver: resolver,
+		maxAttempts:     defaultMaxAttempts,
+		retryDelay: func(attempt int) time.Duration {
+			return time.Duration(1<<min(attempt-1, 3)) * time.Second
+		},
+	}
 }
 
 func (e *Executor) Register(prefix string, p provider.Provider) { e.providers[prefix] = p }
@@ -49,9 +61,8 @@ func (e *Executor) Execute(ctx context.Context, plan protocol.TaskPlan, emit Eve
 		emit("FAILED", "policy", err.Error())
 		return
 	}
-	current, err := p.GetInstance(ctx, plan.InstanceRef)
+	current, err := e.refreshInstance(ctx, p, plan, emit)
 	if err != nil {
-		emit("", "diagnosis", classifyFailure(err.Error(), "", "unknown"))
 		emit("FAILED", "inventory", "Could not refresh instance revision: "+err.Error())
 		return
 	}
@@ -67,21 +78,148 @@ func (e *Executor) Execute(ctx context.Context, plan protocol.TaskPlan, emit Eve
 	}
 	emit("EXECUTING", "state", "Execution started after local policy checks")
 	for _, step := range plan.Steps {
-		if err := e.executeStep(ctx, p, plan, step, emit); err != nil {
+		if err := e.executeStepWithRecovery(ctx, p, plan, step, emit); err != nil {
 			e.audit.Append("tool.execution.failed", plan.TaskID, err.Error(), map[string]any{"tool": step.Tool})
-			emit("", "diagnosis", e.diagnoseFailure(ctx, p, plan.InstanceRef, err))
 			emit("FAILED", "tool", fmt.Sprintf("%s failed: %v", step.Tool, err))
 			return
 		}
 	}
 	emit("VERIFYING", "state", "All steps committed; checking acceptance signals")
-	if err := e.verify(ctx, p, plan); err != nil {
-		emit("", "diagnosis", e.diagnoseFailure(ctx, p, plan.InstanceRef, err))
-		emit("FAILED", "verification", err.Error())
-		return
+	for attempt := 1; ; attempt++ {
+		if err := e.verify(ctx, p, plan); err != nil {
+			diagnosis := e.diagnoseFailure(ctx, p, plan.InstanceRef, err)
+			emit("", "diagnosis", diagnosis)
+			lastStep, canRecover := finalAutonomousStep(plan.Steps)
+			if !canRecover || attempt >= e.maxAttempts || ctx.Err() != nil || !isRetriableFailure(err.Error(), diagnosis) {
+				emit("FAILED", "verification", err.Error())
+				return
+			}
+			recoveryStep := verificationRecoveryStep(lastStep)
+			emit("", "recovery", fmt.Sprintf("验收返回暂时性失败；正在重新调用 %s 并再次验收（第 %d/%d 次）", recoveryStep.Tool, attempt+1, e.maxAttempts))
+			if err := e.waitBeforeRetry(ctx, attempt); err != nil {
+				emit("FAILED", "verification", err.Error())
+				return
+			}
+			if err := e.executeStepWithRecovery(ctx, p, plan, recoveryStep, emit); err != nil {
+				e.audit.Append("tool.recovery.failed", plan.TaskID, err.Error(), map[string]any{"tool": recoveryStep.Tool})
+				emit("FAILED", "tool", fmt.Sprintf("%s recovery failed: %v", recoveryStep.Tool, err))
+				return
+			}
+			continue
+		}
+		break
 	}
 	e.audit.Append("tool.execution.verified", plan.TaskID, "All deterministic acceptance checks passed", nil)
 	emit("SUCCEEDED", "verification", "All deterministic acceptance checks passed")
+}
+
+func (e *Executor) refreshInstance(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, emit EventSink) (provider.Instance, error) {
+	var lastErr error
+	for attempt := 1; attempt <= e.maxAttempts; attempt++ {
+		current, err := p.GetInstance(ctx, plan.InstanceRef)
+		if err == nil {
+			return current, nil
+		}
+		lastErr = err
+		diagnosis := classifyFailure(err.Error(), "", "unknown")
+		emit("", "diagnosis", diagnosis)
+		if attempt >= e.maxAttempts || ctx.Err() != nil || !isRetriableFailure(err.Error(), diagnosis) {
+			break
+		}
+		emit("", "recovery", fmt.Sprintf("实例清单读取出现暂时性错误，正在自动重试（第 %d/%d 次）", attempt+1, e.maxAttempts))
+		if waitErr := e.waitBeforeRetry(ctx, attempt); waitErr != nil {
+			return provider.Instance{}, waitErr
+		}
+	}
+	return provider.Instance{}, lastErr
+}
+
+func (e *Executor) executeStepWithRecovery(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
+	for attempt := 1; attempt <= e.maxAttempts; attempt++ {
+		err := e.executeStep(ctx, p, plan, step, emit)
+		if err == nil {
+			return nil
+		}
+		diagnosis := e.diagnoseFailure(ctx, p, plan.InstanceRef, err)
+		emit("", "diagnosis", diagnosis)
+		if !autonomousRetrySafe(step) || attempt >= e.maxAttempts || ctx.Err() != nil || !isRetriableFailure(err.Error(), diagnosis) {
+			return err
+		}
+		emit("", "recovery", fmt.Sprintf("%s 返回暂时性错误，正在自动重试（第 %d/%d 次）", step.Tool, attempt+1, e.maxAttempts))
+		if waitErr := e.waitBeforeRetry(ctx, attempt); waitErr != nil {
+			return waitErr
+		}
+	}
+	return errors.New("automatic recovery exhausted without a result")
+}
+
+func (e *Executor) waitBeforeRetry(ctx context.Context, attempt int) error {
+	delay := e.retryDelay(attempt)
+	if delay <= 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func autonomousRetrySafe(step protocol.TaskStep) bool {
+	return !step.RequiresConfirmation && (step.Risk == "read" || step.Risk == "low")
+}
+
+func finalAutonomousStep(steps []protocol.TaskStep) (protocol.TaskStep, bool) {
+	if len(steps) == 0 {
+		return protocol.TaskStep{}, false
+	}
+	last := steps[len(steps)-1]
+	return last, autonomousRetrySafe(last)
+}
+
+func verificationRecoveryStep(step protocol.TaskStep) protocol.TaskStep {
+	if step.Tool == "server.install" {
+		return protocol.TaskStep{
+			ID:   step.ID + "-start-recovery",
+			Tool: "instance.start",
+			Args: map[string]any{"timeout_seconds": 120},
+			Risk: "low",
+		}
+	}
+	return step
+}
+
+func isRetriableFailure(cause, diagnosis string) bool {
+	combined := strings.ToLower(cause + "\n" + diagnosis)
+	terminalSignals := []string{
+		"eula", "address already in use", "failed to bind", "unsupportedclassversion",
+		"outofmemory", "permission denied", "accessdenied", "invalid or corrupt jar",
+		"not registered", "not enabled", "unsupported server platform", "requires a stopped instance",
+		"inventory revision", "audit write", "forbidden", "端口", "内存", "权限", "依赖",
+	}
+	for _, signal := range terminalSignals {
+		if strings.Contains(combined, signal) {
+			return false
+		}
+	}
+	transientSignals := []string{
+		"timeout", "timed out", "temporar", "try again", "connection reset", "connection refused",
+		"unexpected eof", "i/o timeout", "network is unreachable", "http 429", "http 500", "http 502",
+		"http 503", "http 504", "service unavailable", "did not reach", "did not produce",
+		"stopped before reaching", "could not refresh", "start request",
+	}
+	for _, signal := range transientSignals {
+		if strings.Contains(combined, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Executor) diagnoseFailure(ctx context.Context, p provider.Provider, instanceRef string, cause error) string {
