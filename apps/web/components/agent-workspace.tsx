@@ -295,10 +295,26 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
 
 function MessageBubble({ message, task, instanceName, onReview }: { message: ConversationMessage; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
   if (message.role === "user") return <article className="chat-message user"><span className="user-avatar"><UserRound size={15} /></span><div><small>你</small><p>{message.content}</p></div></article>;
+  const isTaskRequest = message.task_phase === "request";
+  if (isTaskRequest) {
+    return <article className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
+  }
+  return <article className="chat-message assistant"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><RichText content={message.content} /></div></article>;
+}
+
+function TaskActivity({ content, task, instanceName, onReview }: { content: string; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
   const diagnosis = task ? [...task.evidence].reverse().find((item) => item.kind === "diagnosis") : undefined;
   const recovery = task ? [...task.evidence].reverse().find((item) => item.kind === "decision") : undefined;
   const toolResult = task ? [...task.evidence].reverse().find((item) => ["files", "logs", "config", "instance", "download"].includes(item.kind)) : undefined;
-  return <article className="chat-message assistant"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><RichText content={message.content} />{task && message.task_phase !== "completion" && <div className={`tool-call-card ${task.state === "FAILED" ? "failed" : ""}`}>
+  return <details className={`task-activity ${task?.state === "FAILED" ? "failed" : ""}`}>
+    <summary>
+      <span className="task-activity-title"><Wrench size={14} />操作详情</span>
+      <strong>{task ? taskActivityLabel(task.state) : "已准备"}</strong>
+      <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
+    </summary>
+    <div className="task-activity-content">
+      {content.trim() && <section className="task-activity-copy"><span>计划说明</span><RichText content={content} /></section>}
+      {task && <div className={`tool-call-card ${task.state === "FAILED" ? "failed" : ""}`}>
     <div className="tool-call-head"><span><Wrench size={13} />调用工具</span><strong>{stateLabel(task.state)}</strong></div>
     <div className="tool-call-list">
       {task.plan.steps.map((step) => <div className="tool-receipt" key={step.id}>
@@ -314,7 +330,9 @@ function MessageBubble({ message, task, instanceName, onReview }: { message: Con
       <div><strong>建议处理</strong><p>{recovery?.summary ?? "诊断证据已保存；请修复原因后再重试任务。"}</p></div>
     </div>}
     {task.state === "WAITING_CONFIRMATION" && <button onClick={() => onReview(task)}>确认执行</button>}
-  </div>}</div></article>;
+      </div>}
+    </div>
+  </details>;
 }
 
 function RichText({ content }: { content: string }) {
@@ -335,9 +353,15 @@ function inlineText(value: string): ReactNode[] {
 }
 
 function terminal(state: string) { return ["SUCCEEDED", "FAILED", "ROLLED_BACK", "REJECTED", "CANCELLED", "EXPIRED", "MANUAL_INTERVENTION"].includes(state); }
+function taskActivityLabel(state: string) {
+  if (state === "WAITING_CONFIRMATION") return "待确认";
+  if (state === "SUCCEEDED") return "已完成";
+  if (terminal(state)) return "未完成";
+  return "处理中";
+}
 function riskLabel(risk: string) { return ({ read: "只读", low: "低风险", medium: "中风险", high: "高风险", forbidden: "禁止" } as Record<string, string>)[risk] ?? risk; }
 function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
-function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "config.patch": "修改服务器配置", "plugin.resolve": "解析插件兼容性", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
+function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "server.install": "安装 Minecraft 服务端", "config.patch": "修改服务器配置", "plugin.resolve": "解析插件兼容性", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
 function instanceMeta(instance: ServerProfile) {
   const values = [instance.loader, instance.minecraft_version]
     .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));
