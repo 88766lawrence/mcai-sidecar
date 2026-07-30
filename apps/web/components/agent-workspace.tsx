@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AlertTriangle, Bot, ChevronDown, ClipboardCheck,
+  AlertTriangle, Bot, CheckCircle2, ChevronDown, CircleAlert, ClipboardCheck,
   Cloud, FileClock, LoaderCircle, LogOut, Menu, MessageSquare,
   Plus, RefreshCw, RotateCcw, Send, Server, Settings2, ShieldCheck, Sparkles,
   Trash2, UserRound, Wrench, X,
@@ -342,7 +342,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     </aside>}
 
     {promptOpen && activeSession && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPromptOpen(false); }}><div className="modal prompt-modal" role="dialog" aria-modal="true">
-      <div className="modal-head"><div><span className="eyebrow">SESSION INSTRUCTIONS</span><h2>系统提示词</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)}><X size={18} /></button></div>
+      <div className="modal-head"><div><span className="eyebrow">SESSION INSTRUCTIONS</span><h2>系统提示词</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="关闭系统提示词设置"><X size={18} /></button></div>
       <p>只影响当前会话的语气、目标和工作偏好，不能覆盖安全策略与确认规则。</p>
       <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} rows={10} maxLength={4000} />
       <div className="prompt-meta"><span>{promptDraft.length}/4000</span><span><ShieldCheck size={13} />安全规则始终优先</span></div>
@@ -350,7 +350,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     </div></div>}
 
     {reviewTask && current && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewTask(null); }}><div className="modal" role="dialog" aria-modal="true">
-      <div className="modal-head"><div><span className={`risk ${reviewTask.risk}`}>{riskLabel(reviewTask.risk)}</span><h2>确认执行计划</h2></div><button className="icon-button" onClick={() => setReviewTask(null)}><X size={18} /></button></div>
+      <div className="modal-head"><div><span className={`risk ${reviewTask.risk}`}>{riskLabel(reviewTask.risk)}</span><h2>确认执行计划</h2></div><button className="icon-button" onClick={() => setReviewTask(null)} aria-label="关闭执行确认"><X size={18} /></button></div>
       <div className="scope-line"><Server size={16} /><span>{current.name}</span><span>{current.loader} {current.minecraft_version}</span></div>
       <p className="intent-review">{reviewTask.intent}</p>
       <div className="review-steps">{reviewTask.plan.steps.map((step, index) => <div key={step.id}><span>{index + 1}</span><div><strong>{toolLabel(step.tool)}</strong><code>{JSON.stringify(step.args)}</code></div></div>)}</div>
@@ -367,39 +367,61 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
   if (isTaskRequest) {
     return <article className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
-  return <article className={`chat-message assistant ${streaming ? "streaming" : ""}`} aria-busy={streaming || undefined}><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><RichText content={message.content} /></div></article>;
+  const completedTask = task && terminal(task.state);
+  const failedTask = completedTask && task.state !== "SUCCEEDED";
+  return <article className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
+    <span className="bot-avatar"><Bot size={16} /></span>
+    <div>
+      <div className="message-meta"><strong>MCAI</strong>{streaming && <span>正在回答</span>}</div>
+      {completedTask ? <section className={`answer-result ${failedTask ? "failed" : "success"}`}>
+        <header>
+          <span className="answer-result-icon">{failedTask ? <CircleAlert size={17} /> : <CheckCircle2 size={17} />}</span>
+          <div><strong>{failedTask ? "任务未完成" : "任务已完成"}</strong><small>{task.plan.steps.map((step) => toolLabel(step.tool)).join("、")}</small></div>
+          <time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>
+        </header>
+        <RichText content={message.content} />
+        <TaskOutcome task={task} />
+      </section> : <RichText content={message.content} />}
+    </div>
+  </article>;
 }
 
 function TaskActivity({ content, task, instanceName, onReview }: { content: string; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
   const diagnosis = task ? [...task.evidence].reverse().find((item) => item.kind === "diagnosis") : undefined;
   const recovery = task ? [...task.evidence].reverse().find((item) => item.kind === "decision") : undefined;
-  const toolResult = task ? [...task.evidence].reverse().find((item) => ["files", "logs", "config", "instance", "download"].includes(item.kind)) : undefined;
-  return <details className={`task-activity ${task?.state === "FAILED" ? "failed" : ""}`}>
+  const toolNames = task?.plan.steps.map((step) => toolLabel(step.tool)).join("、") ?? "准备工具";
+  const failedTask = Boolean(task && terminal(task.state) && task.state !== "SUCCEEDED");
+  return <details className={`task-activity ${failedTask ? "failed" : ""}`}>
     <summary>
-      <span className="task-activity-title"><Wrench size={14} />操作详情</span>
+      <span className="task-activity-title"><Wrench size={14} /><span><strong>{toolNames}</strong><small>{task ? `${task.plan.steps.length} 个工具调用` : "等待任务创建"}</small></span></span>
       <strong>{task ? taskActivityLabel(task.state) : "已准备"}</strong>
       <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
     </summary>
     <div className="task-activity-content">
-      {content.trim() && <section className="task-activity-copy"><span>计划说明</span><RichText content={content} /></section>}
-      {task && <div className={`tool-call-card ${task.state === "FAILED" ? "failed" : ""}`}>
-    <div className="tool-call-head"><span><Wrench size={13} />调用工具</span><strong>{stateLabel(task.state)}</strong></div>
-    <div className="tool-call-list">
-      {task.plan.steps.map((step) => <div className="tool-receipt" key={step.id}>
-        <span>TOOL</span><code>{step.tool}</code>
-        <span>TARGET</span><strong>{instanceName ?? task.instance_ref}</strong>
-        <span>RESULT</span><strong className={task.state === "FAILED" ? "receipt-failed" : "receipt-success"}>{task.state === "FAILED" ? "failed" : terminal(task.state) ? "success" : "pending"}</strong>
-        <span>TIME</span><time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour12: false })}</time>
-      </div>)}
-    </div>
-    {toolResult && task.state === "SUCCEEDED" && <div className="tool-result-output"><span>{toolResult.kind === "files" ? "文件列表" : "执行结果"}</span><p>{toolResult.summary}</p></div>}
-    {task.state === "FAILED" && <div className="failure-analysis">
-      <div><strong>原因分析</strong><p>{diagnosis?.summary ?? "未收到可识别的诊断证据，请检查实例控制台日志。"}</p></div>
-      <div><strong>建议处理</strong><p>{recovery?.summary ?? "诊断证据已保存；请修复原因后再重试任务。"}</p></div>
-    </div>}
-    {task.state === "WAITING_CONFIRMATION" && <button onClick={() => onReview(task)}>确认执行</button>}
+      {content.trim() && <section className="task-activity-copy"><span>任务说明</span><RichText content={content} /></section>}
+      {task && <section className="process-list" aria-label="工具执行记录">
+        {task.plan.steps.map((step, index) => <div className="process-row" key={step.id}>
+          <span className="process-index">{index + 1}</span>
+          <div><strong>{toolLabel(step.tool)}</strong><code>{step.tool}</code></div>
+          <span className={`process-state ${failedTask ? "failed" : task.state === "SUCCEEDED" ? "success" : "pending"}`}>{failedTask ? "未完成" : task.state === "SUCCEEDED" ? "完成" : "等待"}</span>
+        </div>)}
+        <div className="process-target"><span>目标实例</span><strong>{instanceName ?? task.instance_ref}</strong><time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour12: false })}</time></div>
+      </section>}
+      {failedTask && <div className="failure-analysis">
+        <div><strong>失败原因</strong><p>{diagnosis?.summary ?? "未收到可识别的诊断证据，请检查实例控制台日志。"}</p></div>
+        <div><strong>下一步</strong><p>{recovery?.summary ?? "诊断证据已保存；请修复原因后再重试任务。"}</p></div>
       </div>}
+      {task?.state === "WAITING_CONFIRMATION" && <button className="confirm-inline" onClick={() => onReview(task)}>检查并确认执行</button>}
     </div>
+  </details>;
+}
+
+function TaskOutcome({ task }: { task: TaskRecord }) {
+  const evidence = task.evidence.filter((item) => item.summary.trim()).slice(-3);
+  if (!evidence.length) return null;
+  return <details className="result-evidence">
+    <summary><span>查看执行记录</span><small>{evidence.length} 条证据</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <div>{evidence.map((item, index) => <p key={`${item.at}-${index}`}><span />{item.summary}<time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}</div>
   </details>;
 }
 
