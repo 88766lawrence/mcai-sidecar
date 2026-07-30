@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)]
+  [Alias("Host")]
   [ValidateNotNullOrEmpty()]
-  [string]$Host,
+  [string]$RemoteHost,
 
   [Parameter(Mandatory)]
   [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
@@ -45,7 +46,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the deployment archive." }
 
     $remoteArchive = "/tmp/mcai-$commit.tar.gz"
-    & scp -i $KeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes $archive "root@$Host`:$remoteArchive"
+    & scp -i $KeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes $archive "root@$RemoteHost`:$remoteArchive"
     if ($LASTEXITCODE -ne 0) { throw "Could not upload the deployment archive." }
 
     $remoteCommand = @"
@@ -70,7 +71,7 @@ systemctl restart mcai-agent mcai-cloud mcai-web mcai-model-cloud
 systemctl is-active mcai-agent mcai-cloud mcai-web mcai-model-cloud
 curl --fail --silent http://127.0.0.1:3000/ >/dev/null
 "@
-    & ssh -i $KeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$Host" "bash -lc '$remoteCommand'"
+    & ssh -i $KeyPath -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$RemoteHost" "bash -lc '$remoteCommand'"
     if ($LASTEXITCODE -ne 0) { throw "Remote verification or deployment failed." }
   } finally {
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
