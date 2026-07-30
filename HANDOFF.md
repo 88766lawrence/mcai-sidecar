@@ -122,3 +122,60 @@ There are 0 of a max of 20 players online:
 - 不要在文档、日志、提交或聊天中写入模型 API Key、MCSManager API Key、管理员密码或 SSH 私钥内容。
 - 不开放任意 Shell，不允许模型生成或执行 SSH 命令。
 - 不绕过任务风险确认、Minecraft EULA 确认和实例生命周期专用工具。
+
+## 2026-07-30 22:33 控制台真实回读修复
+
+### 故障复现
+
+部署前通过公网 HTTPS 对话 API 对运行中的实例“测试”执行了四条自然语言指令：
+
+1. `帮我看看现在有多少玩家在线`
+2. `查看服务器 TPS`
+3. `查看服务端版本`
+4. `列出已安装插件`
+
+四条请求均正确路由为 `tool`，工具均为 `console.command`，但 Agent 只上报“控制台已接受命令，但等待窗口内没有新的控制台输出”，任务仍错误地进入 `SUCCEEDED`。普通问题 `1+1等于几？只回答数字。` 能直接返回 `2`，因此问题明确位于 Agent 到 MCSManager 的控制台回读边界，不在登录、会话、模型或 Cloud 路由。
+
+### 根因与实现
+
+- `apps/agent/internal/executor/executor.go` 原先只轮询 MCSManager `/api/protected_instance/outputlog`。该接口在当前 MCSManager 实例上不会及时返回命令后的新增行，但 Minecraft 会正常把结果写入实例根目录的 `logs/latest.log`。
+- 发送命令前现在同时读取面板输出和 `logs/latest.log` 作为两份基线，发送后轮询两种来源；任一来源产生合法增量即可作为 `kind=console` 的真实证据。
+- 两种来源都不可读时，命令不会在无法验证的情况下继续执行。
+- 等待窗口结束仍没有合法增量时，步骤返回错误，不再用“已接受命令”冒充成功证据。
+- 对 `list`、`tps`、`version`、`plugins/pl` 和 `mspt` 增加了结果完整性判断。特别是 Paper 的 `version` 会先输出 `Checking version, please wait...`，该中间状态不再提前结束任务；Agent 会等待 `This server is running Paper version ...` 等最终版本行。
+- `apps/agent/internal/executor/install_test.go` 新增 `logs/latest.log` 回退、无证据失败和版本中间状态等待测试。
+
+### 部署与回滚
+
+- Linux 源码目录：`/opt/mcai-src`
+- Agent 二进制：`/opt/mcai-agent`
+- 本轮仅重新构建并重启 `mcai-agent.service`，没有重启 Minecraft 实例、Cloud、Web 或模型云。
+- 部署前源码与二进制备份：`/tmp/mcai-console-log-backup-20260730223301`
+- 部署脚本：`.deploy/deploy-console-log-fallback.sh`
+- 四项验收脚本：`.deploy/verify-console-control.mjs`
+
+### 真实验收结果
+
+目标实例：`mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`
+
+- 在线玩家：`There are 0 of a max of 20 players online:`；最终回答为当前在线 `0 / 20`。
+- TPS：`TPS from last 1m, 5m, 15m: 20.0, 20.0, 19.57`；最终回答引用三项 TPS 数值。
+- 版本：`This server is running Paper version 1.21.1-133-ver/1.21.1...`；最终回答给出 Paper、Minecraft 和 API 版本。
+- 插件：`Server Plugins (0):`；最终回答说明当前插件数为 0。
+
+四条任务的共同验收结果均为：
+
+- `route=tool`
+- `tool=console.command`
+- `state=SUCCEEDED`
+- `kind=console` 证据包含真实 Minecraft 日志行
+- 最终回答引用控制台结果，不再停留在“命令已提交”或“没有新增输出”
+
+### 验证状态
+
+- Windows 本地 `go test ./...`：通过。
+- Linux `go test ./...`：通过。
+- Linux Agent 构建与 `mcai-agent.service` 重启：通过，服务为 `active`。
+- Linux 四项真实自然语言对话验收：全部通过。
+- `node --check .deploy/verify-console-control.mjs`：通过。
+- `git diff --check`：通过。

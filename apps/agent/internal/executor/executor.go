@@ -326,6 +326,10 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 			return fmt.Errorf("console commands require a running instance; current state is %s", instance.State)
 		}
 		baseline, baselineErr := p.ReadOutput(ctx, plan.InstanceRef, 256)
+		logBaseline, logBaselineErr := p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+		if baselineErr != nil && logBaselineErr != nil {
+			return fmt.Errorf("console output is unavailable: panel output: %v; latest log: %v", baselineErr, logBaselineErr)
+		}
 		if err := p.SendCommand(ctx, plan.InstanceRef, command); err != nil {
 			return err
 		}
@@ -337,14 +341,20 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 				"risk":           requiredRisk,
 			})
 		}
-		if baselineErr == nil {
-			if output := e.waitForConsoleOutput(ctx, p, plan.InstanceRef, baseline); output != "" {
-				emit("", "console", "控制台返回：\n"+sanitizeConsoleOutput(output))
-				return nil
-			}
+		if output := e.waitForConsoleOutput(
+			ctx,
+			p,
+			plan.InstanceRef,
+			strings.ToLower(strings.TrimPrefix(verb, "minecraft:")),
+			baseline,
+			string(logBaseline),
+			baselineErr == nil,
+			logBaselineErr == nil,
+		); output != "" {
+			emit("", "console", "控制台返回：\n"+sanitizeConsoleOutput(output))
+			return nil
 		}
-		emit("", "console", fmt.Sprintf("控制台已接受 /%s 命令，但在等待窗口内没有新的控制台输出（sha256:%s）", verb, hex.EncodeToString(sum[:8])))
-		return nil
+		return fmt.Errorf("console command /%s did not produce readable output within the verification window (sha256:%s)", verb, hex.EncodeToString(sum[:8]))
 	case "instance.start":
 		if err := p.Start(ctx, plan.InstanceRef); err != nil {
 			return err
@@ -675,15 +685,35 @@ func consoleRiskRank(risk string) int {
 	}
 }
 
-func (e *Executor) waitForConsoleOutput(ctx context.Context, p provider.Provider, instanceRef, baseline string) string {
-	for attempt := 0; attempt < 12; attempt++ {
-		output, err := p.ReadOutput(ctx, instanceRef, 256)
-		if err == nil {
-			if delta := consoleOutputDelta(baseline, output); delta != "" {
-				return delta
+func (e *Executor) waitForConsoleOutput(
+	ctx context.Context,
+	p provider.Provider,
+	instanceRef, verb, outputBaseline, logBaseline string,
+	usePanelOutput, useLatestLog bool,
+) string {
+	const attempts = 24
+	for attempt := 0; attempt < attempts; attempt++ {
+		if usePanelOutput {
+			output, err := p.ReadOutput(ctx, instanceRef, 256)
+			if err == nil {
+				if delta := consoleOutputDelta(outputBaseline, output); delta != "" {
+					if consoleEvidenceComplete(verb, delta) {
+						return delta
+					}
+				}
 			}
 		}
-		if attempt == 11 {
+		if useLatestLog {
+			output, err := p.ReadFile(ctx, instanceRef, "logs/latest.log")
+			if err == nil {
+				if delta := consoleOutputDelta(logBaseline, string(output)); delta != "" {
+					if consoleEvidenceComplete(verb, delta) {
+						return delta
+					}
+				}
+			}
+		}
+		if attempt == attempts-1 {
 			break
 		}
 		timer := time.NewTimer(e.consolePollDelay)
@@ -695,6 +725,27 @@ func (e *Executor) waitForConsoleOutput(ctx context.Context, p provider.Provider
 		}
 	}
 	return ""
+}
+
+func consoleEvidenceComplete(verb, output string) bool {
+	lower := strings.ToLower(output)
+	switch verb {
+	case "list":
+		return strings.Contains(lower, "there are") && strings.Contains(lower, "players online")
+	case "tps":
+		return strings.Contains(lower, "tps") && !strings.Contains(lower, "please wait")
+	case "version":
+		return strings.Contains(lower, "this server is running") ||
+			strings.Contains(lower, "server version") ||
+			strings.Contains(lower, "paper version") ||
+			strings.Contains(lower, "minecraft version")
+	case "plugins", "pl":
+		return strings.Contains(lower, "server plugins") || strings.Contains(lower, "plugins (")
+	case "mspt":
+		return strings.Contains(lower, "mspt")
+	default:
+		return strings.TrimSpace(output) != ""
+	}
 }
 
 func consoleOutputDelta(before, after string) string {

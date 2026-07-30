@@ -24,6 +24,8 @@ type installProvider struct {
 	commands     []string
 	outputBefore string
 	outputAfter  string
+	logBefore    string
+	logAfter     string
 	files        map[string][]byte
 }
 
@@ -51,6 +53,12 @@ func (p *installProvider) UpdateStartConfig(_ context.Context, _ string, config 
 	return nil
 }
 func (p *installProvider) ReadFile(_ context.Context, _ string, path string) ([]byte, error) {
+	if path == "logs/latest.log" {
+		if len(p.commands) > 0 {
+			return []byte(p.logAfter), nil
+		}
+		return []byte(p.logBefore), nil
+	}
 	return p.files[path], nil
 }
 func (p *installProvider) WriteFile(_ context.Context, _ string, path string, contents []byte) error {
@@ -127,6 +135,63 @@ func TestConsoleCommandRejectsLifecycleAndMultilineCommands(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected %q to be rejected", command)
 		}
+	}
+}
+
+func TestConsoleCommandFallsBackToLatestLog(t *testing.T) {
+	p := &installProvider{
+		instance:     provider.Instance{State: "running"},
+		outputBefore: "unchanged panel output",
+		outputAfter:  "unchanged panel output",
+		logBefore:    "[Server thread/INFO]: previous line\n",
+		logAfter: strings.Join([]string{
+			"[Server thread/INFO]: previous line",
+			"[Server thread/INFO]: There are 0 of a max of 20 players online:",
+		}, "\n"),
+	}
+	executor := NewWithReleaseResolver("", nil, nil)
+	var consoleEvidence string
+
+	err := executor.executeStep(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{
+		Tool: "console.command", Args: map[string]any{"command": "list"}, Risk: "read",
+	}, func(_, kind, summary string) {
+		if kind == "console" {
+			consoleEvidence = summary
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(consoleEvidence, "There are 0 of a max of 20 players online") {
+		t.Fatalf("latest.log output was not returned as evidence: %q", consoleEvidence)
+	}
+}
+
+func TestConsoleCommandFailsWithoutReadableOutput(t *testing.T) {
+	p := &installProvider{
+		instance:     provider.Instance{State: "running"},
+		outputBefore: "unchanged panel output",
+		outputAfter:  "unchanged panel output",
+		logBefore:    "unchanged latest log",
+		logAfter:     "unchanged latest log",
+	}
+	executor := NewWithReleaseResolver("", nil, nil)
+	executor.consolePollDelay = 0
+
+	err := executor.executeStep(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{
+		Tool: "console.command", Args: map[string]any{"command": "list"}, Risk: "read",
+	}, func(_, _, _ string) {})
+	if err == nil || !strings.Contains(err.Error(), "did not produce readable output") {
+		t.Fatalf("expected missing console evidence to fail, got %v", err)
+	}
+}
+
+func TestConsoleEvidenceWaitsForFinalVersionLine(t *testing.T) {
+	if consoleEvidenceComplete("version", "Checking version, please wait...") {
+		t.Fatal("version progress output must not complete the command")
+	}
+	if !consoleEvidenceComplete("version", "This server is running Paper version 1.21.1-133") {
+		t.Fatal("final Paper version output must complete the command")
 	}
 }
 
