@@ -1880,6 +1880,48 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 }
 
 /* Paper Ops result and tool receipts */
+.paper-ops .agent-card {
+  display: grid;
+  min-height: 54px;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--paper-line-strong);
+  border-radius: 0;
+  color: var(--paper-ink);
+  background: transparent;
+}
+.paper-ops .agent-card:hover { background: transparent; }
+.paper-ops .agent-card > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.paper-ops .agent-card strong { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.paper-ops .agent-card small { color: var(--paper-muted); font-size: 10px; }
+.paper-ops .agent-orb {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--paper-line-strong);
+  border-radius: 0;
+  color: var(--paper-muted);
+  background: transparent;
+}
+.paper-ops .agent-orb.online {
+  border-color: var(--paper-cyan);
+  color: var(--paper-cyan);
+  background: rgba(0, 174, 202, .055);
+  box-shadow: none;
+}
+.paper-ops .agent-live {
+  padding: 3px 0;
+  border-radius: 0;
+  color: var(--paper-green);
+  background: transparent;
+  font-size: 9px;
+  letter-spacing: .08em;
+}
 .paper-ops .task-activity-title > span {
   display: flex;
   min-width: 0;
