@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { TaskPlan } from "@mcai/contracts";
+import type { RiskLevel, TaskPlan } from "@mcai/contracts";
 import { TASK_PLAN_SCHEMA_VERSION } from "@mcai/contracts";
 
 export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string): TaskPlan {
@@ -34,6 +34,17 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
   }
   if (/shell|ssh|私钥|任意命令/.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "forbidden.shell", args: {}, risk: "forbidden" }], []);
+  }
+  const consoleCommand = extractConsoleCommand(intent);
+  if (consoleCommand) {
+    const risk = consoleCommandRisk(consoleCommand);
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1",
+      tool: "console.command",
+      args: { command: consoleCommand },
+      risk,
+      ...(risk === "medium" || risk === "high" ? { requires_confirmation: true } : {}),
+    }], []);
   }
   if (/(下载|download).*(paper|1\.21\.1|server\.jar)|(paper|1\.21\.1|server\.jar).*(下载|download)/.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
@@ -109,6 +120,29 @@ function acceptsMinecraftEula(intent: string) {
   const consentMatch = intent.match(consent);
   const eulaMatch = intent.match(eula);
   return Boolean(consentMatch && eulaMatch && Math.abs((consentMatch.index ?? 0) - (eulaMatch.index ?? 0)) <= 80);
+}
+
+function extractConsoleCommand(intent: string) {
+  const patterns = [
+    /(?:控制台|console)[^\r\n:：]{0,12}?(?:执行|输入|发送|运行|command|cmd)\s*[:：]?\s*(.+)$/i,
+    /(?:执行|输入|发送|运行)\s*(?:到|至|在)?\s*(?:服务器|minecraft|mc)?\s*(?:控制台|console)(?:命令)?\s*[:：]?\s*(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = intent.match(pattern);
+    if (!match) continue;
+    const command = match[1].trim().replace(/^\//, "").replace(/^`(.+)`$/, "$1");
+    if (command && command.length <= 256 && !/[\r\n]/.test(command)) return command;
+  }
+  return undefined;
+}
+
+function consoleCommandRisk(command: string): RiskLevel {
+  const rawVerb = command.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  const verb = rawVerb.replace(/^minecraft:/, "");
+  if (["list", "help", "version", "plugins", "pl", "tps", "mspt", "seed"].includes(verb)) return "read";
+  if (["say", "me"].includes(verb)) return "low";
+  if (["time", "weather", "difficulty", "gamerule", "gamemode", "give", "clear", "tp", "teleport", "effect", "enchant", "xp", "experience", "setworldspawn", "spawnpoint"].includes(verb)) return "medium";
+  return "high";
 }
 
 function plan(

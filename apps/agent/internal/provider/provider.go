@@ -30,6 +30,7 @@ type Provider interface {
 	UpdateStartConfig(context.Context, string, StartConfig) error
 	ReadFile(context.Context, string, string) ([]byte, error)
 	WriteFile(context.Context, string, string, []byte) error
+	SendCommand(context.Context, string, string) error
 	Start(context.Context, string) error
 	Stop(context.Context, string) error
 	Restart(context.Context, string) error

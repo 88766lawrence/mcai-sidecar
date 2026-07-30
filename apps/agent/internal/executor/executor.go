@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mcai/sidecar-agent/internal/audit"
 	"github.com/mcai/sidecar-agent/internal/protocol"
@@ -310,6 +311,31 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		return errors.New("direct file downloads are not enabled; use the controlled server.install operation")
 	case "config.patch":
 		return e.configPatch(ctx, p, plan, step, emit)
+	case "console.command":
+		command, requiredRisk, err := validateConsoleCommand(step)
+		if err != nil {
+			return err
+		}
+		instance, err := p.GetInstance(ctx, plan.InstanceRef)
+		if err != nil {
+			return err
+		}
+		if instance.State != "running" {
+			return fmt.Errorf("console commands require a running instance; current state is %s", instance.State)
+		}
+		if err := p.SendCommand(ctx, plan.InstanceRef, command); err != nil {
+			return err
+		}
+		sum := sha256.Sum256([]byte(command))
+		verb := strings.Fields(command)[0]
+		if e.audit != nil {
+			e.audit.Append("console.command.sent", plan.TaskID, verb, map[string]any{
+				"command_sha256": hex.EncodeToString(sum[:]),
+				"risk":           requiredRisk,
+			})
+		}
+		emit("", "console", fmt.Sprintf("控制台已接受 /%s 命令（sha256:%s）", verb, hex.EncodeToString(sum[:8])))
+		return nil
 	case "instance.start":
 		if err := p.Start(ctx, plan.InstanceRef); err != nil {
 			return err
@@ -585,3 +611,57 @@ func (e *Executor) resolve(ref string) (provider.Provider, error) {
 }
 
 func stringArg(args map[string]any, key string) string { value, _ := args[key].(string); return value }
+
+func validateConsoleCommand(step protocol.TaskStep) (string, string, error) {
+	command := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stringArg(step.Args, "command")), "/"))
+	if command == "" {
+		return "", "", errors.New("console command must not be empty")
+	}
+	if len([]byte(command)) > 256 {
+		return "", "", errors.New("console command exceeds the 256-byte limit")
+	}
+	if strings.ContainsAny(command, "\r\n") || strings.IndexFunc(command, unicode.IsControl) >= 0 {
+		return "", "", errors.New("console command must be a single printable line")
+	}
+	fields := strings.Fields(command)
+	verb := strings.ToLower(strings.TrimPrefix(fields[0], "minecraft:"))
+	if verb == "stop" || verb == "restart" || verb == "quit" || verb == "end" {
+		return "", "", errors.New("server lifecycle commands must use the dedicated instance tool")
+	}
+	requiredRisk := consoleCommandRisk(verb)
+	if consoleRiskRank(step.Risk) < consoleRiskRank(requiredRisk) {
+		return "", "", fmt.Errorf("console command /%s requires %s risk, got %s", verb, requiredRisk, step.Risk)
+	}
+	if consoleRiskRank(requiredRisk) >= consoleRiskRank("medium") && !step.RequiresConfirmation {
+		return "", "", fmt.Errorf("console command /%s requires explicit confirmation", verb)
+	}
+	return command, requiredRisk, nil
+}
+
+func consoleCommandRisk(verb string) string {
+	switch verb {
+	case "list", "help", "version", "plugins", "pl", "tps", "mspt", "seed":
+		return "read"
+	case "say", "me":
+		return "low"
+	case "time", "weather", "difficulty", "gamerule", "gamemode", "give", "clear", "tp", "teleport", "effect", "enchant", "xp", "experience", "setworldspawn", "spawnpoint":
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+func consoleRiskRank(risk string) int {
+	switch risk {
+	case "read":
+		return 0
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	default:
+		return -1
+	}
+}

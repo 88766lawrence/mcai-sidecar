@@ -213,7 +213,9 @@ function chatPayload(input: {
       "config.patch",
       "plugin.resolve",
       "plugin.install",
+      "console.command",
       "instance.start",
+      "instance.stop",
       "instance.restart",
     ],
   };

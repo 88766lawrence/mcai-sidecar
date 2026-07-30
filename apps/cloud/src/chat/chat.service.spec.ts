@@ -52,7 +52,7 @@ describe("ChatService", () => {
     expect(await readFile(join(directory, "conversations.json"), "utf8")).toContain("回答要简洁");
   });
 
-  it("appends one final answer after a terminal tool callback", async () => {
+  it("appends one final answer when message polls overlap after a terminal tool callback", async () => {
     const store = new CloudStore();
     store.instances.set("instance-1", {
       instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
@@ -63,17 +63,24 @@ describe("ChatService", () => {
       route: vi.fn().mockResolvedValue({ route: "tool", answer: "正在查询实例目录。", toolIntent: "列出根目录文件" }),
     } as unknown as ModelGatewayService;
     const task = { id: "task-1", state: "SUCCEEDED" };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
     const tasks = {
       create: vi.fn().mockResolvedValue(task),
       get: vi.fn().mockReturnValue(task),
-      complete: vi.fn().mockResolvedValue({ answer: "根目录包含 paper.jar。", status: "answered" }),
+      complete: vi.fn().mockImplementation(async () => {
+        await gate;
+        return { answer: "根目录包含 paper.jar。", status: "answered" };
+      }),
     } as unknown as TasksService;
     const service = new ChatService(store, model, tasks);
     const session = await service.create("tenant-1", "instance-1");
 
     await service.send(session.id, "tenant-1", "根目录有什么文件？");
-    const once = await service.messages(session.id, "tenant-1");
-    const twice = await service.messages(session.id, "tenant-1");
+    const firstPoll = service.messages(session.id, "tenant-1");
+    const overlappingPoll = service.messages(session.id, "tenant-1");
+    release();
+    const [once, twice] = await Promise.all([firstPoll, overlappingPoll]);
 
     expect(once.at(-1)).toMatchObject({ task_id: "task-1", task_phase: "completion", content: "根目录包含 paper.jar。" });
     expect(twice.filter((message) => message.task_phase === "completion")).toHaveLength(1);
@@ -99,7 +106,7 @@ describe("ChatService", () => {
     const session = await service.create("tenant-1", "instance-1");
     const progress: Array<{ type: string; text?: string }> = [];
 
-    const result = await service.sendStream(session.id, "tenant-1", "服务器运行正常吗？", (event) => progress.push(event));
+    const result = await service.sendStream(session.id, "tenant-1", "服务器运行正常吗？", undefined, (event) => progress.push(event));
     const messages = await service.messages(session.id, "tenant-1");
 
     expect(progress).toEqual([
@@ -109,5 +116,56 @@ describe("ChatService", () => {
     expect(result.message).toMatchObject({ role: "assistant", content: "服务器正在运行。", route: "direct" });
     expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1);
     expect(tasks.create).not.toHaveBeenCalled();
+  });
+
+  it("coalesces concurrent sends with the same request id", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const model = {
+      route: vi.fn().mockImplementation(async () => {
+        await gate;
+        return { route: "direct", answer: "Only one answer" };
+      }),
+    } as unknown as ModelGatewayService;
+    const tasks = { create: vi.fn(), get: vi.fn() } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const first = service.send(session.id, "tenant-1", "status", "request_12345678");
+    const duplicate = service.send(session.id, "tenant-1", "status", "request_12345678");
+    release();
+    const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+    const messages = await service.messages(session.id, "tenant-1");
+
+    expect(firstResult.message.id).toBe(duplicateResult.message.id);
+    expect(model.route).toHaveBeenCalledTimes(1);
+    expect(messages.filter((message) => message.request_id === "request_12345678")).toHaveLength(2);
+  });
+
+  it("returns the persisted answer when a completed request is retried", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = {
+      route: vi.fn().mockResolvedValue({ route: "direct", answer: "Only one answer" }),
+    } as unknown as ModelGatewayService;
+    const tasks = { create: vi.fn(), get: vi.fn() } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const first = await service.send(session.id, "tenant-1", "status", "request_12345678");
+    const retry = await service.send(session.id, "tenant-1", "status", "request_12345678");
+
+    expect(retry.message.id).toBe(first.message.id);
+    expect(model.route).toHaveBeenCalledTimes(1);
   });
 });

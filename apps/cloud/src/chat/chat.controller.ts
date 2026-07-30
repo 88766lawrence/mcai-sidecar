@@ -24,14 +24,14 @@ export class ChatController {
   }
 
   @Post(":id/messages")
-  send(@Param("id") id: string, @Body() body: { content?: string }, @Req() request: Request) {
-    return this.chat.send(id, actorFrom(request).tenantId, body.content ?? "");
+  send(@Param("id") id: string, @Body() body: { content?: string; request_id?: string }, @Req() request: Request) {
+    return this.chat.send(id, actorFrom(request).tenantId, body.content ?? "", body.request_id);
   }
 
   @Post(":id/messages/stream")
   async sendStream(
     @Param("id") id: string,
-    @Body() body: { content?: string },
+    @Body() body: { content?: string; request_id?: string },
     @Req() request: Request,
     @Res() response: Response,
   ) {
@@ -47,6 +47,7 @@ export class ChatController {
         id,
         actorFrom(request).tenantId,
         body.content ?? "",
+        body.request_id,
         (event) => writeEvent(response, event),
       );
       writeEvent(response, { type: "done", result });

@@ -184,6 +184,22 @@ func (c *Client) WriteFile(ctx context.Context, ref, target string, contents []b
 	return c.call(ctx, http.MethodPut, "/api/files/", url.Values{"daemonId": {daemonID}, "uuid": {uuid}}, map[string]string{"target": target, "text": string(contents)}, &response)
 }
 
+func (c *Client) SendCommand(ctx context.Context, ref, command string) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	command = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(command), "/"))
+	if command == "" {
+		return errors.New("console command must not be empty")
+	}
+	var response apiResponse[any]
+	return c.call(ctx, http.MethodPost, "/api/protected_instance/command", url.Values{
+		"daemonId": {daemonID},
+		"uuid":     {uuid},
+	}, map[string]string{"command": command}, &response)
+}
+
 func (c *Client) Restart(ctx context.Context, ref string) error {
 	daemonID, uuid, err := parseRef(ref)
 	if err != nil {

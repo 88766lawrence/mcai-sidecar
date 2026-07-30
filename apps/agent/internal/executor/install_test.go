@@ -21,6 +21,7 @@ type installProvider struct {
 	configured provider.StartConfig
 	started    bool
 	stopped    bool
+	commands   []string
 	files      map[string][]byte
 }
 
@@ -52,6 +53,10 @@ func (p *installProvider) WriteFile(_ context.Context, _ string, path string, co
 	p.files[path] = append([]byte(nil), contents...)
 	return nil
 }
+func (p *installProvider) SendCommand(_ context.Context, _ string, command string) error {
+	p.commands = append(p.commands, command)
+	return nil
+}
 func (p *installProvider) Start(context.Context, string) error {
 	p.started = true
 	return nil
@@ -64,6 +69,46 @@ func (p *installProvider) Stop(context.Context, string) error {
 func (p *installProvider) Restart(context.Context, string) error { return nil }
 func (p *installProvider) GetInstance(context.Context, string) (provider.Instance, error) {
 	return p.instance, nil
+}
+
+func TestConsoleCommandRequiresRiskAndConfirmation(t *testing.T) {
+	p := &installProvider{instance: provider.Instance{State: "running"}}
+	executor := NewWithReleaseResolver("", nil, nil)
+	plan := protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}
+
+	if err := executor.executeStep(context.Background(), p, plan, protocol.TaskStep{
+		Tool: "console.command", Args: map[string]any{"command": "list"}, Risk: "read",
+	}, func(_, _, _ string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.commands) != 1 || p.commands[0] != "list" {
+		t.Fatalf("console command was not sent: %#v", p.commands)
+	}
+
+	err := executor.executeStep(context.Background(), p, plan, protocol.TaskStep{
+		Tool: "console.command", Args: map[string]any{"command": "op Steve"}, Risk: "low",
+	}, func(_, _, _ string) {})
+	if err == nil || !strings.Contains(err.Error(), "requires high risk") {
+		t.Fatalf("expected high-risk rejection, got %v", err)
+	}
+
+	err = executor.executeStep(context.Background(), p, plan, protocol.TaskStep{
+		Tool: "console.command", Args: map[string]any{"command": "op Steve"}, Risk: "high",
+	}, func(_, _, _ string) {})
+	if err == nil || !strings.Contains(err.Error(), "requires explicit confirmation") {
+		t.Fatalf("expected confirmation rejection, got %v", err)
+	}
+}
+
+func TestConsoleCommandRejectsLifecycleAndMultilineCommands(t *testing.T) {
+	for _, command := range []string{"stop", "say hello\nop Steve"} {
+		_, _, err := validateConsoleCommand(protocol.TaskStep{
+			Args: map[string]any{"command": command}, Risk: "high", RequiresConfirmation: true,
+		})
+		if err == nil {
+			t.Fatalf("expected %q to be rejected", command)
+		}
+	}
 }
 
 func TestInstallServerDownloadsConfiguresAndStarts(t *testing.T) {

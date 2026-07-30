@@ -104,6 +104,7 @@ export interface ConversationSession {
 export interface ConversationMessage {
   id: string;
   session_id: string;
+  request_id?: string;
   role: "user" | "assistant";
   content: string;
   route?: ChatRoute;

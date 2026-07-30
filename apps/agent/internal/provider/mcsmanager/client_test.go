@@ -109,6 +109,37 @@ func TestStopUsesProtectedStopEndpoint(t *testing.T) {
 	}
 }
 
+func TestSendCommandUsesProtectedCommandEndpoint(t *testing.T) {
+	var received struct {
+		Command string `json:"command"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/protected_instance/command" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		if request.URL.Query().Get("daemonId") != "daemon" || request.URL.Query().Get("uuid") != "instance" {
+			t.Fatalf("unexpected instance query: %s", request.URL.RawQuery)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendCommand(context.Background(), "mcs:daemon:instance", "/say hello"); err != nil {
+		t.Fatal(err)
+	}
+	if received.Command != "say hello" {
+		t.Fatalf("command = %q, want say hello", received.Command)
+	}
+}
+
 func TestProfileRevisionIgnoresRuntimeState(t *testing.T) {
 	detail := instanceDetail{InstanceUUID: "instance", Status: 0}
 	detail.Config.Nickname = "Paper"

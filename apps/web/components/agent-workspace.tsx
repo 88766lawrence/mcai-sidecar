@@ -38,6 +38,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const messageStreamRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef("");
   const followLatestRef = useRef(true);
+  const sendingRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -88,8 +89,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     return () => clearInterval(timer);
   }, [activeSessionId, loadMessages]);
 
-  const activeSession = sessions.find((session) => session.id === activeSessionId);
-  const current = instances.find((instance) => instance.instance_id === (activeSession?.instance_ref || selectedInstance));
+  const activeSession = sessions.find((session) => session.id === activeSessionId && (!selectedInstance || session.instance_ref === selectedInstance));
+  const current = instances.find((instance) => instance.instance_id === (selectedInstance || activeSession?.instance_ref));
   const linkedTaskIds = new Set(messages.map((message) => message.task_id).filter(Boolean));
   const currentTasks = tasks.filter((task) => linkedTaskIds.has(task.id) || (!activeSession && task.instance_ref === current?.instance_id));
   const activeTask = currentTasks.find((task) => !terminal(task.state)) ?? currentTasks[0];
@@ -147,10 +148,22 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     setSidebarOpen(false);
   }
 
+  function selectInstance(instanceRef: string) {
+    const nextSession = sessions.find((session) => session.instance_ref === instanceRef);
+    setSelectedInstance(instanceRef);
+    activeSessionIdRef.current = nextSession?.id ?? "";
+    setActiveSessionId(nextSession?.id ?? "");
+    setMessages([]);
+    setStreamingMessage(null);
+    setPlanning(false);
+  }
+
   async function sendMessage() {
-    if (!intent.trim() || loading) return;
+    if (!intent.trim() || sendingRef.current) return;
+    sendingRef.current = true;
     const outgoing = intent.trim();
-    let sessionId = activeSessionId;
+    const requestId = crypto.randomUUID();
+    let sessionId = activeSession?.id ?? "";
     followLatestRef.current = true;
     setShowScrollToLatest(false);
     setPlanning(true);
@@ -180,7 +193,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       let result: { message: ConversationMessage; task?: TaskRecord } | undefined;
       await apiStream<ConversationStreamEvent>(`/sessions/${sessionId}/messages/stream`, {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, request_id: requestId }),
       }, (event) => {
         if (event.type === "delta") {
           setPlanning(false);
@@ -212,6 +225,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       setError(cause instanceof Error ? cause.message : "消息发送失败");
       if (activeSessionIdRef.current === sessionId) await loadMessages(sessionId);
     } finally {
+      sendingRef.current = false;
       setLoading(false);
       setPlanning(false);
       setPendingSessionId("");
@@ -286,7 +300,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       </div>
       <div className="instance-switcher">
         <label>当前实例</label>
-        <div><Server size={15} /><select value={selectedInstance} onChange={(event) => setSelectedInstance(event.target.value)}>{instances.map((instance) => <option key={instance.instance_id} value={instance.instance_id}>{instance.name}</option>)}</select><ChevronDown size={14} /></div>
+        <div><Server size={15} /><select value={selectedInstance} onChange={(event) => selectInstance(event.target.value)}>{instances.map((instance) => <option key={instance.instance_id} value={instance.instance_id}>{instance.name}</option>)}</select><ChevronDown size={14} /></div>
       </div>
       <div className="session-section-head"><span>会话</span><button onClick={() => void createSession()} aria-label="新建会话"><Plus size={16} /></button></div>
       <div className="session-list">
@@ -451,7 +465,7 @@ function taskActivityLabel(state: string) {
 }
 function riskLabel(risk: string) { return ({ read: "只读", low: "低风险", medium: "中风险", high: "高风险", forbidden: "禁止" } as Record<string, string>)[risk] ?? risk; }
 function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
-function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "server.install": "安装 Minecraft 服务端", "config.patch": "修改服务器配置", "plugin.resolve": "解析插件兼容性", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
+function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "server.install": "安装 Minecraft 服务端", "config.patch": "修改服务器配置", "console.command": "发送控制台命令", "plugin.resolve": "解析插件兼容性", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.stop": "停止服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
 function instanceMeta(instance: ServerProfile) {
   const values = [instance.loader, instance.minecraft_version]
     .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));

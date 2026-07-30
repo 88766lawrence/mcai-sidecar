@@ -9,6 +9,7 @@ const supportedOperations = [
   "config.patch",
   "plugin.resolve",
   "plugin.install",
+  "console.command",
   "instance.start",
   "instance.stop",
   "instance.restart",
@@ -60,16 +61,41 @@ function existingInstanceStartContract() {
   ].join("\n");
 }
 
+const trailingOfferPatterns = [
+  /(?:如果|若|如)(?:你|您)?(?:还)?(?:需要|想要|希望)[^。！？!?\n]{0,100}(?:我(?:可以|能|会)|请(?:告诉|告知)|随时)[^。！？!?\n]*[。！？!?]?$/u,
+  /如果(?:你|您)?(?:还)?有(?:任何|其他|其它|更多)?(?:问题|需求|需要)[^。！？!?\n]{0,80}(?:请(?:告诉|告知)|随时(?:问|联系|告诉|告知))[^。！？!?\n]*[。！？!?]?$/u,
+  /(?:有|如果有)(?:任何|其他|其它|更多)?(?:问题|需求|需要)[^。！？!?\n]{0,80}(?:请(?:告诉|告知)|随时(?:问|联系|告诉|告知))[^。！？!?\n]*[。！？!?]?$/u,
+  /(?:需要的话|如有需要)[^。！？!?\n]{0,80}(?:我(?:可以|能|会)|请(?:告诉|告知)|随时)[^。！？!?\n]*[。！？!?]?$/u,
+];
+
+export function conciseAnswer(value) {
+  let answer = String(value ?? "").trim();
+  let previous;
+  do {
+    previous = answer;
+    for (const pattern of trailingOfferPatterns) {
+      answer = answer.replace(pattern, "").trimEnd();
+    }
+    answer = answer.replace(/[，,；;：:]\s*$/u, "").trimEnd();
+  } while (answer !== previous);
+  return answer;
+}
+
 function baseInstructions(payload) {
   return [
     "For any Paper or Fabric install request that includes a Minecraft version, call requestOperation with preferredTool=server.install and preserve the requested platform and version in intent. Do not use the legacy direct-download operation.",
     "For an explicit stop or shutdown request, call requestOperation with preferredTool=instance.stop.",
     "Minecraft EULA consent is never implicit. If and only if the user explicitly says they agree to or accept the Minecraft EULA, preserve that exact consent in requestOperation.intent so Cloud can authorize the controlled eula.txt write.",
     "你是 MCAI Sidecar 的 Minecraft 运维 Agent。",
-    "使用简洁中文，先回答结论。简单知识、解释和寒暄直接回答，不调用工具。",
+    "使用简洁中文，只输出直接满足用户当前请求所必需的内容。简单知识、解释和寒暄直接回答，不调用工具。",
+    "不要复述用户的问题，不补充用户没问的背景，不为了显得完整而添加总结、建议或下一步。",
+    "禁止礼貌性收尾和主动追加邀请，包括但不限于“如果需要我可以继续”“如有需要请告诉我”“还有问题可以问我”。回答完立即停止。",
     "只有目标确实含糊且缺少继续所必需的信息时，才调用 requestClarification，而且一次只问一个问题。",
     "复杂分析且不需要实时服务器数据时，调用 delegateAnalysis，把工作交给 diagnostics 或 planner 子 Agent。",
     "需要实时日志、配置、状态或执行实例变更时，调用 requestOperation。",
+    "payload.instance 是用户在页面中已经选定并授权的唯一目标实例；只要 instance.id 存在，不得再询问要操作哪个实例。",
+    "用户明确要求在控制台执行、输入或发送一条 Minecraft 命令时，调用 requestOperation，preferredTool=console.command，并在 intent 中逐字保留单行命令。",
+    "控制台命令是 Minecraft 服务端命令，不是 Linux Shell；不得把控制台请求改写成 Shell 或 SSH。",
     "需要调用工具时，第一步直接调用工具，调用前不要输出任何文字；工具完成后只输出给用户的最终结论。",
     "requestOperation 只提交受控目标，不执行 Shell；Cloud 会继续做确定性计划、风险分级、确认和 Sidecar 校验。",
     "下载 Paper 1.21.1 并命名为 server.jar 时，必须选择 file.download；Cloud 会固定官方来源和目标路径。",
@@ -277,10 +303,10 @@ export function decisionFromAgentResult(result) {
   const operation = calls.find((call) => call.toolName === "requestOperation");
   const clarification = results.find((item) => item.toolName === "requestClarification");
   const delegation = results.find((item) => item.toolName === "delegateAnalysis");
-  const answer = result.text?.trim()
+  const answer = conciseAnswer(result.text
     || clarification?.output?.question
     || delegation?.output?.answer
-    || (operation ? "已生成受控操作目标，正在交给 Cloud 处理。" : "暂时没有可用回答。");
+    || (operation ? "已生成受控操作目标，正在交给 Cloud 处理。" : "暂时没有可用回答。"));
 
   if (operation) {
     return {
@@ -330,7 +356,9 @@ export async function answerTaskWithSdk(config, payload) {
           model: modelFor(config, modelId),
           instructions: [
             "你是 MCAI 的任务结果说明 Agent。",
-            "使用简洁中文，先给结论，再说明风险和下一步。",
+            "使用简洁中文，只输出用户判断任务结果所必需的内容。",
+            "成功时只说明结果和必要证据；失败时只说明原因和一条可执行的安全处理方式。没有实际风险或必需操作时，不添加风险、建议或下一步。",
+            "不要复述请求、计划或已清楚的信息。禁止礼貌性收尾和主动提供额外帮助，回答完立即停止。",
             "只依据输入的任务、实例、计划和证据，不声称尚未执行的步骤已经完成。",
             "这是工具回调后的最终答复：task_state=SUCCEEDED 时必须明确说明已完成并引用实际 evidence；task_state=FAILED 时必须说明实际 diagnosis 和安全下一步。",
             "不要重复“已提交请求”或“正在调用工具”，因为工具回调已经结束。",
@@ -344,7 +372,7 @@ export async function answerTaskWithSdk(config, payload) {
         return {
           status: "answered",
           requestId: result.response?.id ?? crypto.randomUUID(),
-          answer: result.text.trim(),
+          answer: conciseAnswer(result.text),
         };
       } catch (error) {
         lastError = error;

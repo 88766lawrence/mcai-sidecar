@@ -36,6 +36,7 @@ func (p *recoveryProvider) UpdateStartConfig(context.Context, string, provider.S
 }
 func (p *recoveryProvider) ReadFile(context.Context, string, string) ([]byte, error) { return nil, nil }
 func (p *recoveryProvider) WriteFile(context.Context, string, string, []byte) error  { return nil }
+func (p *recoveryProvider) SendCommand(context.Context, string, string) error       { return nil }
 func (p *recoveryProvider) Start(context.Context, string) error                      { return nil }
 func (p *recoveryProvider) Stop(context.Context, string) error                       { return nil }
 func (p *recoveryProvider) Restart(context.Context, string) error                    { return nil }

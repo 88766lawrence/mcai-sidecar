@@ -234,7 +234,7 @@ function terminal(state: TaskState) {
 function completionFallback(task: TaskRecord) {
   const latest = (kind: string) => [...task.evidence].reverse().find((item) => item.kind === kind)?.summary;
   if (task.state === "SUCCEEDED") {
-    return latest("files") || latest("logs") || latest("config") || latest("instance") || "任务已完成，验证已通过。";
+    return latest("console") || latest("files") || latest("logs") || latest("config") || latest("instance") || "任务已完成，验证已通过。";
   }
   const diagnosis = latest("diagnosis") || latest("state") || "任务未能完成。";
   const next = latest("decision");
