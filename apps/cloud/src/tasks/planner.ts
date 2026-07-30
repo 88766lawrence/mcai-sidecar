@@ -133,6 +133,20 @@ export function extractConsoleCommandIntent(intent: string) {
     const command = match[1].trim().replace(/^\//, "").replace(/^`(.+)`$/, "$1");
     if (command && command.length <= 256 && !/[\r\n]/.test(command)) return command;
   }
+
+  // Common read-only operations should stay available even when the model
+  // gateway is busy. They map to the same audited console tool as explicit
+  // commands and never bypass the instance binding or risk policy.
+  if (/\b(?:online players?|player count)\b|\u5728\u7ebf.{0,8}\u73a9\u5bb6|\u73a9\u5bb6.{0,8}\u5728\u7ebf|\u591a\u5c11.{0,4}\u73a9\u5bb6|\u5728\u7ebf.{0,4}\u4eba\u6570/i.test(intent)) {
+    return "list";
+  }
+  if (/\b(?:tps|mspt)\b/i.test(intent)) return /\bmspt\b/i.test(intent) ? "mspt" : "tps";
+  if (/\b(?:server version|minecraft version)\b|\u670d\u52a1\u7aef.{0,4}\u7248\u672c|\u670d\u52a1\u5668.{0,4}\u7248\u672c/i.test(intent)) {
+    return "version";
+  }
+  if (/\b(?:plugin list|installed plugins?)\b|\u63d2\u4ef6.{0,4}\u5217\u8868|\u5df2\u5b89\u88c5.{0,4}\u63d2\u4ef6/i.test(intent)) {
+    return "plugins";
+  }
   return undefined;
 }
 

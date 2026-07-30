@@ -195,4 +195,31 @@ describe("ChatService", () => {
     }));
     expect(model.route).not.toHaveBeenCalled();
   });
+
+  it("routes a natural-language player query to the console without waiting for the model", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.4",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = { route: vi.fn() } as unknown as ModelGatewayService;
+    const task = { id: "task-console", state: "SNAPSHOTTING" };
+    const tasks = {
+      create: vi.fn().mockResolvedValue(task),
+      get: vi.fn().mockReturnValue(task),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const result = await service.send(
+      session.id,
+      "tenant-1",
+      "\u5e2e\u6211\u770b\u770b\u73b0\u5728\u6709\u591a\u5c11\u73a9\u5bb6\u5728\u7ebf",
+    );
+
+    expect(result.message).toMatchObject({ route: "tool", task_id: "task-console" });
+    expect(tasks.create).toHaveBeenCalledWith(expect.objectContaining({ intent: expect.stringContaining("\u73a9\u5bb6") }));
+    expect(model.route).not.toHaveBeenCalled();
+  });
 });

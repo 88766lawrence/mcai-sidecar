@@ -61,6 +61,21 @@ describe("draftPlan", () => {
     }]);
   });
 
+  it("uses the console for a natural-language online player query", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance",
+      "revision-1",
+      "\u5e2e\u6211\u770b\u770b\u73b0\u5728\u6709\u591a\u5c11\u73a9\u5bb6\u5728\u7ebf",
+    );
+
+    expect(plan.steps).toEqual([{
+      id: "s1",
+      tool: "console.command",
+      args: { command: "list" },
+      risk: "read",
+    }]);
+  });
+
   it("requires confirmation for gameplay-changing console commands", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "控制台输入 time set day");
 
