@@ -109,7 +109,7 @@ There are 0 of a max of 20 players online:
 
 - 控制台回读与 Web 修复已同步到 Windows 本地、Linux 测试端和 GitHub，提交为 `26c712d Add console evidence and web motion`。
 - 自然语言只读路由已同步到 GitHub，提交为 `ade573b Route common server queries deterministically`；模型控制台工具说明与本交接文档已提交为 `322a22c Teach agent when to use the Minecraft console`。
-- `origin/main` 当前为 `322a22c Teach agent when to use the Minecraft console`。
+- `origin/main` 已包含上述控制台回读、自然语言路由和模型工具说明提交。
 - 控制台主体提交：`d84cc2e Harden chat operations and response handling`。
 - MCSManager 查询参数修复：`e43b3c2 Fix MCSManager console command request`。
 - 确定性控制台路由：`1b6b0d9 Route explicit console commands deterministically`。
