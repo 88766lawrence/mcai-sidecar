@@ -197,7 +197,8 @@ func (c *Client) SendCommand(ctx context.Context, ref, command string) error {
 	return c.call(ctx, http.MethodPost, "/api/protected_instance/command", url.Values{
 		"daemonId": {daemonID},
 		"uuid":     {uuid},
-	}, map[string]string{"command": command}, &response)
+		"command":  {command},
+	}, nil, &response)
 }
 
 func (c *Client) Restart(ctx context.Context, ref string) error {

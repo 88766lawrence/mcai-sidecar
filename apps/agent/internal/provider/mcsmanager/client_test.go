@@ -110,18 +110,15 @@ func TestStopUsesProtectedStopEndpoint(t *testing.T) {
 }
 
 func TestSendCommandUsesProtectedCommandEndpoint(t *testing.T) {
-	var received struct {
-		Command string `json:"command"`
-	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/api/protected_instance/command" {
 			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
 		}
-		if request.URL.Query().Get("daemonId") != "daemon" || request.URL.Query().Get("uuid") != "instance" {
+		if request.URL.Query().Get("daemonId") != "daemon" || request.URL.Query().Get("uuid") != "instance" || request.URL.Query().Get("command") != "say hello" {
 			t.Fatalf("unexpected instance query: %s", request.URL.RawQuery)
 		}
-		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
-			t.Fatal(err)
+		if request.Body != nil && request.ContentLength != 0 {
+			t.Fatalf("unexpected command request body with length %d", request.ContentLength)
 		}
 		writer.Header().Set("content-type", "application/json")
 		_, _ = writer.Write([]byte(`{"status":200,"data":{}}`))
@@ -134,9 +131,6 @@ func TestSendCommandUsesProtectedCommandEndpoint(t *testing.T) {
 	}
 	if err := client.SendCommand(context.Background(), "mcs:daemon:instance", "/say hello"); err != nil {
 		t.Fatal(err)
-	}
-	if received.Command != "say hello" {
-		t.Fatalf("command = %q, want say hello", received.Command)
 	}
 }
 
