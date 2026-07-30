@@ -34,8 +34,10 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [promptDraft, setPromptDraft] = useState("");
   const [reviewTask, setReviewTask] = useState<TaskRecord | null>(null);
   const [highRiskText, setHighRiskText] = useState("");
-  const streamEndRef = useRef<HTMLDivElement>(null);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const messageStreamRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef("");
+  const followLatestRef = useRef(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +77,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
+    followLatestRef.current = true;
+    setShowScrollToLatest(false);
     void loadMessages(activeSessionId);
   }, [activeSessionId, loadMessages]);
 
@@ -95,8 +99,25 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }), [sessions, selectedInstance]);
 
   useEffect(() => {
-    streamEndRef.current?.scrollIntoView({ block: "end", behavior: streamingMessage ? "auto" : messages.length > 1 ? "smooth" : "auto" });
+    if (!followLatestRef.current) return;
+    const stream = messageStreamRef.current;
+    if (stream) stream.scrollTop = stream.scrollHeight;
   }, [messages, planning, streamingMessage]);
+
+  function updateScrollPosition() {
+    const stream = messageStreamRef.current;
+    if (!stream) return;
+    const isNearLatest = stream.scrollHeight - stream.scrollTop - stream.clientHeight <= 80;
+    followLatestRef.current = isNearLatest;
+    setShowScrollToLatest(!isNearLatest);
+  }
+
+  function scrollToLatest() {
+    followLatestRef.current = true;
+    setShowScrollToLatest(false);
+    const stream = messageStreamRef.current;
+    if (stream) stream.scrollTop = stream.scrollHeight;
+  }
 
   async function createSession() {
     const instanceRef = selectedInstance || instances[0]?.instance_id;
@@ -130,6 +151,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     if (!intent.trim() || loading) return;
     const outgoing = intent.trim();
     let sessionId = activeSessionId;
+    followLatestRef.current = true;
+    setShowScrollToLatest(false);
     setPlanning(true);
     setPendingSessionId(sessionId);
     setLoading(true);
@@ -287,13 +310,20 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         </div>
         <button className="prompt-button" onClick={openPrompt} disabled={!activeSession}><Settings2 size={16} /><span>会话设置</span></button>
       </div>
-      <div className="message-stream">
+      <div
+        className="message-stream"
+        ref={messageStreamRef}
+        onScroll={updateScrollPosition}
+        onWheel={(event) => {
+          if (event.deltaY < 0) followLatestRef.current = false;
+        }}
+      >
         {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>今天要处理什么？</h2><p>直接提问或描述操作，MCAI 会使用当前实例的信息完成任务。</p><div className="suggestions"><button onClick={() => setIntent("启动服务器")}>启动实例</button><button onClick={() => setIntent("分析最近一次崩服的原因")}>分析崩服</button><button onClick={() => setIntent("把视距调整为 10")}>调整配置</button></div></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
         {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
         {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
-        <div ref={streamEndRef} aria-hidden="true" />
       </div>
+      {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
         <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="询问知识、诊断问题，或描述你想完成的操作…" rows={2} />
         <button onClick={() => void sendMessage()} disabled={loading || !intent.trim()} aria-label="发送">{loading ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button>
