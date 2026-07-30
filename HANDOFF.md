@@ -1,10 +1,10 @@
 # MCAI 项目交接记录
 
-更新时间：2026-07-30 18:30（Asia/Hong_Kong）
+更新时间：2026-07-30 19:29（Asia/Hong_Kong）
 
 ## 当前结论
 
-MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控制台。该能力已部署到 Linux 测试端，并在实例“测试”上完成真实端到端验收。
+MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控制台。控制台真实输出回读、基于回调生成最终答复、常见只读请求的确定性路由均已部署到 Linux 测试端。
 
 控制台能力是受控工具 `console.command`，不是 Linux Shell。Cloud 做第一次风险分级，Go Agent 在服务器本地再次校验；MCSManager API Key 仍只由 Agent 本机读取。
 
@@ -15,8 +15,12 @@ MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控�
 - Cloud 能识别 `console command list`、`在控制台执行 list`、`控制台输入 say hello` 等明确指令。
 - 明确控制台指令使用本地确定性路由，不等待上游模型，避免模型容量或 240 秒超时阻塞执行。
 - Agent 新增 `console.command` 并调用 MCSManager `/api/protected_instance/command`。
+- Agent 在发命令前读取控制台基线，发命令后最多轮询约 3 秒，计算新增日志并作为 `kind=console` 证据回传；不会再把“命令已提交”误当作执行结果。
+- 控制台证据会移除 ANSI/控制字符、隐藏疑似密钥，并限制为最多 8 KiB。
 - 已按服务器安装的 MCSManager 10 源码确认契约：`daemonId`、`uuid` 和 `command` 均为查询参数。
 - 工具执行后不会直接结束；Cloud 会继续根据 Agent 回调生成最终成功结果或失败原因。
+- “在线玩家/多少玩家在线”直接确定性映射为 `console.command list`；TPS/MSPT、服务端版本、插件列表也有只读映射，不依赖模型容量。
+- 模型工具说明已明确：白名单、时间、天气、游戏规则、传送、物品、踢出、封禁等游戏内操作应主动使用 Minecraft 控制台，不得声称没有控制台工具。
 - UI 工具名称显示为“发送控制台命令”，实例停止显示为“停止服务器”。
 - 同一请求使用 `request_id` 去重，防止重复点击或重试创建重复任务。
 - 消息发送中，发送按钮会切换为“停止发送”，用户可以立即中止并解锁输入框。
@@ -41,7 +45,7 @@ MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控�
 - 源码目录：`/opt/mcai-src`
 - Go：`/opt/go/bin/go`，版本 `go1.23.5`
 - 服务：`mcai-model-cloud.service`、`mcai-cloud.service`、`mcai-agent.service`、`mcai-web.service`
-- 2026-07-30 18:25 部署后四个服务均为 `active`。
+- 2026-07-30 19:29 最终部署后四个服务均为 `active`，Cloud 和模型云健康端点均返回 `ok`。
 
 ## 真实验收结果
 
@@ -50,7 +54,7 @@ MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控�
 1. `console command list`
 2. `console command say MCAI console control ready`
 
-两条任务均满足：
+该轮旧验收两条任务均满足：
 
 - 路由：`tool`
 - 工具：`console.command`
@@ -65,15 +69,20 @@ Minecraft `logs/latest.log` 已确认：
 There are 0 of a max of 20 players online:
 ```
 
+注意：旧验收中的 `console` 证据只证明命令已提交；2026-07-30 19:17 后已修复为回传命令后的真实新增控制台日志。远端 Go 集成测试已断言证据包含 `There are 0 of a max of 20 players online`，Cloud 完成阶段会把该 evidence 发送给结果说明模型，模型不可用时也会直接回退显示控制台证据。
+
+新版本真实会话验收脚本位于 `.deploy/verify-console-control.mjs`。它会发送自然语言“帮我看看现在有多少玩家在线”，并严格断言：路由为 `tool`、工具为 `console.command`、任务为 `SUCCEEDED`、证据包含真实在线人数、最终消息引用人数结果。该脚本需要读取 `/etc/mcai/setup.json` 生成 5 分钟本机认证令牌；当前执行环境的安全审批拒绝了这一步，尚未运行，不能把它写成已通过。密钥不应输出或复制到脚本外。
+
 ## 验证状态
 
 - 本机 `npm run typecheck`：通过
-- 本机 `npm test`：Cloud 15 项通过
+- 本机定向测试：Cloud 15 项通过（`planner` 与 `chat`）
 - 本机 `npm run build`：通过
 - 本机 `local-cloud npm test`：6 项通过
 - Linux `go test ./...`：通过
 - Linux Go Agent 构建：通过
-- Linux 全量 TypeScript 类型检查、测试和生产构建：通过
+- Linux 全量 TypeScript 类型检查、17 项 Cloud 测试和生产构建：通过
+- Linux 模型云测试：6 项通过
 - 公网 Web `/api` 流式代理：控制台消息约 27ms 返回任务，普通消息约 3.1 秒返回直接回答
 - `git diff --check`：通过
 
@@ -98,12 +107,13 @@ There are 0 of a max of 20 players online:
 
 ## Git 状态与后续工作
 
-- 本轮功能源码已同步到 Windows 本地、Linux 测试端和 GitHub。
-- `origin/main` 当前为 `1b6b0d9 Route explicit console commands deterministically`。
+- 控制台回读与 Web 修复已同步到 Windows 本地、Linux 测试端和 GitHub，提交为 `26c712d Add console evidence and web motion`。
+- 自然语言只读路由已同步到 GitHub，提交为 `ade573b Route common server queries deterministically`；模型控制台工具说明与本交接文档等待提交。
+- `origin/main` 当前为 `ade573b Route common server queries deterministically`。
 - 控制台主体提交：`d84cc2e Harden chat operations and response handling`。
 - MCSManager 查询参数修复：`e43b3c2 Fix MCSManager console command request`。
 - 确定性控制台路由：`1b6b0d9 Route explicit console commands deterministically`。
-- 当前仅本交接文档和 `recovery_test.go` 的远端 `gofmt` 格式差异尚未提交。
+- 当前未提交文件为模型控制台说明和本交接文档。
 - 后续可继续扩展更多明确操作的本地确定性路由，使启动、文件查询和安装等操作同样不受上游模型容量影响。
 - 中风险和高风险控制台命令仍应通过页面确认按钮进行人工验收，不能绕过确认策略。
 

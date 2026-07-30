@@ -95,6 +95,7 @@ function baseInstructions(payload) {
     "需要实时日志、配置、状态或执行实例变更时，调用 requestOperation。",
     "payload.instance 是用户在页面中已经选定并授权的唯一目标实例；只要 instance.id 存在，不得再询问要操作哪个实例。",
     "用户明确要求在控制台执行、输入或发送一条 Minecraft 命令时，调用 requestOperation，preferredTool=console.command，并在 intent 中逐字保留单行命令。",
+    "用户询问实时在线玩家、TPS、服务端版本、插件，或要求执行白名单、时间、天气、游戏规则、传送、给予物品、踢出与封禁等 Minecraft 游戏内操作时，应主动使用 Minecraft 控制台：调用 requestOperation，preferredTool=console.command，并把目标改写为一条准确的单行服务端命令；不要声称没有控制台工具。",
     "控制台命令是 Minecraft 服务端命令，不是 Linux Shell；不得把控制台请求改写成 Shell 或 SSH。",
     "需要调用工具时，第一步直接调用工具，调用前不要输出任何文字；工具完成后只输出给用户的最终结论。",
     "requestOperation 只提交受控目标，不执行 Shell；Cloud 会继续做确定性计划、风险分级、确认和 Sidecar 校验。",
