@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftPlan } from "./planner";
+import { draftPlan, extractRealtimeLogIntent } from "./planner";
 
 describe("draftPlan", () => {
   it("creates a controlled Paper installation plan for any supported release", () => {
@@ -97,5 +97,11 @@ describe("draftPlan", () => {
       risk: "high",
       requires_confirmation: true,
     });
+  });
+
+  it("detects real-time log diagnosis without matching general knowledge", () => {
+    expect(extractRealtimeLogIntent("读取这台服务器最近一小时日志并分析崩服原因")).toBeTruthy();
+    expect(extractRealtimeLogIntent("为什么这个实例刚才报错了？")).toBeTruthy();
+    expect(extractRealtimeLogIntent("Minecraft 日志一般保存在哪里？")).toBeUndefined();
   });
 });

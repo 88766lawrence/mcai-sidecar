@@ -1,4 +1,4 @@
-import { ToolLoopAgent, generateText, stepCountIs, tool } from "ai";
+import { ToolLoopAgent, generateText, stepCountIs, streamText, tool } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 
@@ -143,17 +143,45 @@ export function buildSystemInstructions(payload) {
 }
 
 async function runDelegate(model, payload, kind, goal) {
-  const role = kind === "planner"
-    ? "你是规划子 Agent。给出必要步骤、风险和验收条件，不调用工具，不声称已经执行。"
-    : "你是诊断子 Agent。基于已有信息分析最可能原因、证据边界和下一步，不编造日志。";
   const result = await generateText({
     model,
-    instructions: `${role}\n${existingInstanceStartContract()}`,
+    instructions: buildDelegateInstructions(kind),
     messages: historyMessages(payload, goal),
     temperature: 0.2,
     abortSignal: AbortSignal.timeout(90_000),
   });
   return result.text.trim();
+}
+
+async function runDelegateStream(model, payload, kind, goal, onEvent) {
+  const result = streamText({
+    model,
+    instructions: buildDelegateInstructions(kind),
+    messages: historyMessages(payload, goal),
+    temperature: 0.2,
+    abortSignal: AbortSignal.timeout(180_000),
+  });
+  let answer = "";
+  for await (const delta of result.textStream) {
+    answer += delta;
+    onEvent({ type: "delta", text: delta });
+  }
+  return answer.trim();
+}
+
+export function buildDelegateInstructions(kind) {
+  const role = kind === "planner"
+    ? "你是规划子 Agent。给出必要步骤、风险和验收条件，不调用工具，不声称已经执行。"
+    : "你是诊断子 Agent。基于已有信息分析最可能原因、证据边界和下一步，不编造日志。";
+  return [
+    role,
+    "严格区分已知事实、合理推断和待验证项；证据不足时明确说无法确定，不把无关错误拼成因果关系。",
+    "不得编造百分比、耗时、版本、兼容性或已完成的检查；所有计算必须与输入数值一致。",
+    "不得输出或建议任意 Shell、SSH、进程注入、profiler 脚本或直接文件修改命令。后续动作只能描述为 MCAI 受控日志、配置、控制台或实例操作。",
+    "优先给最小风险的验证顺序，不在缺少变更证据时建议回滚，不把插件数量为 0 本身视为故障。",
+    "使用简洁中文，回答当前目标后停止，不追加主动邀请。",
+    existingInstanceStartContract(),
+  ].join("\n");
 }
 
 function historyMessages(payload, currentMessage = payload.message) {
@@ -223,7 +251,42 @@ function createOperationsAgent(model, payload) {
   });
 }
 
+export function deterministicOperationDecision(payload) {
+  const message = String(payload.message ?? "").trim();
+  const availableTools = new Set(payload.availableTools ?? supportedOperations);
+  if (!message || !availableTools.has("logs.query") || !isRealtimeLogRequest(message)) return undefined;
+  return {
+    route: "tool",
+    answer: "将读取当前实例日志并依据实际证据分析。",
+    toolIntent: message,
+    requestId: crypto.randomUUID(),
+    trace: [{ stage: "tool", label: "调用工具", result: "logs.query" }],
+  };
+}
+
+export function deterministicDelegationKind(payload) {
+  const message = String(payload.message ?? "").trim();
+  if (!message || !/(?:不|无需|不要|禁止).{0,8}(?:读取|查询|使用).{0,8}(?:实时|当前|服务器).{0,8}(?:数据|日志|状态)|without\s+(?:reading|using).{0,20}(?:live|current|real-time)\s+data/i.test(message)) {
+    return undefined;
+  }
+  if (/诊断|排查|根因|故障|异常|分析原因|diagnos|root cause|troubleshoot|incident/i.test(message)) {
+    return "diagnostics";
+  }
+  if (/规划|方案|策略|分阶段|架构|迁移|容量|风险|验收|plan|strategy|phases?|architecture|migration|capacity|acceptance/i.test(message)) {
+    return "planner";
+  }
+  return undefined;
+}
+
+function isRealtimeLogRequest(message) {
+  const logSubject = /日志|崩服|崩溃|报错|错误|异常|卡服|无响应|logs?|crash(?:ed|es)?|errors?|exceptions?|stack\s*trace/i;
+  if (!logSubject.test(message)) return false;
+  return /读取|查看|查询|检查|调取|获取|排查|诊断|最近|刚才|当前|实时|这台|这个实例|原因|为什么|read|show|query|check|inspect|fetch|recent|current|live|diagnos|why|cause/i.test(message);
+}
+
 export async function routeWithAgent(config, payload) {
+  const deterministic = deterministicOperationDecision(payload);
+  if (deterministic) return deterministic;
   if (!providerConfigured(config)) {
     return {
       route: "direct",
@@ -233,10 +296,21 @@ export async function routeWithAgent(config, payload) {
   }
 
   let lastError;
+  const delegatedKind = deterministicDelegationKind(payload);
   for (const modelId of candidateModels(config)) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const model = modelFor(config, modelId);
+        if (delegatedKind) {
+          const answer = await runDelegate(model, payload, delegatedKind, String(payload.message ?? ""));
+          return {
+            route: "delegate",
+            delegate: delegatedKind,
+            answer: conciseAnswer(answer),
+            requestId: crypto.randomUUID(),
+            trace: [{ stage: "delegation", label: "调用子 Agent", result: delegatedKind }],
+          };
+        }
         const agent = createOperationsAgent(model, payload);
         const result = await agent.generate({
           messages: historyMessages(payload),
@@ -258,6 +332,11 @@ export async function routeWithAgent(config, payload) {
 }
 
 export async function routeWithAgentStream(config, payload, onEvent) {
+  const deterministic = deterministicOperationDecision(payload);
+  if (deterministic) {
+    onEvent({ type: "reset" });
+    return deterministic;
+  }
   if (!providerConfigured(config)) {
     const decision = {
       route: "direct",
@@ -269,10 +348,26 @@ export async function routeWithAgentStream(config, payload, onEvent) {
   }
 
   let lastError;
+  const delegatedKind = deterministicDelegationKind(payload);
   for (const modelId of candidateModels(config)) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const model = modelFor(config, modelId);
+        if (delegatedKind) {
+          const rawAnswer = await runDelegateStream(model, payload, delegatedKind, String(payload.message ?? ""), onEvent);
+          const answer = conciseAnswer(rawAnswer);
+          if (answer !== rawAnswer) {
+            onEvent({ type: "reset" });
+            if (answer) onEvent({ type: "delta", text: answer });
+          }
+          return {
+            route: "delegate",
+            delegate: delegatedKind,
+            answer,
+            requestId: crypto.randomUUID(),
+            trace: [{ stage: "delegation", label: "调用子 Agent", result: delegatedKind }],
+          };
+        }
         const result = await createOperationsAgent(model, payload).stream({
           messages: historyMessages(payload),
           abortSignal: AbortSignal.timeout(180_000),
@@ -396,6 +491,9 @@ export async function answerTaskWithSdk(config, payload) {
             "这是工具回调后的最终答复：task_state=SUCCEEDED 时必须明确说明已完成并引用实际 evidence；task_state=FAILED 时必须说明实际 diagnosis 和安全下一步。",
             "不要重复“已提交请求”或“正在调用工具”，因为工具回调已经结束。",
             "证据为空、只有中间状态或与请求不匹配时，不得推断成功或补造数值。",
+            "用户要求诊断某次崩溃或故障，但 evidence 未出现对应时间的崩溃、异常退出或致命错误时，必须明确说明现有证据不足以确定根因，不得把无关警告当作事故原因。",
+            "Paper 版本更新检查失败不等于服务器崩溃；插件数量为 0 不等于插件加载故障；控制台输入回显不等于异常输出。",
+            "没有证据表明近期做过变更时，不得建议回滚。",
             "失败恢复时只给一条明确的安全决策：重试、回滚、修改计划或人工处理。",
             existingInstanceStartContract(),
           ].join("\n"),

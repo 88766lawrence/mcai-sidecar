@@ -125,7 +125,7 @@ export class ModelGatewayService {
           "content-type": "application/json",
         },
         body: JSON.stringify(chatPayload(input)),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(180_000),
       });
       const body = await response.json().catch(() => null) as ChatDecision | null;
       if (!response.ok || !body?.answer || !["direct", "clarify", "delegate", "tool"].includes(body.route)) {
@@ -160,7 +160,7 @@ export class ModelGatewayService {
           "content-type": "application/json",
         },
         body: JSON.stringify(chatPayload(input)),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(180_000),
       });
       if (!response.ok || !response.body) throw new Error(`MODEL_GATEWAY_${response.status}`);
 

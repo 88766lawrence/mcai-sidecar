@@ -226,3 +226,143 @@ There are 0 of a max of 20 players online:
 ```
 
 预期路由依次为 `direct`、`delegate/planner`、`tool`、`tool`；控制台在线玩家、TPS、版本和插件四项应全部为 `SUCCEEDED`，并带真实 `kind=console` 回调证据。
+
+## 2026-07-31 最终复杂 Agent 验收与执行闭环修复
+
+### 本轮目标
+
+本轮不是测试 Minecraft 服务端功能本身，而是验证 MCAI Agent 能否针对简单问题、复杂离线问题和需要实时数据的问题选择正确路径，并且在调用工具后持续等待回调、读取证据、输出结论或明确失败原因。验收要求包括：
+
+1. 简单问题直接回答，不滥用工具或子 Agent。
+2. 复杂离线诊断使用 `diagnostics` 子 Agent，复杂多阶段方案使用 `planner` 子 Agent。
+3. 实时日志、实例状态和控制台问题必须调用实际工具，不允许依靠模型猜测。
+4. 工具提交不是完成；必须等任务进入终态，根据 Agent 回传证据生成最终答案。
+5. 不展示内部思维链，不生成任意 Shell、SSH、进程注入或性能分析脚本。
+6. 结论必须区分事实、推断和待验证项，不伪造测量值或无证据建议回滚。
+
+### 发现并修复的问题
+
+#### 1. 实时日志请求可能被直接回答
+
+真实路由测试发现，询问当前实例实时日志时，模型有时选择 `direct`，导致没有执行 `logs.query`。修复方式是在模型云和 Cloud 两层增加确定性实时日志识别：
+
+- `local-cloud/agent.mjs` 在进入上游模型前识别实时日志意图，固定返回 `requestOperation(logs.query)`。
+- `apps/cloud/src/chat/chat.service.ts` 和 `apps/cloud/src/tasks/planner.ts` 增加同等兜底路由，防止模型容量不足或模型选错工具时跳过实际执行。
+- 对实时数据的工具路由优先级高于离线诊断委派。
+
+#### 2. 复杂规划与诊断委派存在随机性
+
+同一个明确要求“不读取当前实时数据”的多阶段规划问题，有时走 `delegate/planner`，有时被直接回答。修复后：
+
+- 新增 `deterministicDelegationKind`，对明确的离线复杂规划和诊断做确定性委派。
+- 同一句话同时包含诊断和规划语义时，诊断优先。
+- 委派输出改用 `streamText` 流式返回，而不是等待完整文本后一次性输出。
+- Cloud 调用模型云的超时由 60 秒提高到 180 秒，覆盖复杂子 Agent 的真实生成时间。
+
+#### 3. `logs.query` 没有把日志内容交给结果模型
+
+Sidecar 原来只上报“读取了多少字节”和 SHA-256，结果模型看不到日志正文，无法根据工具回调诊断。`apps/agent/internal/executor/executor.go` 已修改为：
+
+- 优先读取实例根目录的 `logs/latest.log`，面板短输出作为回退。
+- 上报最多 8 KiB 的最近日志摘要，同时保留总字节数和 SHA-256。
+- 清理 ANSI 和控制字符。
+- 对 API key、token、secret 和 password 等敏感字段做脱敏。
+
+#### 4. 日志证据中的字符导致 WebSocket 签名失败
+
+任务曾卡在 `VERIFYING`。Sidecar 审计显示执行已经完成，但 Cloud 没有收到最终证据。根因是 Go `encoding/json` 默认把 `<`、`>` 和 `&` 做 HTML 转义，而 Cloud 使用 JavaScript `JSON.stringify` 计算签名；包含这些字符的真实日志会导致两端签名原文不一致，Cloud 因签名失败关闭 Agent WebSocket。
+
+`apps/agent/internal/protocol/protocol.go` 现在使用 `json.Encoder.SetEscapeHTML(false)` 生成与 JavaScript 一致的签名载荷，并新增 `apps/agent/internal/protocol/protocol_test.go` 回归测试。
+
+#### 5. 子 Agent 可能给出无证据的运维命令和结论
+
+早期复杂诊断曾生成 `jstat`、Profiler 脚本、JVM 参数和没有来源的百分比。`local-cloud/agent.mjs` 的委派提示词现已明确：
+
+- 事实、推断、待验证项必须分开。
+- 禁止输出任意 Shell、SSH、进程注入、Profiler 脚本和直接文件命令。
+- 禁止编造测量值。
+- 没有变更证据时不得建议回滚。
+- 插件数量为 0 本身不是故障。
+
+任务完成阶段的提示词同时补充：Paper 更新检查失败不等于服务端崩溃，控制台命令回显不等于异常，缺少崩溃或退出证据时必须明确说明证据不足。
+
+### 修改文件
+
+- `apps/agent/internal/executor/executor.go`
+- `apps/agent/internal/executor/install_test.go`
+- `apps/agent/internal/protocol/protocol.go`
+- `apps/agent/internal/protocol/protocol_test.go`
+- `apps/cloud/src/chat/chat.service.ts`
+- `apps/cloud/src/chat/chat.service.spec.ts`
+- `apps/cloud/src/model-gateway/model-gateway.service.ts`
+- `apps/cloud/src/tasks/planner.ts`
+- `apps/cloud/src/tasks/planner.spec.ts`
+- `local-cloud/agent.mjs`
+- `local-cloud/agent.test.mjs`
+
+### Linux 部署信息
+
+- Linux 源码：`/opt/mcai-src`
+- 模型云与 Cloud 部署前备份：`/tmp/mcai-realtime-log-routing-backup-20260731114308`
+- Sidecar 源码与二进制部署前备份：`/tmp/mcai-log-evidence-backup-20260731114344`
+- 早期可用备份：`/tmp/mcai-realtime-log-routing-backup-20260731113159`、`/tmp/mcai-log-evidence-backup-20260731113955`
+- 本轮只重启 MCAI 相关服务，没有为了 Cloud 或模型云更新而重启 Minecraft 实例。
+
+### 最终复杂验收
+
+最终脚本：`.deploy/verify-complex-agent.mjs`。2026-07-31 重新上传至 `/tmp/verify-complex-agent.mjs` 并在 Linux 测试端执行，脚本最终返回：
+
+```json
+{"passed": true}
+```
+
+目标实例：
+
+```text
+名称：测试
+引用：mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f
+```
+
+验收覆盖与结果：
+
+1. 复杂离线诊断：`route=delegate`、`delegate=diagnostics`。回答区分已知事实、推断和待验证项；没有输出可执行 Shell 命令；没有复用早期无证据的 `2.4%` 数值。
+2. 复杂三阶段性能治理方案：`route=delegate`，通过 Cloud 流式输出；包含阶段、依赖、风险、量化验收、回滚和停止条件，并遵守 150 人、20 插件、20 分钟维护窗口约束。
+3. 实时日志诊断：`route=tool`、`tool=logs.query`、任务 `state=SUCCEEDED`。本次读取 12,096 字节真实日志，证据包含 Paper Watchdog 和 `Can't keep up`。
+4. 实时日志最终回答识别出服务器主线程长时间卡顿；引用了 Watchdog 10 秒无响应和最高约 58 秒/1160 ticks 落后；明确没有实际崩溃或退出证据；把 `PaperVersionFetcher` 404 识别为无关的版本检查噪声。
+
+真实证据中的关键行包括：
+
+```text
+Paper Watchdog Thread/ERROR
+The server has not responded for 10 seconds
+Can't keep up!
+Running 58011ms behind
+```
+
+### 路由与控制台回归
+
+四类路由回归全部通过：
+
+- 简单问题：`direct`
+- 离线复杂规划：`delegate/planner`
+- 实时日志：`tool/logs.query`
+- 已停止实例启动：`tool/instance.start`
+
+四项真实控制台回调全部进入 `SUCCEEDED`，最终回答引用实际控制台证据：
+
+- 在线玩家：`0 / 20`
+- TPS：`20.0, 20.0, 20.0`
+- 服务端版本：Paper `1.21.1-133`
+- 插件：`0`
+
+### 本地验证基线
+
+- 模型云测试：11/11 通过。
+- Cloud 测试：19/19 通过。
+- 全仓 TypeScript 类型检查：通过。
+- Cloud 生产构建：通过。
+- 模型云语法检查：通过。
+- Go `go test ./...`：通过。
+- `git diff --check`：通过。
+
+2026-07-31 提交前已重新执行上述完整本地验证，所有项目均通过。推送后还需核对 Windows `HEAD` 与 GitHub `origin/main` 一致，并确认 Windows 工作区和 Linux `/opt/mcai-src` 的受影响文件 SHA-256 完全一致。

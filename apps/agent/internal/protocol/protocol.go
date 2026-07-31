@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -42,17 +43,32 @@ type TaskStep struct {
 	RequiresConfirmation bool           `json:"requires_confirmation"`
 }
 type AcceptanceRule struct {
-	Type string `json:"type"`
+	Type     string `json:"type"`
 	Expected string `json:"expected,omitempty"`
-	Pattern string `json:"pattern,omitempty"`
-	Name string `json:"name,omitempty"`
+	Pattern  string `json:"pattern,omitempty"`
+	Name     string `json:"name,omitempty"`
 }
 
 func NewEnvelope(id *identity.Identity, tenantID, messageID, nonce, messageType string, payload any) (Envelope, error) {
-	raw, err := json.Marshal(payload); if err != nil { return Envelope{}, err }
+	raw, err := marshalPayload(payload)
+	if err != nil {
+		return Envelope{}, err
+	}
 	e := Envelope{SchemaVersion: SchemaVersion, MessageID: messageID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Nonce: nonce, TenantID: tenantID, AgentID: id.AgentID, Type: messageType, Payload: raw}
 	e.Signature = id.Sign([]byte(e.Canonical()))
 	return e, nil
+}
+
+// JSON.stringify does not HTML-escape <, >, or &, so the Sidecar must use
+// the same representation before hashing payloads for Cloud verification.
+func marshalPayload(payload any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
 
 func (e Envelope) Canonical() string {

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildSystemInstructions,
+  buildDelegateInstructions,
   conciseAnswer,
   decisionFromAgentResult,
+  deterministicDelegationKind,
+  deterministicOperationDecision,
   providerConfigured,
 } from "./agent.mjs";
 
@@ -43,6 +46,53 @@ test("a plain response stays direct", () => {
     answer: "Paper 适合插件生态。",
     requestId: "response-1",
   });
+});
+
+test("real-time log diagnosis is deterministically routed to logs.query", () => {
+  for (const message of [
+    "读取这台服务器最近一小时的日志，分析刚才崩服的原因。",
+    "为什么这个实例刚才报错了？",
+    "Check the current server logs and diagnose the crash.",
+  ]) {
+    const decision = deterministicOperationDecision({
+      message,
+      availableTools: ["logs.query", "files.list"],
+    });
+    assert.equal(decision.route, "tool");
+    assert.equal(decision.toolIntent, message);
+    assert.equal(decision.trace[0].result, "logs.query");
+  }
+});
+
+test("general logging knowledge is not forced into a live operation", () => {
+  assert.equal(deterministicOperationDecision({
+    message: "Minecraft 日志一般保存在哪里？",
+    availableTools: ["logs.query"],
+  }), undefined);
+  assert.equal(deterministicOperationDecision({
+    message: "读取当前日志",
+    availableTools: ["files.list"],
+  }), undefined);
+});
+
+test("explicit offline complex work is deterministically delegated", () => {
+  assert.equal(deterministicDelegationKind({
+    message: "不读取实时数据，为大型生存服制定分阶段性能优化策略，并说明风险与验收标准。",
+  }), "planner");
+  assert.equal(deterministicDelegationKind({
+    message: "不读取当前服务器数据，仅根据这些现象诊断故障根因，并给出验证方案、风险与验收标准。",
+  }), "diagnostics");
+  assert.equal(deterministicDelegationKind({
+    message: "帮我解释 Paper 的区块加载机制。",
+  }), undefined);
+});
+
+test("delegate prompt preserves safety and evidence boundaries", () => {
+  const prompt = buildDelegateInstructions("diagnostics");
+  assert.match(prompt, /严格区分已知事实、合理推断和待验证项/);
+  assert.match(prompt, /不得输出或建议任意 Shell、SSH/);
+  assert.match(prompt, /不把插件数量为 0 本身视为故障/);
+  assert.match(prompt, /不在缺少变更证据时建议回滚/);
 });
 
 test("removes unsolicited closing offers but keeps required next actions", () => {

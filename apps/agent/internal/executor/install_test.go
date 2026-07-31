@@ -127,6 +127,39 @@ func TestConsoleCommandRequiresRiskAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestLogsQueryReturnsSanitizedRecentEvidence(t *testing.T) {
+	p := &installProvider{
+		outputBefore: "short panel tail",
+		logBefore: strings.Join([]string{
+			"[Server thread/INFO]: Done (12.3s)! For help, type help",
+			"[Server thread/ERROR]: java.lang.OutOfMemoryError: Java heap space",
+			"token=abc123 password:secret",
+		}, "\n"),
+	}
+	executor := NewWithReleaseResolver("", nil, nil)
+	var logEvidence string
+
+	err := executor.executeStep(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{
+		Tool: "logs.query", Risk: "read",
+	}, func(_, kind, summary string) {
+		if kind == "logs" {
+			logEvidence = summary
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logEvidence, "OutOfMemoryError") || !strings.Contains(logEvidence, "Recent log excerpt") {
+		t.Fatalf("log excerpt was not returned as evidence: %q", logEvidence)
+	}
+	if strings.Contains(logEvidence, "short panel tail") {
+		t.Fatalf("logs.query did not prefer the more complete latest.log: %q", logEvidence)
+	}
+	if strings.Contains(logEvidence, "abc123") || strings.Contains(logEvidence, "secret") {
+		t.Fatalf("log evidence leaked credentials: %q", logEvidence)
+	}
+}
+
 func TestConsoleCommandRejectsLifecycleAndMultilineCommands(t *testing.T) {
 	for _, command := range []string{"stop", "say hello\nop Steve"} {
 		_, _, err := validateConsoleCommand(protocol.TaskStep{

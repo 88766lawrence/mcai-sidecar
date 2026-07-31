@@ -150,6 +150,14 @@ export function extractConsoleCommandIntent(intent: string) {
   return undefined;
 }
 
+export function extractRealtimeLogIntent(intent: string) {
+  const message = intent.trim();
+  const logSubject = /日志|崩服|崩溃|报错|错误|异常|卡服|无响应|logs?|crash(?:ed|es)?|errors?|exceptions?|stack\s*trace/i;
+  if (!message || !logSubject.test(message)) return undefined;
+  const realtimeSignal = /读取|查看|查询|检查|调取|获取|排查|诊断|最近|刚才|当前|实时|这台|这个实例|原因|为什么|read|show|query|check|inspect|fetch|recent|current|live|diagnos|why|cause/i;
+  return realtimeSignal.test(message) ? message : undefined;
+}
+
 function consoleCommandRisk(command: string): RiskLevel {
   const rawVerb = command.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
   const verb = rawVerb.replace(/^minecraft:/, "");

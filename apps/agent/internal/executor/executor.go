@@ -284,14 +284,24 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 	switch step.Tool {
 	case "logs.query":
 		output, err := p.ReadOutput(ctx, plan.InstanceRef, 256)
-		if err != nil {
+		latestLog, latestLogErr := p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+		if latestLogErr == nil && len(latestLog) > len(output) {
+			output = string(latestLog)
+			err = nil
+		}
+		if err != nil && latestLogErr != nil {
 			return err
 		}
 		if len(output) > 256*1024 {
 			output = output[len(output)-256*1024:]
 		}
 		sum := sha256.Sum256([]byte(output))
-		emit("", "logs", fmt.Sprintf("Collected %d bytes of logs (sha256:%s)", len(output), hex.EncodeToString(sum[:8])))
+		excerpt := sanitizeConsoleOutput(output)
+		summary := fmt.Sprintf("Collected %d bytes of logs (sha256:%s)", len(output), hex.EncodeToString(sum[:8]))
+		if excerpt != "" {
+			summary += "\nRecent log excerpt:\n" + excerpt
+		}
+		emit("", "logs", summary)
 		return nil
 	case "files.list":
 		target := stringArg(step.Args, "path")
