@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { RiskLevel, TaskPlan } from "@mcai/contracts";
 import { TASK_PLAN_SCHEMA_VERSION } from "@mcai/contracts";
 
-export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string): TaskPlan {
+interface DraftPlanOptions {
+  preferredTool?: string;
+  platform?: string;
+  minecraftVersion?: string;
+  loader?: string;
+}
+
+export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string, options: DraftPlanOptions = {}): TaskPlan {
   const id = `task_${randomUUID()}`;
   const normalized = intent.toLowerCase();
   if (/\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/.test(normalized)) {
@@ -34,6 +41,13 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
   }
   if (/shell|ssh|私钥|任意命令/.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "forbidden.shell", args: {}, risk: "forbidden" }], []);
+  }
+  if (options.preferredTool === "files.list") {
+    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
+    return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "files.list", args: { path }, risk: "read" }], []);
+  }
+  if (options.preferredTool === "logs.query") {
+    return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" }], []);
   }
   const consoleCommand = extractConsoleCommandIntent(intent);
   if (consoleCommand) {
@@ -68,21 +82,29 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" },
     }], [{ type: "config_semantics", expected: `view-distance=${value}` }]);
   }
-  if (/luckperms|安装.*插件|install.*plugin/.test(normalized)) {
+  const pluginProject = parsePluginProject(intent);
+  if (pluginProject && (options.preferredTool === "plugin.install" || options.preferredTool === "plugin.resolve" || /安装|部署|更新|升级|install|deploy|update/i.test(intent))) {
     return plan(id, instanceRef, inventoryRevision, intent, [
-      { id: "s1", tool: "plugin.resolve", args: { project: "luckperms", source: "modrinth" }, risk: "low" },
-      { id: "s2", tool: "plugin.install", args: { artifact_ref: "${s1.artifact}", expected_sha256: "${s1.sha256}" }, risk: "medium", requires_confirmation: true, rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" } },
+      { id: "s1", tool: "plugin.resolve", args: {
+        project: pluginProject,
+        source: "modrinth",
+        platform: options.platform ?? "unknown",
+        minecraft_version: options.minecraftVersion ?? "unknown",
+        loader: options.loader ?? options.platform ?? "unknown",
+      }, risk: "low" },
+      { id: "s2", tool: "plugin.install", args: { project: pluginProject, artifact_ref: "${s1.artifact}", expected_sha256: "${s1.sha256}" }, risk: "medium", requires_confirmation: true, rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" } },
       { id: "s3", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true },
     ], [
       { type: "instance_state", expected: "running" },
-      { type: "plugin_enabled", name: "LuckPerms" },
+      { type: "plugin_enabled", name: pluginProject },
     ]);
   }
   if (/根目录|目录|文件|文件夹|list.*file|files?.*list|directory/.test(normalized)) {
+    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "files.list",
-      args: { path: "/" },
+      args: { path },
       risk: "read",
     }], []);
   }
@@ -103,6 +125,14 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     ]);
   }
   return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" }], []);
+}
+
+function parsePluginProject(intent: string) {
+  const known = intent.match(/\b(essentialsx?|luckperms|viaversion|viabackwards|geyser|floodgate|spark|worldedit|worldguard|placeholderapi|vault)\b/i)?.[1];
+  if (known) return known.toLowerCase() === "essentials" ? "essentialsx" : known.toLowerCase();
+  const explicit = intent.match(/(?:安装|部署|更新|升级|install|deploy|update)\s+(?:the\s+)?([a-z0-9][a-z0-9_-]{1,63})(?:\s+(?:插件|plugin))?/i)?.[1];
+  if (!explicit || /^(?:a|an|the|plugin|插件)$/i.test(explicit)) return undefined;
+  return explicit.toLowerCase();
 }
 
 function parseServerInstallIntent(intent: string) {

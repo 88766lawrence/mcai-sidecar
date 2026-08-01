@@ -26,6 +26,7 @@ type Executor struct {
 	dataDir          string
 	audit            *audit.Writer
 	releaseResolver  releaseResolver
+	pluginResolver   pluginResolver
 	maxAttempts      int
 	retryDelay       func(int) time.Duration
 	consolePollDelay time.Duration
@@ -47,6 +48,7 @@ func NewWithReleaseResolver(dataDir string, auditWriter *audit.Writer, resolver 
 		dataDir:          dataDir,
 		audit:            auditWriter,
 		releaseResolver:  resolver,
+		pluginResolver:   newOfficialPluginResolver(),
 		maxAttempts:      defaultMaxAttempts,
 		consolePollDelay: 250 * time.Millisecond,
 		retryDelay: func(attempt int) time.Duration {
@@ -83,6 +85,9 @@ func (e *Executor) Execute(ctx context.Context, plan protocol.TaskPlan, emit Eve
 	for _, step := range plan.Steps {
 		if err := e.executeStepWithRecovery(ctx, p, plan, step, emit); err != nil {
 			e.audit.Append("tool.execution.failed", plan.TaskID, err.Error(), map[string]any{"tool": step.Tool})
+			if planHasTool(plan, "plugin.install") {
+				e.rollbackPlugin(ctx, p, plan, emit)
+			}
 			emit("FAILED", "tool", fmt.Sprintf("%s failed: %v", step.Tool, err))
 			return
 		}
@@ -94,6 +99,9 @@ func (e *Executor) Execute(ctx context.Context, plan protocol.TaskPlan, emit Eve
 			emit("", "diagnosis", diagnosis)
 			lastStep, canRecover := finalAutonomousStep(plan.Steps)
 			if !canRecover || attempt >= e.maxAttempts || ctx.Err() != nil || !isRetriableFailure(err.Error(), diagnosis) {
+				if planHasTool(plan, "plugin.install") {
+					e.rollbackPlugin(ctx, p, plan, emit)
+				}
 				emit("FAILED", "verification", err.Error())
 				return
 			}
@@ -383,8 +391,10 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		}
 		emit("", "instance", "Restart request accepted by the panel")
 		return nil
-	case "plugin.resolve", "plugin.install":
-		return errors.New("plugin workflow is not enabled in this agent build")
+	case "plugin.resolve":
+		return e.resolvePlugin(ctx, plan, step, emit)
+	case "plugin.install":
+		return e.installPlugin(ctx, p, plan, step, emit)
 	default:
 		return fmt.Errorf("tool %q is not registered", step.Tool)
 	}
@@ -585,8 +595,56 @@ func (e *Executor) verify(ctx context.Context, p provider.Provider, plan protoco
 				return errors.New("server did not reach the Minecraft ready signal within three minutes")
 			}
 		}
+		if rule.Type == "plugin_enabled" {
+			instance, err := p.GetInstance(ctx, plan.InstanceRef)
+			if err != nil || instance.State != "running" {
+				return errors.New("plugin acceptance requires a running instance")
+			}
+			baseline, baselineErr := p.ReadOutput(ctx, plan.InstanceRef, 256)
+			logBaseline, logBaselineErr := p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+			if baselineErr != nil && logBaselineErr != nil {
+				return errors.New("plugin acceptance cannot read console output or latest.log")
+			}
+			if err := p.SendCommand(ctx, plan.InstanceRef, "plugins"); err != nil {
+				return fmt.Errorf("query loaded plugins: %w", err)
+			}
+			result := e.waitForConsoleOutput(
+				ctx, p, plan.InstanceRef, "plugins", baseline, string(logBaseline),
+				baselineErr == nil, logBaselineErr == nil,
+			)
+			latestLog, _ := p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+			if !containsPluginEvidence(result+"\n"+string(latestLog), rule.Name) {
+				return fmt.Errorf("plugin %s was not present in console or startup-log evidence", rule.Name)
+			}
+		}
 	}
 	return nil
+}
+
+func planHasTool(plan protocol.TaskPlan, tool string) bool {
+	for _, step := range plan.Steps {
+		if step.Tool == tool {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPluginEvidence(output, project string) bool {
+	lower := strings.ToLower(output)
+	names := []string{strings.ToLower(strings.TrimSpace(project))}
+	if names[0] == "essentialsx" {
+		names = append(names, "essentials")
+	}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(lower, "enabling "+name) || strings.Contains(lower, "plugins (") && strings.Contains(lower, name) || strings.Contains(lower, "server plugins") && strings.Contains(lower, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func isServerReady(output string) bool {

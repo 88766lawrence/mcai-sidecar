@@ -1,4 +1,7 @@
 node_modules/
+.venv-langgraph/
+__pycache__/
+*.pyc
 .npm-cache/
 .deploy/
 .known_hosts_remote

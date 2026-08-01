@@ -1,0 +1,22 @@
+[Unit]
+Description=MCAI LangGraph Model Cloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mcai-langgraph-cloud/current
+ExecStart=/opt/mcai-langgraph-cloud/current/.venv/bin/uvicorn mcai_graph.app:app --host 127.0.0.1 --port 4200
+Environment=MCAI_MODEL_CONFIG=/etc/mcai-model-cloud/config.json
+Environment=MCAI_LANGGRAPH_STATE=/var/lib/mcai-model-cloud/langgraph.sqlite3
+Restart=on-failure
+RestartSec=5
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mcai-model-cloud
+
+[Install]
+WantedBy=multi-user.target

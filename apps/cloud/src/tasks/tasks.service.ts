@@ -27,7 +27,11 @@ interface ConfirmationSecret {
 @Injectable()
 export class TasksService {
   private readonly confirmations = new Map<string, ConfirmationSecret>();
-  private readonly completionPromises = new Map<string, Promise<{ answer: string; status: TaskRecord["completion_status"] }>>();
+  private readonly completionPromises = new Map<string, Promise<{
+    answer: string;
+    status: TaskRecord["completion_status"];
+    continuation?: TaskRecord["completion_continuation"];
+  }>>();
 
   constructor(
     private readonly store: CloudStore,
@@ -42,11 +46,21 @@ export class TasksService {
     assistantResponse?: string;
     modelRequestId?: string;
     modelStatus?: TaskRecord["model_status"];
+    sessionId?: string;
+    parentTaskId?: string;
+    chainDepth?: number;
+    preferredTool?: string;
   }) {
     const instance = this.store.instances.get(input.instanceRef);
     if (!instance || instance.tenant_id !== input.tenantId) throw new NotFoundException("Instance not found");
     if (!input.intent.trim() || input.intent.length > 2_000) throw new BadRequestException("Intent must contain 1-2000 characters");
-    const plan = draftPlan(input.instanceRef, instance.profile_revision, input.intent.trim());
+    const chainDepth = Math.max(0, Math.min(6, input.chainDepth ?? 0));
+    const plan = draftPlan(input.instanceRef, instance.profile_revision, input.intent.trim(), {
+      preferredTool: input.preferredTool,
+      platform: instance.platform,
+      minecraftVersion: instance.minecraft_version,
+      loader: instance.loader,
+    });
     const now = new Date().toISOString();
     const task: TaskRecord = {
       id: plan.task_id,
@@ -59,6 +73,9 @@ export class TasksService {
       created_at: now,
       updated_at: now,
       evidence: [],
+      session_id: input.sessionId,
+      parent_task_id: input.parentTaskId,
+      chain_depth: chainDepth,
     };
     this.store.tasks.set(task.id, task);
     if (task.risk === "forbidden") {
@@ -99,7 +116,7 @@ export class TasksService {
     const task = this.get(taskId, tenantId);
     if (!terminal(task.state)) return undefined;
     if (task.completion_response) {
-      return { answer: task.completion_response, status: task.completion_status };
+      return { answer: task.completion_response, status: task.completion_status, continuation: task.completion_continuation };
     }
     const pending = this.completionPromises.get(taskId);
     if (pending) return pending;
@@ -206,8 +223,14 @@ export class TasksService {
     const response = await this.modelGateway.answer(task, instance);
     task.completion_response = response.status === "answered" && response.answer.trim() ? response.answer.trim() : fallback;
     task.completion_status = response.status;
+    task.completion_continuation = response.continuation ? {
+      intent: response.continuation.toolIntent!.trim(),
+      preferred_tool: response.continuation.preferredTool,
+      answer: response.continuation.answer,
+      request_id: response.continuation.requestId,
+    } : undefined;
     task.updated_at = new Date().toISOString();
-    return { answer: task.completion_response, status: task.completion_status };
+    return { answer: task.completion_response, status: task.completion_status, continuation: task.completion_continuation };
   }
 
   private move(task: TaskRecord, next: TaskState, summary: string) {

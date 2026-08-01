@@ -1,4 +1,6 @@
-# MCAI Local Model Cloud
+# MCAI Local Model Cloud（旧回退实现）
+
+生产测试端的主编排服务已迁移到根目录 `langgraph-cloud/`。本目录保留 Vercel AI SDK 实现，便于回滚和对照测试，不再作为默认部署入口。
 
 这是与 MCAI 主项目分开的本地模型网关。它只监听回环地址，模型供应商 API Key
 仅保存在本服务的 root-only 配置文件中。

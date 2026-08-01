@@ -2,9 +2,10 @@ import { Injectable } from "@nestjs/common";
 import type { ChatRoute, ConversationMessage, ServerProfile, TaskRecord } from "@mcai/contracts";
 
 interface GatewayResponse {
-  status: "answered" | "unconfigured";
+  status: "answered" | "unconfigured" | "unavailable";
   requestId: string;
   answer: string;
+  continuation?: ChatDecision;
 }
 
 export interface ChatDecision {
@@ -12,6 +13,7 @@ export interface ChatDecision {
   answer: string;
   delegate?: string;
   toolIntent?: string;
+  preferredTool?: string;
   requestId?: string;
   trace?: ConversationMessage["trace"];
 }
@@ -45,6 +47,11 @@ export class ModelGatewayService {
         },
         body: JSON.stringify({
           intent: task.intent,
+          threadId: task.session_id,
+          sessionId: task.session_id,
+          taskId: task.id,
+          parentTaskId: task.parent_task_id,
+          chainDepth: task.chain_depth ?? 0,
           instance: {
             id: instance.instance_id,
             name: instance.name,
@@ -71,7 +78,8 @@ export class ModelGatewayService {
       });
       const body = await response.json().catch(() => null) as GatewayResponse | null;
       if (!response.ok || !body?.answer) throw new Error(`MODEL_GATEWAY_${response.status}`);
-      return { status: body.status, answer: body.answer, requestId: body.requestId };
+      const continuation = validContinuation(body.continuation) ? body.continuation : undefined;
+      return { status: body.status, answer: body.answer, requestId: body.requestId, continuation };
     } catch {
       return {
         status: "unavailable" as const,
@@ -109,6 +117,7 @@ export class ModelGatewayService {
   }
 
   async route(input: {
+    sessionId: string;
     message: string;
     systemPrompt: string;
     history: ConversationMessage[];
@@ -142,6 +151,7 @@ export class ModelGatewayService {
   }
 
   async routeStream(input: {
+    sessionId: string;
     message: string;
     systemPrompt: string;
     history: ConversationMessage[];
@@ -189,12 +199,15 @@ export class ModelGatewayService {
 }
 
 function chatPayload(input: {
+  sessionId: string;
   message: string;
   systemPrompt: string;
   history: ConversationMessage[];
   instance: ServerProfile;
 }) {
   return {
+    threadId: input.sessionId,
+    sessionId: input.sessionId,
     message: input.message,
     systemPrompt: input.systemPrompt,
     history: input.history.slice(-12).map(({ role, content }) => ({ role, content })),
@@ -219,6 +232,22 @@ function chatPayload(input: {
       "instance.restart",
     ],
   };
+}
+
+const controlledTools = new Set([
+  "logs.query", "files.list", "server.install", "config.patch", "plugin.resolve",
+  "plugin.install", "console.command", "instance.start", "instance.stop", "instance.restart",
+]);
+
+function validContinuation(value: ChatDecision | undefined): value is ChatDecision & { route: "tool"; toolIntent: string } {
+  return Boolean(
+    value
+    && value.route === "tool"
+    && typeof value.toolIntent === "string"
+    && value.toolIntent.trim()
+    && typeof value.preferredTool === "string"
+    && controlledTools.has(value.preferredTool),
+  );
 }
 
 async function readNdjson(stream: ReadableStream<Uint8Array>, onEvent: (event: ModelChatStreamEvent) => void) {

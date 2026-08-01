@@ -3,8 +3,10 @@ package mcsmanager
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mcai/sidecar-agent/internal/provider"
@@ -49,6 +51,71 @@ func TestDownloadFromURLRejectsNestedTarget(t *testing.T) {
 	}
 	if err := client.DownloadFromURL(context.Background(), "mcs:daemon:instance", "https://example.com/paper.jar", "/nested/server.jar"); err == nil {
 		t.Fatal("expected nested target to be rejected")
+	}
+}
+
+func TestUploadFileUsesOneTimeDaemonPassport(t *testing.T) {
+	var uploadedName string
+	var uploadedContents string
+	daemon := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/upload/passport-1" || request.URL.Query().Get("overwrite") != "true" {
+			t.Fatalf("unexpected daemon request %s %s", request.Method, request.URL.String())
+		}
+		if err := request.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		uploadedName = header.Filename
+		contents, _ := io.ReadAll(file)
+		uploadedContents = string(contents)
+		_, _ = writer.Write([]byte("OK"))
+	}))
+	defer daemon.Close()
+
+	panel := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/files/upload" || request.URL.Query().Get("upload_dir") != "plugins" {
+			t.Fatalf("unexpected panel request %s %s", request.Method, request.URL.String())
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{"password":"passport-1","addr":"` + daemon.URL + `","remoteMappings":[]}}`))
+	}))
+	defer panel.Close()
+
+	client, err := New(panel.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UploadFile(context.Background(), "mcs:daemon:instance", "plugins", "EssentialsX.jar", []byte("jar-data")); err != nil {
+		t.Fatal(err)
+	}
+	if uploadedName != "EssentialsX.jar" || uploadedContents != "jar-data" {
+		t.Fatalf("unexpected upload %q %q", uploadedName, uploadedContents)
+	}
+}
+
+func TestDeleteFilesUsesExplicitTargets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodDelete || request.URL.Path != "/api/files/" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !strings.Contains(string(body), "plugins/EssentialsX.jar") {
+			t.Fatalf("missing explicit delete target: %s", body)
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteFiles(context.Background(), "mcs:daemon:instance", []string{"plugins/EssentialsX.jar"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -87,6 +87,51 @@ describe("ChatService", () => {
     expect(tasks.complete).toHaveBeenCalledTimes(1);
   });
 
+  it("creates one bounded follow-up task when completion returns a controlled continuation", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.1",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = {
+      route: vi.fn().mockResolvedValue({ route: "tool", answer: "正在安装插件。", toolIntent: "安装 EssentialsX", preferredTool: "plugin.install" }),
+    } as unknown as ModelGatewayService;
+    const firstTask = { id: "task-install", state: "SUCCEEDED", chain_depth: 0, plan: { steps: [{ tool: "plugin.install" }] } };
+    const verificationTask = { id: "task-verify", state: "SNAPSHOTTING", chain_depth: 1, plan: { steps: [{ tool: "files.list" }] } };
+    const tasks = {
+      create: vi.fn()
+        .mockResolvedValueOnce(firstTask)
+        .mockResolvedValueOnce(verificationTask),
+      get: vi.fn().mockImplementation((id: string) => id === firstTask.id ? firstTask : verificationTask),
+      complete: vi.fn().mockImplementation(async (taskId: string) => taskId === firstTask.id ? ({
+          answer: "插件任务缺少实际落盘证据，正在继续核验。",
+          status: "answered",
+          continuation: {
+            intent: "列出当前实例 /plugins 目录并确认目标插件 JAR 是否实际落盘",
+            preferred_tool: "files.list",
+            answer: "正在继续读取 /plugins 目录核验。",
+            request_id: "model-follow-up",
+          },
+        }) : undefined),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    await service.send(session.id, "tenant-1", "帮我安装 EssentialsX");
+    const messages = await service.messages(session.id, "tenant-1");
+    await service.messages(session.id, "tenant-1");
+
+    expect(tasks.create).toHaveBeenCalledTimes(2);
+    expect(tasks.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      parentTaskId: "task-install",
+      chainDepth: 1,
+      preferredTool: "files.list",
+      sessionId: session.id,
+    }));
+    expect(messages.at(-1)).toMatchObject({ task_id: "task-verify", task_phase: "request", route: "tool" });
+  });
+
   it("streams direct answer deltas and persists one complete assistant message", async () => {
     const store = new CloudStore();
     store.instances.set("instance-1", {

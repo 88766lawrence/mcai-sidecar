@@ -87,6 +87,15 @@ export interface TaskRecord {
   completion_response?: string;
   completion_status?: "answered" | "unconfigured" | "unavailable";
   confirmation_expires_at?: string;
+  session_id?: string;
+  parent_task_id?: string;
+  chain_depth?: number;
+  completion_continuation?: {
+    intent: string;
+    preferred_tool?: string;
+    answer: string;
+    request_id?: string;
+  };
 }
 
 export type ChatRoute = "direct" | "clarify" | "delegate" | "tool";

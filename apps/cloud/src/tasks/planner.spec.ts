@@ -104,4 +104,26 @@ describe("draftPlan", () => {
     expect(extractRealtimeLogIntent("为什么这个实例刚才报错了？")).toBeTruthy();
     expect(extractRealtimeLogIntent("Minecraft 日志一般保存在哪里？")).toBeUndefined();
   });
+
+  it("plans the requested EssentialsX project instead of hardcoding LuckPerms", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "帮我安装 EssentialsX", {
+      platform: "paper",
+      minecraftVersion: "1.21.1",
+      loader: "paper",
+    });
+
+    expect(plan.steps[0]).toMatchObject({
+      tool: "plugin.resolve",
+      args: { project: "essentialsx", source: "modrinth", platform: "paper", minecraft_version: "1.21.1" },
+    });
+    expect(plan.acceptance).toContainEqual({ type: "plugin_enabled", name: "essentialsx" });
+  });
+
+  it("honors a controlled files continuation and targets the plugins directory", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "列出当前实例 /plugins 目录", {
+      preferredTool: "files.list",
+    });
+
+    expect(plan.steps).toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
+  });
 });

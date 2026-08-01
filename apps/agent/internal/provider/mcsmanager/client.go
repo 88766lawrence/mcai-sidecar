@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -144,6 +146,93 @@ func (c *Client) DownloadFromURL(ctx context.Context, ref, sourceURL, fileName s
 		"url":       sourceURL,
 		"file_name": fileName,
 	}, &response)
+}
+
+func (c *Client) UploadFile(ctx context.Context, ref, uploadDir, fileName string, contents []byte) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	uploadDir = strings.Trim(strings.ReplaceAll(uploadDir, "\\", "/"), "/")
+	if uploadDir == "" || strings.Contains(uploadDir, "..") || strings.ContainsAny(uploadDir, "\x00\r\n") {
+		return errors.New("upload directory must be a safe instance-relative directory")
+	}
+	if path.Base(fileName) != fileName || !strings.HasSuffix(strings.ToLower(fileName), ".jar") || len(fileName) > 160 {
+		return errors.New("upload filename must be a single JAR filename")
+	}
+	if len(contents) < 1 || len(contents) > 64<<20 {
+		return errors.New("upload must contain between 1 byte and 64 MiB")
+	}
+	var passport apiResponse[struct {
+		Password string `json:"password"`
+		Addr     string `json:"addr"`
+	}]
+	if err := c.call(ctx, http.MethodGet, "/api/files/upload", url.Values{
+		"daemonId": {daemonID}, "uuid": {uuid}, "upload_dir": {uploadDir},
+	}, nil, &passport); err != nil {
+		return fmt.Errorf("register upload passport: %w", err)
+	}
+	if passport.Data.Password == "" || passport.Data.Addr == "" {
+		return errors.New("panel returned an incomplete upload passport")
+	}
+	daemonBase := strings.TrimSpace(passport.Data.Addr)
+	if !strings.Contains(daemonBase, "://") {
+		daemonBase = c.baseURL.Scheme + "://" + daemonBase
+	}
+	daemonBase = strings.Replace(daemonBase, "ws://", "http://", 1)
+	daemonBase = strings.Replace(daemonBase, "wss://", "https://", 1)
+	uploadURL, err := url.Parse(strings.TrimRight(daemonBase, "/") + "/upload/" + url.PathEscape(passport.Data.Password) + "?overwrite=true")
+	if err != nil || (uploadURL.Scheme != "http" && uploadURL.Scheme != "https") {
+		return errors.New("panel returned an invalid daemon upload address")
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(contents); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL.String(), &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := (&http.Client{Timeout: 2 * time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("upload plugin to daemon: %w", err)
+	}
+	defer response.Body.Close()
+	result, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+	if readErr != nil {
+		return readErr
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || strings.TrimSpace(string(result)) != "OK" {
+		return fmt.Errorf("daemon upload failed with HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) DeleteFiles(ctx context.Context, ref string, targets []string) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 || len(targets) > 16 {
+		return errors.New("delete requires 1-16 explicit targets")
+	}
+	for _, target := range targets {
+		clean := strings.TrimPrefix(strings.ReplaceAll(target, "\\", "/"), "/")
+		if clean == "" || strings.Contains(clean, "..") || strings.ContainsAny(clean, "\x00\r\n") {
+			return errors.New("delete target is not a safe instance-relative path")
+		}
+	}
+	var response apiResponse[any]
+	return c.call(ctx, http.MethodDelete, "/api/files/", url.Values{"daemonId": {daemonID}, "uuid": {uuid}}, map[string]any{"targets": targets}, &response)
 }
 
 func (c *Client) UpdateStartConfig(ctx context.Context, ref string, config provider.StartConfig) error {

@@ -22,6 +22,8 @@ const defaultSystemPrompt = [
   "不得绕过确认、风险策略或生成任意 Shell。",
 ].join("\n");
 
+const maxContinuationDepth = 6;
+
 interface PersistedChat {
   sessions: ConversationSession[];
   messages: ConversationMessage[];
@@ -109,6 +111,36 @@ export class ChatService implements OnModuleInit {
       list.push(finalMessage);
       session.updated_at = finalMessage.created_at;
       changed = true;
+      const parentTask = this.tasks.get(message.task_id, tenantId);
+      const continuation = completion.continuation;
+      const nextDepth = (parentTask.chain_depth ?? 0) + 1;
+      if (continuation && nextDepth <= maxContinuationDepth) {
+        const nextTask = await this.tasks.create({
+          tenantId,
+          instanceRef: session.instance_ref,
+          intent: continuation.intent,
+          assistantResponse: continuation.answer,
+          modelRequestId: continuation.request_id,
+          modelStatus: "answered",
+          sessionId: session.id,
+          parentTaskId: parentTask.id,
+          chainDepth: nextDepth,
+          preferredTool: continuation.preferred_tool,
+        });
+        const requestMessage: ConversationMessage = {
+          id: `message_${randomUUID()}`,
+          session_id: session.id,
+          role: "assistant",
+          content: continuation.answer,
+          route: "tool",
+          task_id: nextTask.id,
+          task_phase: "request",
+          trace: [{ stage: "tool", label: "继续调用工具", result: continuation.preferred_tool ?? nextTask.plan.steps[0]?.tool ?? "controlled" }],
+          created_at: new Date().toISOString(),
+        };
+        list.push(requestMessage);
+        session.updated_at = requestMessage.created_at;
+      }
     }
     if (changed) await this.persist();
     return list;
@@ -215,6 +247,7 @@ export class ChatService implements OnModuleInit {
       list.push(userMessage);
     }
     const routeInput = {
+      sessionId: session.id,
       message: content,
       systemPrompt: session.system_prompt,
       history: list.filter((message) => message.id !== userMessage.id),
@@ -244,6 +277,9 @@ export class ChatService implements OnModuleInit {
         assistantResponse: decision.answer,
         modelRequestId: decision.requestId,
         modelStatus: "answered",
+        sessionId: session.id,
+        chainDepth: 0,
+        preferredTool: decision.preferredTool,
       });
       taskId = task.id;
     }

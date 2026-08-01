@@ -1,10 +1,12 @@
 # MCAI 项目交接记录
 
-更新时间：2026-07-30 19:29（Asia/Hong_Kong）
+更新时间：2026-08-01 13:18（Asia/Hong_Kong）
 
 ## 当前结论
 
-MCAI 已支持通过自然语言操控页面当前选中的 Minecraft 实例控制台。控制台真实输出回读、基于回调生成最终答复、常见只读请求的确定性路由均已部署到 Linux 测试端。
+MCAI 的默认模型编排层已从一次性 Vercel AI SDK 路由迁移为 Python LangGraph。对话、待执行动作和任务回调使用 SQLite 检查点；Cloud 能消费回调返回的 continuation，创建下一项受控任务并保持原会话/实例绑定。插件闭环已接入 Modrinth 解析、哈希验证、MCSManager 一次性上传、落盘与启动证据验收和失败删除回滚。
+
+2026-08-01 的 Linux 真实只读验收已确认：用户回复“需要”会恢复 `files.list`；插件安装结果缺少文件证据时会继续读取 `/plugins`；当前实例真实目录只有 `.paper-remapped`、`bStats` 和 `spark`，最终答案明确说明未发现 EssentialsX，不能声称已安装。
 
 控制台能力是受控工具 `console.command`，不是 Linux Shell。Cloud 做第一次风险分级，Go Agent 在服务器本地再次校验；MCSManager API Key 仍只由 Agent 本机读取。
 
@@ -366,3 +368,122 @@ Running 58011ms behind
 - `git diff --check`：通过。
 
 2026-07-31 提交前已重新执行上述完整本地验证，所有项目均通过。推送后还需核对 Windows `HEAD` 与 GitHub `origin/main` 一致，并确认 Windows 工作区和 Linux `/opt/mcai-src` 的受影响文件 SHA-256 完全一致。
+
+## 2026-08-01 LangGraph 编排、回调续跑与插件闭环
+
+### 迁移原因
+
+旧 `local-cloud/agent.mjs` 只在选择路由时循环。模型一旦调用 `requestOperation`，Cloud 创建任务后该次模型执行就结束；任务完成后的 `/v1/respond` 只能生成文字，不能再请求工具。短回复“需要”“继续”“确认”也只带当前一句话进入路由，上一轮待办会丢失。因此旧实现会出现以下确定性故障：
+
+- 工具提交后直接停住，不根据回调继续验证。
+- 文件落盘证据不足时只能输出文字，不能再调用 `files.list`。
+- 用户回复“需要”后不知道是在确认读取插件目录。
+- `planner.ts` 把所有通用插件安装硬编码成 LuckPerms。
+- Go Executor 对 `plugin.resolve` 和 `plugin.install` 直接返回未启用。
+- `plugin_enabled` 虽出现在计划中，但 Go `verify()` 没有实现该规则，存在空验收风险。
+
+### 当前架构
+
+职责仍严格分离：
+
+1. `langgraph-cloud` 保存会话状态、恢复 pending action、评估回调，并提出下一项受控工具。
+2. NestJS Cloud 绑定租户、会话和页面当前实例，重新生成确定性计划并执行风险策略。
+3. 中风险和高风险 continuation 只会创建 `WAITING_CONFIRMATION` 任务，不会自动批准。
+4. Go Agent 使用本机 MCSManager API Key 执行工具、采集证据、验收和回滚。
+5. 模型云不连接 MCSManager，不持有面板 API Key，不执行 Shell/SSH。
+
+Cloud continuation 链包含 `session_id`、`parent_task_id` 和 `chain_depth`，最大深度为 6。达到上限后停止自动串联。任务提交、面板接受或中间状态不等于完成，只有 Agent 回调证据能形成最终答案。
+
+### Python LangGraph 服务
+
+新增目录 `langgraph-cloud/`：
+
+- `mcai_graph/graph.py`：聊天图、回调评估图、SQLite 检查点、确定性路由和 pending action 恢复。
+- `mcai_graph/app.py`：兼容原 Cloud 的 `/v1/chat`、`/v1/chat/stream`、`/v1/respond` 和 `/health`。
+- `tests/test_graph.py`：短回复续跑、插件验证、缺证据 continuation、禁止伪成功等测试。
+- `tests/test_app.py`：service token、thread ID、健康端点和回调接口测试。
+- `mcai-model-cloud.service`：只监听 `127.0.0.1:4200`，状态库为 `/var/lib/mcai-model-cloud/langgraph.sqlite3`。
+
+SQLite 使用 `AsyncSqliteSaver`。早期版本误用了同步 `SqliteSaver`，首次测试即报 `SqliteSaver does not support async methods`，已改为异步连接并显式执行 `setup()`。状态文件权限强制为 `0600`，状态目录应为 `0700`。
+
+确定性规则包括：
+
+- “你确定 Essentials 安装了吗”使用 `files.list`，不再次触发安装。
+- 助手上一轮询问是否读取 `/plugins` 后，用户回复“需要/继续/确认”恢复该待办。
+- 插件任务只有 state/verification 中间证据时，`/v1/respond` 返回 `files.list` continuation。
+- `files.list` 没有 `kind=files` 证据时明确失败，不交给模型润色成成功。
+- 文件证据没有目标插件时，明确回答“未发现，不能确认已安装”，并引用实际清单。
+
+### Cloud 续跑
+
+主要修改：
+
+- `model-gateway.service.ts` 发送 `threadId/sessionId/taskId/chainDepth`，接收并验证可选 continuation。
+- `tasks.service.ts` 持久化父任务和深度，并缓存 completion continuation，避免进程内重复求值。
+- `chat.service.ts` 在任务终态消息出现后创建下一任务；并发轮询先写入 completion 标记，防止重复创建。
+- `planner.ts` 解析实际插件项目名，携带当前 platform/loader/Minecraft 版本，不再硬编码 LuckPerms。
+- `packages/contracts` 增加任务链元数据和 completion continuation 契约。
+
+Cloud 回归测试新增“回调返回 continuation 时只创建一个下一任务”，并验证下一任务保持相同会话、正确父任务、深度 `1` 和 `files.list` 工具提示。
+
+### 插件执行闭环
+
+Go Agent 新增 `plugins.go`，当前支持 Paper 兼容插件：
+
+1. 使用 Modrinth `/v2/project/{project}/version`，按 Paper loader 和当前 Minecraft 版本过滤。
+2. 选择主 JAR；只信任官方环境中的 `https://cdn.modrinth.com`。
+3. 下载到 Agent 本地隔离区，最大 64 MiB。
+4. 验证 Modrinth 声明的 SHA-512，并计算/记录本地 SHA-256。
+5. 使用 MCSManager `/api/files/upload` 注册一次性 passport。
+6. 向 Daemon `/upload/{password}?overwrite=true` 发送 multipart `file` 字段。
+7. 读取 `/plugins` 文件清单确认 JAR 实际落盘。
+8. 重启后执行 Minecraft 控制台 `plugins`，同时读取面板输出和 `logs/latest.log` 验证插件已启用。
+9. 落盘核验、后续步骤或最终验收失败时，调用 MCSManager 文件删除 API 移除刚上传的 JAR。
+
+存在必需依赖时当前安全行为是停止并报告依赖项目 ID，不能无审批地递归安装。递归依赖计划仍是后续工作。隔离区 JAR 在成功上传后删除，只保留不含密钥的 manifest 和哈希证据。
+
+### 本地和 Linux 验证
+
+Windows 最终结果：
+
+- Python 编译：通过。
+- LangGraph/FastAPI：11 项测试通过。
+- Cloud：22 项测试通过。
+- 全仓 TypeScript 类型检查：通过。
+- Next/Nest/Contracts 生产构建：通过。
+- Go `go test ./...`：通过，包含 Modrinth 哈希不匹配拒绝、上传 passport、multipart、落盘和回滚测试。
+- `git diff --check`：提交前仍需最终重跑。
+
+Linux 迁移最终结果：
+
+- 安装 Debian 官方 `python3-venv`，Python 为 3.11.2。
+- Python 测试通过。
+- Cloud 22/22 通过。
+- Go 全量测试和构建通过。
+- `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web` 均为 active。
+- `/health` 返回 `runtime=python-langgraph`。
+- 当前 release：`/opt/mcai-langgraph-cloud/releases/20260801130804`。
+- 成功部署备份：`/tmp/mcai-langgraph-backup-20260801131037`。
+
+前两次未激活迁移分别暴露：Debian 缺少 `python3-venv`；npm shebang 找不到 Node PATH。第三次远端 Cloud 测试又发现 `/tmp` 清理超时，改用 `/opt/mcai-src/.test-tmp-*` 后 22 项在 1.81 秒内全部通过。每次失败均在 systemd 激活前退出并保持旧服务可用。
+
+### 真实只读对话验收
+
+脚本：`.deploy/verify-langgraph-loop.mjs`。最终输出 `passed=true`，目标为页面当前运行实例，未安装、删除或重启 Minecraft。
+
+验收结果：
+
+- Runtime：`python-langgraph`。
+- “需要”恢复上一轮操作：`files.list`。
+- 插件任务缺落盘证据的 continuation：`files.list`。
+- Cloud 真实任务：`SUCCEEDED`。
+- 工具与路径：`files.list /plugins`。
+- 实际文件证据：`.paper-remapped`、`bStats`、`spark`。
+- 最终答案：未在 `/plugins` 中发现 EssentialsX，因此不能确认该插件已安装，并附实际文件清单。
+
+### 尚未执行和后续限制
+
+- 本轮没有真实安装 EssentialsX，因为插件计划包含高风险重启，必须由用户在 UI 对具体计划确认后才能执行。
+- 尚未实现必需依赖的递归解析/多插件统一审批与回滚。
+- Cloud 任务仍是内存存储；Cloud 重启会清空任务记录。LangGraph 对话检查点不受此限制。
+- 完成提交后还需推送 GitHub，并对 Windows、Linux `/opt/mcai-src` 和 `origin/main` 的受影响文件做 SHA-256/提交一致性核对。
