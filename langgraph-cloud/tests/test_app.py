@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,18 @@ class FakeGraph:
     async def respond(self, payload):
         self.payload = payload
         return {"status": "answered", "answer": "任务已完成。", "requestId": "response-test"}
+
+
+class ToolGraph(FakeGraph):
+    async def route(self, payload):
+        self.payload = payload
+        return {
+            "route": "tool",
+            "answer": "正在调用受控工具。",
+            "preferredTool": "instance.start",
+            "toolIntent": "启动当前实例",
+            "requestId": "request-tool-test",
+        }
 
 
 class AppTests(unittest.TestCase):
@@ -43,6 +56,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["runtime"], "python-langgraph")
         self.assertTrue(response.json()["configured"])
+
+    def test_stream_announces_route_before_answer_content(self):
+        with patch.object(app_module, "current_graph", return_value=ToolGraph()):
+            response = self.client.post(
+                "/v1/chat/stream",
+                headers={"authorization": "Bearer service-secret"},
+                json={"threadId": "stream-route", "message": "启动服务器"},
+            )
+        events = [json.loads(line) for line in response.text.splitlines() if line]
+        self.assertEqual(events[0], {"type": "route", "route": "tool"})
+        self.assertEqual(events[1], {"type": "reset"})
+        self.assertEqual(events[-1]["type"], "done")
 
     def test_chat_requires_service_token_and_preserves_thread_id(self):
         unauthorized = self.client.post("/v1/chat", json={"message": "1+1"})

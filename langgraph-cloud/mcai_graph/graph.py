@@ -282,6 +282,25 @@ class McaiGraph:
                 answer = f"未在 /plugins 中发现 {plugin_name}，因此不能确认该插件已安装。当前文件清单：{files_evidence}"
             return {"decision": _response(answer, status="answered"), "next_node": "end"}
 
+        lifecycle_tool = next((tool for tool in reversed(tools) if tool in {"instance.start", "instance.stop", "instance.restart"}), "")
+        if lifecycle_tool and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
+            lifecycle_names = {
+                "instance.start": "启动实例",
+                "instance.stop": "停止实例",
+                "instance.restart": "重启实例",
+            }
+            evidence_summary = next((
+                str(item.get("summary", "")).strip()
+                for item in reversed(substantive)
+                if item.get("kind") in {"instance", "diagnosis", "tool"} and str(item.get("summary", "")).strip()
+            ), "")
+            if task_state == "SUCCEEDED":
+                answer = evidence_summary or f"{lifecycle_names[lifecycle_tool]}已完成。"
+            else:
+                reason = re.sub(r"^工具返回错误[：:]\s*", "", evidence_summary) or "工具未返回可验证的完成证据"
+                answer = f"{lifecycle_names[lifecycle_tool]}失败：{reason}"
+            return {"decision": _response(answer, status="answered"), "next_node": "end"}
+
         if continuation:
             return {
                 "decision": {

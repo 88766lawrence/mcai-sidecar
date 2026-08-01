@@ -80,6 +80,7 @@ async def chat_stream(payload: dict[str, Any], authorization: str | None = Heade
 
     async def events() -> AsyncIterator[bytes]:
         answer = str(decision.get("answer", ""))
+        yield _line({"type": "route", "route": str(decision.get("route", "direct"))})
         yield _line({"type": "reset"})
         for start in range(0, len(answer), 36):
             yield _line({"type": "delta", "text": answer[start:start + 36]})

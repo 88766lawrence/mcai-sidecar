@@ -30,7 +30,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .setup-panel { width: min(680px, calc(100% - 64px)); align-self: center; justify-self: center; padding: 42px 0; }
 .setup-logo { display: block; width: 220px; height: auto; object-fit: contain; }
 .setup-kicker { display: inline-flex; align-items: center; gap: 8px; margin-top: 48px; color: #087fc2; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.setup-panel h1 { max-width: 640px; margin: 14px 0 12px; color: var(--navy); font-size: clamp(38px, 4vw, 58px); line-height: 1.08; letter-spacing: -.04em; }
+.setup-panel h1 { max-width: 640px; margin: 14px 0 12px; color: var(--navy); font-size: clamp(38px, 4vw, 58px); line-height: 1.08; letter-spacing: 0; }
 .setup-lead { max-width: 570px; margin: 0; color: #586b83; font-size: 15px; line-height: 1.75; }
 .setup-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 32px 0; padding: 0; list-style: none; }
 .setup-step { min-height: 116px; padding: 15px; border: 1px solid #dce5f0; border-radius: 12px; background: rgba(255,255,255,.82); }
@@ -68,7 +68,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .login-panel { width: min(440px, calc(100% - 48px)); align-self: center; justify-self: center; padding: 32px 0; }
 .login-logo { width: 210px; }
 .login-panel .setup-kicker { margin-top: 58px; }
-.login-panel h1 { margin: 14px 0 8px; color: var(--navy); font-size: 42px; letter-spacing: -.04em; }
+.login-panel h1 { margin: 14px 0 8px; color: var(--navy); font-size: 42px; letter-spacing: 0; }
 .login-panel > p { margin: 0 0 30px; color: var(--muted); font-size: 14px; }
 .login-form { display: grid; gap: 16px; }
 .login-security { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #75869b; font-size: 10px; }
@@ -80,7 +80,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .aside-symbol img { width: 100%; height: 100%; object-fit: contain; }
 .aside-copy { margin-top: auto; }
 .setup-aside .eyebrow { color: #6dd9ff; letter-spacing: .17em; }
-.setup-aside h2 { margin: 16px 0 12px; font-size: clamp(30px, 3vw, 44px); line-height: 1.13; letter-spacing: -.03em; }
+.setup-aside h2 { margin: 16px 0 12px; font-size: clamp(30px, 3vw, 44px); line-height: 1.13; letter-spacing: 0; }
 .setup-aside p { max-width: 430px; margin: 0; color: #a9bed9; font-size: 14px; line-height: 1.7; }
 .trust-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 28px 0; }
 .trust-list > div { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.06); }
@@ -345,7 +345,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .new-session-button:hover { background: #e3f6ff; }
 .agent-conversation { grid-column: 2; grid-row: 2; min-height: 0; display: flex; flex-direction: column; background: #fff; }
 .conversation-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 28px 34px 20px; border-bottom: 1px solid #edf1f6; }
-.conversation-head h1 { margin: 5px 0 5px; font-size: 24px; letter-spacing: -.035em; }
+.conversation-head h1 { margin: 5px 0 5px; font-size: 24px; letter-spacing: 0; }
 .conversation-head p { margin: 0; color: #6a7991; font-size: 12px; }
 .prompt-button { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border: 1px solid #d7e0ec; border-radius: 9px; color: #3e5473; background: #fff; font-weight: 650; cursor: pointer; }
 .prompt-button:hover { border-color: #94d7f7; color: #007cb9; background: #f5fcff; }
@@ -372,7 +372,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .scroll-latest-button:focus-visible { outline: 2px solid #00a7ef; outline-offset: 3px; }
 .agent-welcome { display: flex; max-width: 560px; min-height: 100%; margin: auto; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .agent-welcome > span { display: grid; width: 52px; height: 52px; place-items: center; border: 1px solid #b8e7fb; border-radius: 16px; color: #008bd0; background: #ecfaff; }
-.agent-welcome h2 { margin: 18px 0 8px; font-size: 22px; letter-spacing: -.025em; }
+.agent-welcome h2 { margin: 18px 0 8px; font-size: 22px; letter-spacing: 0; }
 .agent-welcome p { max-width: 460px; margin: 0; color: #718096; font-size: 13px; line-height: 1.7; }
 .agent-welcome .suggestions { justify-content: center; margin-top: 22px; }
 .chat-message { display: flex; max-width: 760px; gap: 11px; margin: 0 auto 22px; }
@@ -667,7 +667,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   color: var(--agent-text);
   font-size: 16px;
   font-weight: 620;
-  letter-spacing: -.018em;
+  letter-spacing: 0;
 }
 .conversation-head p { margin-top: 5px; color: var(--agent-faint); font-size: 10px; }
 .prompt-button {
@@ -698,7 +698,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   color: var(--agent-accent);
   background: linear-gradient(145deg, rgba(85, 200, 255, .13), rgba(116, 105, 255, .06));
 }
-.agent-welcome h2 { margin: 20px 0 7px; color: var(--agent-text); font-size: 27px; font-weight: 580; letter-spacing: -.045em; }
+.agent-welcome h2 { margin: 20px 0 7px; color: var(--agent-text); font-size: 27px; font-weight: 580; letter-spacing: 0; }
 .agent-welcome p { color: var(--agent-muted); font-size: 13px; }
 .agent-welcome .suggestions { justify-content: flex-start; gap: 8px; margin-top: 25px; }
 .agent-welcome .suggestions button {
@@ -1098,7 +1098,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 }
 .paper-ops .agent-welcome h2 {
   margin: 0; color: var(--paper-ink); font-size: clamp(36px, 4vw, 58px);
-  font-weight: 500; letter-spacing: -.055em;
+  font-weight: 500; letter-spacing: 0;
 }
 .paper-ops .agent-welcome > p:not(.welcome-label) { margin-top: 17px; color: var(--paper-muted); font-size: 15px; }
 .paper-ops .agent-welcome .suggestions {
@@ -1124,7 +1124,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   max-width: none; margin: 10px 0 0; padding: 0 0 24px; border: 0;
   border-bottom: 1px solid var(--paper-line); border-radius: 0; color: var(--paper-ink);
   background: transparent; font-size: 18px; font-weight: 600;
-  line-height: 1.65; letter-spacing: -.012em;
+  line-height: 1.65; letter-spacing: 0;
 }
 .paper-ops .chat-message.assistant > div { width: 100%; padding: 0; }
 .paper-ops .message-meta { margin-bottom: 10px; }
@@ -1134,7 +1134,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .paper-ops .rich-message { color: var(--paper-ink); }
 .paper-ops .rich-message p {
   color: var(--paper-ink); font-size: 17px;
-  font-weight: 450; line-height: 1.72; letter-spacing: -.008em;
+  font-weight: 450; line-height: 1.72; letter-spacing: 0;
 }
 .paper-ops .rich-message strong { color: var(--paper-ink); }
 .paper-ops .rich-message ul { margin-top: 18px; gap: 10px; }
@@ -1164,7 +1164,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .paper-ops .task-activity > summary {
   display: grid;
   min-height: 46px;
-  grid-template-columns: minmax(0, 1fr) auto 16px;
+  grid-template-columns: minmax(0, 1fr) 16px;
   align-items: center;
   gap: 12px;
   color: var(--paper-muted);
@@ -1187,13 +1187,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
   font-size: 12px;
   font-weight: 650;
 }
-.paper-ops .task-activity > summary > strong {
-  color: var(--paper-green);
-  font-size: 11px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-.paper-ops .task-activity.failed > summary > strong { color: var(--paper-orange); }
 .paper-ops .task-activity-chevron {
   color: var(--paper-faint);
   transition: transform 180ms ease;

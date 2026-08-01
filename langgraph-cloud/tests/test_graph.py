@@ -99,6 +99,26 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertIn("未在 /plugins 中发现 EssentialsX", response["answer"])
 
+    async def test_lifecycle_success_uses_instance_evidence_without_model(self):
+        response = await self.graph.respond({
+            "threadId": "session-lifecycle-success",
+            "intent": "启动服务器",
+            "taskState": "SUCCEEDED",
+            "plan": {"steps": [{"tool": "instance.start"}]},
+            "evidence": [{"kind": "instance", "summary": "实例已在运行，无需重复启动"}],
+        })
+        self.assertEqual(response["answer"], "实例已在运行，无需重复启动")
+
+    async def test_lifecycle_failure_reports_real_tool_reason_without_model(self):
+        response = await self.graph.respond({
+            "threadId": "session-lifecycle-failure",
+            "intent": "启动服务器",
+            "taskState": "FAILED",
+            "plan": {"steps": [{"tool": "instance.start"}]},
+            "evidence": [{"kind": "diagnosis", "summary": "工具返回错误：panel returned HTTP 500"}],
+        })
+        self.assertEqual(response["answer"], "启动实例失败：panel returned HTTP 500")
+
 
 class RoutingTests(unittest.TestCase):
     def test_plugin_install_routes_to_controlled_tool(self):

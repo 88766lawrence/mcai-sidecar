@@ -130,6 +130,7 @@ export interface ConversationMessage {
 }
 
 export type ConversationStreamEvent =
+  | { type: "route"; route: ChatRoute }
   | { type: "delta"; text: string }
   | { type: "reset" }
   | { type: "done"; result: { message: ConversationMessage; task?: TaskRecord } }

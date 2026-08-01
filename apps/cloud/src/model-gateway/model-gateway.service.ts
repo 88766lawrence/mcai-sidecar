@@ -19,6 +19,7 @@ export interface ChatDecision {
 }
 
 export type ChatStreamProgress =
+  | { type: "route"; route: ChatRoute }
   | { type: "delta"; text: string }
   | { type: "reset" };
 
@@ -176,7 +177,8 @@ export class ModelGatewayService {
 
       let decision: ChatDecision | undefined;
       await readNdjson(response.body, (event) => {
-        if (event.type === "delta" && typeof event.text === "string") onProgress(event);
+        if (event.type === "route" && ["direct", "clarify", "delegate", "tool"].includes(event.route)) onProgress(event);
+        else if (event.type === "delta" && typeof event.text === "string") onProgress(event);
         else if (event.type === "reset") onProgress(event);
         else if (event.type === "done") decision = event.decision;
         else if (event.type === "error") throw new Error("MODEL_GATEWAY_STREAM");

@@ -17,6 +17,12 @@ type recoveryProvider struct {
 	listCalls    int
 	listFailures int
 	listError    error
+	startCalls   int
+	stopCalls    int
+	startError   error
+	stopError    error
+	startState   string
+	stopState    string
 }
 
 func (p *recoveryProvider) ListInstances(context.Context) ([]provider.Instance, error) {
@@ -37,9 +43,21 @@ func (p *recoveryProvider) UpdateStartConfig(context.Context, string, provider.S
 func (p *recoveryProvider) ReadFile(context.Context, string, string) ([]byte, error) { return nil, nil }
 func (p *recoveryProvider) WriteFile(context.Context, string, string, []byte) error  { return nil }
 func (p *recoveryProvider) SendCommand(context.Context, string, string) error        { return nil }
-func (p *recoveryProvider) Start(context.Context, string) error                      { return nil }
-func (p *recoveryProvider) Stop(context.Context, string) error                       { return nil }
-func (p *recoveryProvider) Restart(context.Context, string) error                    { return nil }
+func (p *recoveryProvider) Start(context.Context, string) error {
+	p.startCalls++
+	if p.startState != "" {
+		p.instance.State = p.startState
+	}
+	return p.startError
+}
+func (p *recoveryProvider) Stop(context.Context, string) error {
+	p.stopCalls++
+	if p.stopState != "" {
+		p.instance.State = p.stopState
+	}
+	return p.stopError
+}
+func (p *recoveryProvider) Restart(context.Context, string) error { return nil }
 func (p *recoveryProvider) GetInstance(context.Context, string) (provider.Instance, error) {
 	return p.instance, nil
 }
@@ -156,6 +174,54 @@ func TestExecuteDoesNotRepeatAConfirmedOperation(t *testing.T) {
 	}
 }
 
+func TestStartAlreadyRunningIsIdempotent(t *testing.T) {
+	p := &recoveryProvider{instance: provider.Instance{
+		Ref: "mcs:daemon:instance", State: "running", ProfileRevision: "rev-1",
+	}}
+	plan := recoveryPlan()
+	plan.Intent = "start the current instance"
+	plan.Steps = []protocol.TaskStep{{ID: "s1", Tool: "instance.start", Risk: "low"}}
+	events := runPlan(t, p, plan)
+	if p.startCalls != 0 {
+		t.Fatalf("Start called %d times for an already-running instance", p.startCalls)
+	}
+	if events[len(events)-1].state != "SUCCEEDED" || !containsEvent(events, "实例已在运行") {
+		t.Fatalf("unexpected idempotent start result: %#v", events)
+	}
+}
+
+func TestStopAlreadyStoppedIsIdempotent(t *testing.T) {
+	p := &recoveryProvider{instance: provider.Instance{
+		Ref: "mcs:daemon:instance", State: "stopped", ProfileRevision: "rev-1",
+	}}
+	plan := recoveryPlan()
+	plan.Intent = "stop the current instance"
+	plan.Steps = []protocol.TaskStep{{ID: "s1", Tool: "instance.stop", Risk: "high", RequiresConfirmation: true}}
+	plan.Acceptance = []protocol.AcceptanceRule{{Type: "instance_state", Expected: "stopped"}}
+	events := runPlan(t, p, plan)
+	if p.stopCalls != 0 {
+		t.Fatalf("Stop called %d times for an already-stopped instance", p.stopCalls)
+	}
+	if events[len(events)-1].state != "SUCCEEDED" || !containsEvent(events, "实例已经停止") {
+		t.Fatalf("unexpected idempotent stop result: %#v", events)
+	}
+}
+
+func TestStartResponseErrorUsesObservedTargetState(t *testing.T) {
+	p := &recoveryProvider{
+		instance:   provider.Instance{Ref: "mcs:daemon:instance", State: "stopped", ProfileRevision: "rev-1"},
+		startError: errors.New("panel returned HTTP 500"),
+		startState: "running",
+	}
+	plan := recoveryPlan()
+	plan.Intent = "start the current instance"
+	plan.Steps = []protocol.TaskStep{{ID: "s1", Tool: "instance.start", Risk: "low"}}
+	events := runPlan(t, p, plan)
+	if p.startCalls != 1 || events[len(events)-1].state != "SUCCEEDED" {
+		t.Fatalf("start race was not reconciled: calls=%d events=%#v", p.startCalls, events)
+	}
+}
+
 func countEvents(events []recordedEvent, kind string) int {
 	count := 0
 	for _, event := range events {
@@ -164,4 +230,13 @@ func countEvents(events []recordedEvent, kind string) int {
 		}
 	}
 	return count
+}
+
+func containsEvent(events []recordedEvent, text string) bool {
+	for _, event := range events {
+		if strings.Contains(event.summary, text) {
+			return true
+		}
+	}
+	return false
 }

@@ -10,7 +10,7 @@ import {
   Trash2, UserRound, Wrench, X,
 } from "lucide-react";
 import type {
-  ConversationMessage, ConversationSession, ConversationStreamEvent, ServerProfile, TaskRecord,
+  ChatRoute, ConversationMessage, ConversationSession, ConversationStreamEvent, ServerProfile, TaskRecord,
 } from "@mcai/contracts";
 import { api, apiStream } from "../lib/api";
 
@@ -45,6 +45,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const activeSessionIdRef = useRef("");
   const followLatestRef = useRef(true);
   const sendingRef = useRef(false);
+  const streamRouteRef = useRef<ChatRoute | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
 
   useGSAP(() => {
@@ -204,6 +205,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     setActiveSessionId(nextSession?.id ?? "");
     setMessages([]);
     setStreamingMessage(null);
+    streamRouteRef.current = null;
     setPlanning(false);
   }
 
@@ -249,7 +251,12 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         body: JSON.stringify({ content, request_id: requestId }),
         signal: controller.signal,
       }, (event) => {
-        if (event.type === "delta") {
+        if (event.type === "route") {
+          streamRouteRef.current = event.route;
+          setPlanning(event.route === "tool");
+          if (event.route === "tool") setStreamingMessage(null);
+        } else if (event.type === "delta") {
+          if (streamRouteRef.current === "tool") return;
           setPlanning(false);
           setStreamingMessage((value) => ({
             id: streamId,
@@ -261,7 +268,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
           }));
         } else if (event.type === "reset") {
           setStreamingMessage(null);
-          setPlanning(true);
+          setPlanning(streamRouteRef.current === "tool" || streamRouteRef.current === null);
         } else if (event.type === "done") {
           result = event.result;
           setPlanning(false);
@@ -285,6 +292,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       setLoading(false);
       setSending(false);
       setPlanning(false);
+      streamRouteRef.current = null;
       setPendingSessionId("");
     }
   }
@@ -396,7 +404,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>今天要处理什么？</h2><p>直接提问或描述操作，MCAI 会使用当前实例的信息完成任务。</p><div className="suggestions"><button onClick={() => setIntent("启动服务器")}>启动实例</button><button onClick={() => setIntent("分析最近一次崩服的原因")}>分析崩服</button><button onClick={() => setIntent("把视距调整为 10")}>调整配置</button></div></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
         {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
-        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
+        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>思考中</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
       </div>
       {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
@@ -474,12 +482,11 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
 function TaskActivity({ content, task, instanceName, onReview }: { content: string; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
   const diagnosis = task ? [...task.evidence].reverse().find((item) => item.kind === "diagnosis") : undefined;
   const recovery = task ? [...task.evidence].reverse().find((item) => item.kind === "decision") : undefined;
-  const toolNames = task?.plan.steps.map((step) => toolLabel(step.tool)).join("、") ?? "准备工具";
   const failedTask = Boolean(task && terminal(task.state) && task.state !== "SUCCEEDED");
+  const isComplete = Boolean(task && terminal(task.state));
   return <details className={`task-activity ${failedTask ? "failed" : ""}`}>
     <summary>
-      <span className="task-activity-title"><Wrench size={14} /><span><strong>{toolNames}</strong><small>{task ? `${task.plan.steps.length} 个工具调用` : "等待任务创建"}</small></span></span>
-      <strong>{task ? taskActivityLabel(task.state) : "已准备"}</strong>
+      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "查看思考过程" : "思考中"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : "展开查看工具调用"}</small></span></span>
       <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
     </summary>
     <div className="task-activity-content">

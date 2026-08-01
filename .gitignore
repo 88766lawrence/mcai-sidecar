@@ -3,6 +3,8 @@ node_modules/
 __pycache__/
 *.pyc
 .npm-cache/
+.go-cache/
+.go-tmp/
 .deploy/
 .known_hosts_remote
 *.pem

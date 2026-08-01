@@ -514,3 +514,65 @@ Linux 迁移最终结果：
 - Runtime 仍为 `/opt/mcai-langgraph-cloud/releases/20260801130804`。
 - 真实 `/v1/chat/stream` 验收结果：`passed=true`、`route=tool`、`preferredTool=instance.restart`、流式和最终回答均为“已生成重启计划，等待确认。”。
 - 验收目标是页面当前实例 `mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`，验收明确记录 `minecraftRestarted=false`。
+
+## 2026-08-01 生命周期幂等执行、最终回答与折叠思考 UI
+
+### `panel returned HTTP 500` 根因
+
+页面中的失败任务实际为“启动服务器”，任务 `task_e93837e1-2842-4c86-aeb5-7b5da92d3e55` 连续四次调用 `instance.start` 后失败。MCSManager Daemon 原始日志明确返回：`实例未处于关闭状态，无法再进行启动`。实例当时已经运行，Agent 不应重复调用 `/api/protected_instance/open`，更不应把确定性状态冲突当作暂时错误重试四次。
+
+### Agent 修复
+
+- `instance.start` 执行前读取真实实例状态：
+  - `running`：直接成功并输出“实例已在运行，无需重复启动”。
+  - `starting`：不重复调用面板，进入状态验收。
+  - 其他状态：调用面板；若面板响应异常但复查发现已进入 `starting/running`，按真实状态继续验收。
+- `instance.stop` 同样具备幂等行为：实例已停止时直接成功；面板响应异常后复查已停止也视为目标已达成。
+- 新增 Go 回归覆盖：已运行实例重复启动、已停止实例重复停止、面板响应错误但目标状态已达成。
+- 部署回滚点：`/tmp/mcai-lifecycle-execution-backup-20260801144345`。
+
+### LangGraph 最终回答
+
+- 生命周期工具回调不再依赖模型二次生成结果。
+- 成功时直接引用 `instance` 工具证据；失败时直接输出真实 `diagnosis/tool` 原因。
+- 新增成功和失败两条确定性回调测试。
+
+### 真实幂等启动验收
+
+通过 Cloud 会话真实发送“启动服务器”，目标为页面当前实例。结果：
+
+- 任务：`task_9f22de63-bb8c-4d2a-acfc-04e4e5a2ad7e`。
+- 工具：`instance.start`。
+- 状态：`SUCCEEDED`。
+- 工具证据：`实例已在运行，无需重复启动`。
+- 最终回答：`实例已在运行，无需重复启动`。
+- MCSManager “实例未处于关闭状态”冲突日志计数：执行前 16，执行后 16，证明没有重复调用 `/open`。
+- `minecraftRestarted=false`。
+
+### 折叠思考与工具调用 UI
+
+- LangGraph `/v1/chat/stream` 在文本片段前发送 `route` 事件。
+- Cloud 和 Contracts 透传 `direct/clarify/delegate/tool` 路由提示。
+- 直接回答继续流式输出。
+- 工具任务执行时只显示一个“思考中”；中间工具回答不会作为可见聊天文本流出。
+- 工具名称、原始工具 ID、目标实例和状态仅在用户展开“思考中/查看思考过程”后显示。
+- 任务结束后单独显示最终结果卡；工具过程默认保持折叠。
+- 保留米黄色纸张风格，清除负字间距，保留键盘焦点、44px 以上操作目标与 reduced-motion 支持。
+- UI 部署回滚点：`/tmp/mcai-thinking-ui-backup-20260801145342`。
+
+### 最终测试与截图
+
+- Windows LangGraph/FastAPI：16/16 通过。
+- Linux LangGraph/FastAPI：16/16 通过。
+- Cloud：22/22 通过。
+- Go `go test ./...`：通过。
+- 全仓 TypeScript 类型检查：通过。
+- Next/Nest/Contracts 生产构建：通过。
+- 真实流式路由：`route=tool`、`preferredTool=instance.restart`、`passed=true`。
+- Edge/Playwright 视觉验收：1440px、390px、375px 均无横向溢出和浏览器运行错误。
+- 截图目录：`screenshot/`。
+  - `thinking-desktop.png`：仅显示一个“思考中”，工具内容不可见。
+  - `tools-expanded-desktop.png`：展开后显示工具与目标实例。
+  - `result-desktop.png`：默认折叠过程并显示最终结果。
+  - `result-mobile.png`、`result-mobile-375.png`：移动端最终结果。
+  - `tools-expanded-mobile-375.png`：375px 展开工具过程。

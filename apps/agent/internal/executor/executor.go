@@ -374,17 +374,9 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		}
 		return fmt.Errorf("console command /%s did not produce readable output within the verification window (sha256:%s)", verb, hex.EncodeToString(sum[:8]))
 	case "instance.start":
-		if err := p.Start(ctx, plan.InstanceRef); err != nil {
-			return err
-		}
-		emit("", "instance", "Start request accepted by the panel")
-		return nil
+		return e.startInstance(ctx, p, plan.InstanceRef, emit)
 	case "instance.stop":
-		if err := p.Stop(ctx, plan.InstanceRef); err != nil {
-			return err
-		}
-		emit("", "instance", "Stop request accepted by the panel")
-		return nil
+		return e.stopInstance(ctx, p, plan.InstanceRef, emit)
 	case "instance.restart":
 		if err := p.Restart(ctx, plan.InstanceRef); err != nil {
 			return err
@@ -398,6 +390,52 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 	default:
 		return fmt.Errorf("tool %q is not registered", step.Tool)
 	}
+}
+
+func (e *Executor) startInstance(ctx context.Context, p provider.Provider, instanceRef string, emit EventSink) error {
+	instance, err := p.GetInstance(ctx, instanceRef)
+	if err != nil {
+		return fmt.Errorf("read instance state before start: %w", err)
+	}
+	if instance.State == "running" {
+		emit("", "instance", "实例已在运行，无需重复启动")
+		return nil
+	}
+	if instance.State == "starting" {
+		emit("", "instance", "实例已在启动中，正在等待进入运行状态")
+		return nil
+	}
+	if err := p.Start(ctx, instanceRef); err != nil {
+		after, stateErr := p.GetInstance(ctx, instanceRef)
+		if stateErr == nil && (after.State == "running" || after.State == "starting") {
+			emit("", "instance", "面板启动响应异常，但实例已进入启动流程")
+			return nil
+		}
+		return err
+	}
+	emit("", "instance", "启动请求已由面板接受")
+	return nil
+}
+
+func (e *Executor) stopInstance(ctx context.Context, p provider.Provider, instanceRef string, emit EventSink) error {
+	instance, err := p.GetInstance(ctx, instanceRef)
+	if err != nil {
+		return fmt.Errorf("read instance state before stop: %w", err)
+	}
+	if instance.State == "stopped" {
+		emit("", "instance", "实例已经停止，无需重复操作")
+		return nil
+	}
+	if err := p.Stop(ctx, instanceRef); err != nil {
+		after, stateErr := p.GetInstance(ctx, instanceRef)
+		if stateErr == nil && after.State == "stopped" {
+			emit("", "instance", "面板停止响应异常，但实例已经停止")
+			return nil
+		}
+		return err
+	}
+	emit("", "instance", "停止请求已由面板接受")
+	return nil
 }
 
 func (e *Executor) downloadPaper1211(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
