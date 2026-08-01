@@ -105,6 +105,23 @@ class RoutingTests(unittest.TestCase):
         decision = _deterministic_decision("帮我安装 EssentialsX", [], {"plugin.install"})
         self.assertEqual(decision["trace"][0]["result"], "plugin.install")
 
+    def test_restart_routes_to_controlled_tool_without_model(self):
+        decision = _deterministic_decision("重启实例", [], {"instance.restart"})
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "instance.restart")
+        self.assertEqual(decision["answer"], "已生成重启计划，等待确认。")
+
+    def test_instance_lifecycle_commands_target_current_instance(self):
+        cases = (
+            ("启动服务器", "instance.start"),
+            ("停止当前实例", "instance.stop"),
+            ("请重启一下", "instance.restart"),
+        )
+        for message, expected_tool in cases:
+            with self.subTest(message=message):
+                decision = _deterministic_decision(message, [], {expected_tool})
+                self.assertEqual(decision["preferredTool"], expected_tool)
+
     def test_pending_restart_is_recovered_from_history(self):
         pending = _infer_pending_action(
             [{"role": "assistant", "content": "插件加载需要重启，是否继续重启？"}],

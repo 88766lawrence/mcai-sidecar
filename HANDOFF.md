@@ -487,3 +487,30 @@ Linux 迁移最终结果：
 - 尚未实现必需依赖的递归解析/多插件统一审批与回滚。
 - Cloud 任务仍是内存存储；Cloud 重启会清空任务记录。LangGraph 对话检查点不受此限制。
 - 功能提交 `c6e5165 Add LangGraph task orchestration` 已推送到私有仓库 `88766lawrence/mcai-sidecar` 的 `main`。该提交涉及的 25 个文件已逐文件比较 Windows 与 Linux `/opt/mcai-src` SHA-256，差异数为 0；核对时 Windows `HEAD` 与 `origin/main` 均为 `c6e5165c5b8b3ea2f1df6be97aac4f420951df23`。
+
+## 2026-08-01 实例生命周期确定性路由修复
+
+### 故障与根因
+
+用户在页面输入“重启实例”后，MCAI 只显示“暂时没有可用回答。”。Planner、Cloud 工具注册和 Go Agent 均已支持 `instance.restart`，但 Python LangGraph 的确定性路由没有覆盖启动、停止和重启命令。该请求因此被交给模型路由；模型返回空 `answer` 时，`_normalize_decision` 使用了上述兜底文案。
+
+### 修复
+
+- `langgraph-cloud/mcai_graph/graph.py` 新增当前实例生命周期的确定性路由：
+  - 启动实例/服务器：`instance.start`。
+  - 停止实例/服务器：`instance.stop`。
+  - 重启实例/服务器：`instance.restart`。
+- “重启实例”现在固定返回“已生成重启计划，等待确认。”，不再依赖模型是否有容量或能否返回完整结构。
+- 重启和停止仍保持原有高风险审批策略；路由命中不会自动执行或绕过确认。
+- `langgraph-cloud/tests/test_graph.py` 增加直接重启和三类生命周期命令的回归覆盖。
+
+### 验证与部署
+
+- Windows LangGraph/FastAPI：13/13 通过。
+- Windows Cloud 定向回归：20/20 通过。
+- Linux LangGraph/FastAPI：13/13 通过。
+- 仅重启 `mcai-model-cloud`；未重启 `mcai-cloud`、`mcai-agent`、`mcai-web` 或 Minecraft 实例。
+- Linux 回滚备份：`/tmp/mcai-lifecycle-routing-backup-20260801142525`。
+- Runtime 仍为 `/opt/mcai-langgraph-cloud/releases/20260801130804`。
+- 真实 `/v1/chat/stream` 验收结果：`passed=true`、`route=tool`、`preferredTool=instance.restart`、流式和最终回答均为“已生成重启计划，等待确认。”。
+- 验收目标是页面当前实例 `mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`，验收明确记录 `minecraftRestarted=false`。

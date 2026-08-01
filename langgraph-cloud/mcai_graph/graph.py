@@ -366,6 +366,29 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     lower = message.lower()
     if not message:
         return _direct("消息不能为空。")
+    lifecycle_routes = (
+        (
+            "instance.restart",
+            r"(?:重启|重新启动|restart).{0,10}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,10}(?:重启|重新启动|restart)|^\s*(?:请|帮我|麻烦)?\s*(?:重启|重新启动|restart)(?:一下)?\s*$",
+            "重启当前实例并等待重新进入运行状态",
+            "已生成重启计划，等待确认。",
+        ),
+        (
+            "instance.stop",
+            r"(?:停止|关闭|关停|stop|shutdown).{0,10}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,10}(?:停止|关闭|关停|stop|shutdown)",
+            "停止当前实例并等待进入停止状态",
+            "已生成停止计划，等待确认。",
+        ),
+        (
+            "instance.start",
+            r"(?:启动|开启|开机|start).{0,10}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,10}(?:启动|开启|开机|start)",
+            "启动当前实例并等待进入运行状态",
+            "正在启动当前实例。",
+        ),
+    )
+    for tool, pattern, intent, answer in lifecycle_routes:
+        if tool in available and re.search(pattern, lower, re.I):
+            return _tool_decision(intent, tool, "需要执行实例生命周期操作", answer)
     if "logs.query" in available and re.search(r"(?:读取|查看|查询|检查|分析|为什么).{0,12}(?:日志|崩服|报错|卡服)|(?:日志|崩服|报错|卡服).{0,12}(?:原因|分析|检查)", message, re.I):
         return _tool_decision(message, "logs.query", "需要当前实例真实日志")
     if "files.list" in available and re.search(r"(?:确认|检查|查看|读取|列出).{0,16}(?:plugins/?|插件.{0,6}(?:目录|文件|jar|落盘))|(?:plugins/?).{0,16}(?:确认|检查|查看|读取|列出)", message, re.I):
@@ -432,10 +455,10 @@ def _normalize_decision(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def _tool_decision(intent: str, tool: str, reason: str) -> dict[str, Any]:
+def _tool_decision(intent: str, tool: str, reason: str, answer: str = "正在调用受控工具。") -> dict[str, Any]:
     return {
         "route": "tool",
-        "answer": "正在调用受控工具。",
+        "answer": answer,
         "toolIntent": intent,
         "preferredTool": tool,
         "requestId": str(uuid.uuid4()),
