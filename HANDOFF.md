@@ -486,4 +486,4 @@ Linux 迁移最终结果：
 - 本轮没有真实安装 EssentialsX，因为插件计划包含高风险重启，必须由用户在 UI 对具体计划确认后才能执行。
 - 尚未实现必需依赖的递归解析/多插件统一审批与回滚。
 - Cloud 任务仍是内存存储；Cloud 重启会清空任务记录。LangGraph 对话检查点不受此限制。
-- 完成提交后还需推送 GitHub，并对 Windows、Linux `/opt/mcai-src` 和 `origin/main` 的受影响文件做 SHA-256/提交一致性核对。
+- 功能提交 `c6e5165 Add LangGraph task orchestration` 已推送到私有仓库 `88766lawrence/mcai-sidecar` 的 `main`。该提交涉及的 25 个文件已逐文件比较 Windows 与 Linux `/opt/mcai-src` SHA-256，差异数为 0；核对时 Windows `HEAD` 与 `origin/main` 均为 `c6e5165c5b8b3ea2f1df6be97aac4f420951df23`。
