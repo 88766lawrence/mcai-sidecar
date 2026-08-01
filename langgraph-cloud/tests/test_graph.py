@@ -23,6 +23,11 @@ class FakeProvider:
         }
 
 
+class FailingProvider(FakeProvider):
+    async def structured(self, system, messages, schema):
+        raise AssertionError("deterministic completion must not call the model")
+
+
 class GraphTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -119,11 +124,57 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(response["answer"], "启动实例失败：panel returned HTTP 500")
 
+    async def test_console_completion_uses_real_evidence_without_model(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "console.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-console-success",
+                "intent": "在服务器控制台执行 mspt",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "console.command"}]},
+                "evidence": [{"kind": "console", "summary": "控制台返回：Server tick times (avg/min/max): 0.1/0.0/0.2"}],
+            })
+            self.assertIn("Server tick times", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_files_completion_uses_real_evidence_without_model(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "files.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-files-success",
+                "intent": "列出根目录",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "files.list"}]},
+                "evidence": [{"kind": "files", "summary": "实例目录 /：server.jar, plugins"}],
+            })
+            self.assertEqual(response["answer"], "实例目录 /：server.jar, plugins")
+        finally:
+            await graph.close()
+
 
 class RoutingTests(unittest.TestCase):
     def test_plugin_install_routes_to_controlled_tool(self):
         decision = _deterministic_decision("帮我安装 EssentialsX", [], {"plugin.install"})
         self.assertEqual(decision["trace"][0]["result"], "plugin.install")
+
+    def test_server_install_routes_without_model(self):
+        cases = (
+            ("安装 Paper 1.21.4 服务端", "server.install"),
+            ("下载 Fabric 1.20.1 并开服", "server.install"),
+        )
+        for message, expected_tool in cases:
+            with self.subTest(message=message):
+                decision = _deterministic_decision(message, [], {expected_tool})
+                self.assertEqual(decision["preferredTool"], expected_tool)
+
+    def test_config_patch_routes_without_model(self):
+        decision = _deterministic_decision("把服务器 view-distance 修改为 8", [], {"config.patch"})
+        self.assertEqual(decision["preferredTool"], "config.patch")
+
+    def test_plugin_resolve_routes_without_installing(self):
+        decision = _deterministic_decision("解析 EssentialsX 兼容版本和制品，但不要安装", [], {"plugin.resolve"})
+        self.assertEqual(decision["preferredTool"], "plugin.resolve")
 
     def test_restart_routes_to_controlled_tool_without_model(self):
         decision = _deterministic_decision("重启实例", [], {"instance.restart"})

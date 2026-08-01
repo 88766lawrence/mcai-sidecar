@@ -228,6 +228,14 @@ func TestConsoleEvidenceWaitsForFinalVersionLine(t *testing.T) {
 	}
 }
 
+func TestConsoleEvidenceAcceptsPaperMSPTOutput(t *testing.T) {
+	output := "Server tick times (avg/min/max) from last 5s, 10s, 1m:\n" +
+		"0.1/0.0/0.2, 0.1/0.0/0.8, 0.1/0.0/3.0"
+	if !consoleEvidenceComplete("mspt", output) {
+		t.Fatal("Paper tick-time output must complete the mspt command")
+	}
+}
+
 func TestInstallServerDownloadsConfiguresAndStarts(t *testing.T) {
 	p := &installProvider{instance: provider.Instance{State: "stopped"}}
 	executor := NewWithReleaseResolver("", nil, resolverFunc(func(_ context.Context, platform, minecraftVersion string) (releaseArtifact, error) {

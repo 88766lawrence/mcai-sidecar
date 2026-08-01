@@ -119,6 +119,29 @@ describe("draftPlan", () => {
     expect(plan.acceptance).toContainEqual({ type: "plugin_enabled", name: "essentialsx" });
   });
 
+  it("resolves plugin metadata without creating an installation plan", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "解析 EssentialsX 兼容版本和制品，但不要安装", {
+      preferredTool: "plugin.resolve",
+      platform: "paper",
+      minecraftVersion: "1.21.1",
+      loader: "paper",
+    });
+
+    expect(plan.steps).toEqual([{
+      id: "s1",
+      tool: "plugin.resolve",
+      args: {
+        project: "essentialsx",
+        source: "modrinth",
+        platform: "paper",
+        minecraft_version: "1.21.1",
+        loader: "paper",
+      },
+      risk: "low",
+    }]);
+    expect(plan.acceptance).toEqual([]);
+  });
+
   it("honors a controlled files continuation and targets the plugins directory", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "列出当前实例 /plugins 目录", {
       preferredTool: "files.list",

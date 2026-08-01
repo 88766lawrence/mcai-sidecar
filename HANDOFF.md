@@ -575,4 +575,85 @@ Linux 迁移最终结果：
   - `tools-expanded-desktop.png`：展开后显示工具与目标实例。
   - `result-desktop.png`：默认折叠过程并显示最终结果。
   - `result-mobile.png`、`result-mobile-375.png`：移动端最终结果。
-  - `tools-expanded-mobile-375.png`：375px 展开工具过程。
+- `tools-expanded-mobile-375.png`：375px 展开工具过程。
+
+## 2026-08-01 全命令矩阵验收与回调稳定性修复
+
+### 验收范围与安全边界
+
+针对页面当前实例 `mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f` 执行全命令矩阵。实例在验收前后均保持 `running`，没有停止或重启 Minecraft，没有修改配置、安装服务端或安装插件。
+
+真实执行 12 项：
+
+- `logs.query`：读取最近日志并获得 `kind=logs` 证据。
+- `files.list /`：读取实例根目录，共 24 项，包含 `server.jar`、`server.properties`、世界目录和插件目录。
+- `files.list /plugins`：读取插件目录，实际清单为 `.paper-remapped`、`bStats`、`spark`。
+- `console.command`：依次执行 `list`、`help`、`version`、`plugins`、`pl`、`tps`、`mspt`、`seed`。
+- `instance.start`：在已运行实例上做幂等启动验证，结果为“实例已在运行，无需重复启动”。
+
+只验证路由、明确没有执行的 7 项：
+
+- `instance.stop`
+- `instance.restart`
+- `config.patch`
+- `server.install`（Paper 任意明确版本）
+- `server.install`（Fabric 任意明确版本）
+- `plugin.resolve`
+- `plugin.install`
+
+另验证简单问题 `1+1` 走 `direct` 并返回 `2`。最终矩阵为 `20/20` 通过，`destructiveCommandsExecuted=false`，完整复测耗时约 51 秒。
+
+### `mspt` 失败根因与修复
+
+第一次真实矩阵中，`mspt` 命令确实被发送到 Paper 控制台，但任务最终失败。Paper 1.21.1 的实际返回格式为：
+
+```text
+Server tick times (avg/min/max) from last 5s, 10s, 1m:
+0.1/0.0/0.2, 0.1/0.0/0.8, 0.1/0.0/3.0
+```
+
+输出中不含字面量 `mspt`，而 Agent 的完成条件只接受包含 `mspt` 的文本，因此连续读取到了真实输出仍错误判定超时。现已兼容 Paper 的 `Server tick times (avg/min/max)` 标记，并增加 Go 回归测试。最终真实证据为：
+
+```text
+Server tick times (avg/min/max) from last 5s, 10s, 1m:
+0.3/0.1/15.0, 0.2/0.0/15.0, 0.1/0.0/15.0
+```
+
+### 工具回调卡住根因与修复
+
+第一次矩阵还发现：控制台或文件任务已经进入 `SUCCEEDED` 后，LangGraph 仍调用外部模型生成最终文字。模型请求的单次超时为 180 秒且可能在结构化/非结构化及备用模型间重试，导致真实工具已完成但对话长时间没有最终回答。
+
+修复后：
+
+- `console.command` 成功时直接使用 `kind=console` 的真实证据完成回答。
+- `files.list` 成功时直接使用 `kind=files` 的真实证据完成回答。
+- 工具失败时直接引用失败状态或诊断证据，不把失败润色成成功。
+- 路由、复杂委派和其余需要模型的完成评估增加 30 秒总等待上限，超时后进入已有的证据回退，不再无限拖住会话。
+- Paper/Fabric 明确版本安装、`view-distance` 配置、插件制品解析增加确定性路由，不依赖模型容量。
+- `plugin.resolve` 只创建解析步骤；“解析兼容版本但不要安装”不会误生成插件上传和实例重启计划。
+
+### 测试、部署与回滚点
+
+Windows：
+
+- Go `go test ./...`：通过。
+- Cloud Planner：12/12 通过。
+- 全仓 TypeScript typecheck：通过。
+- Python 语法检查：通过；Windows 未安装 LangGraph/FastAPI 依赖，完整 Python 测试在 Linux 执行。
+
+Linux 部署门禁：
+
+- Go `go test ./...`：通过。
+- Python LangGraph/FastAPI：21/21 通过。
+- Cloud Planner：12/12 通过。
+- 全仓 TypeScript typecheck：通过。
+- Cloud 生产构建：通过。
+- `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web`：全部 active。
+
+部署回滚点：
+
+```text
+/tmp/mcai-command-matrix-backup-20260801160833
+```
+
+部署后最终真实矩阵结果：`passed=true`、`total=20`、`failed=[]`。Minecraft 没有因验收而停止或重启。

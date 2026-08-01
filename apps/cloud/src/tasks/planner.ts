@@ -83,6 +83,20 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     }], [{ type: "config_semantics", expected: `view-distance=${value}` }]);
   }
   const pluginProject = parsePluginProject(intent);
+  if (pluginProject && options.preferredTool === "plugin.resolve") {
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1",
+      tool: "plugin.resolve",
+      args: {
+        project: pluginProject,
+        source: "modrinth",
+        platform: options.platform ?? "unknown",
+        minecraft_version: options.minecraftVersion ?? "unknown",
+        loader: options.loader ?? options.platform ?? "unknown",
+      },
+      risk: "low",
+    }], []);
+  }
   if (pluginProject && (options.preferredTool === "plugin.install" || options.preferredTool === "plugin.resolve" || /安装|部署|更新|升级|install|deploy|update/i.test(intent))) {
     return plan(id, instanceRef, inventoryRevision, intent, [
       { id: "s1", tool: "plugin.resolve", args: {

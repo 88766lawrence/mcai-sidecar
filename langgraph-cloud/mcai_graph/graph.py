@@ -194,7 +194,8 @@ class McaiGraph:
         request = state.get("request", {})
         history = _history(request)
         try:
-            result = await self.provider.structured(_router_prompt(request), history, _decision_schema())
+            async with asyncio.timeout(30):
+                result = await self.provider.structured(_router_prompt(request), history, _decision_schema())
         except Exception:  # noqa: BLE001 - return a stable user-facing failure
             return {
                 "decision": _direct("模型云暂时不可用。现有 Agent 与任务执行不受影响。"),
@@ -230,7 +231,8 @@ class McaiGraph:
             "required": ["answer"],
         }
         try:
-            result = await self.provider.structured(system, _history(request), schema)
+            async with asyncio.timeout(30):
+                result = await self.provider.structured(system, _history(request), schema)
             answer = str(result.get("answer", "")).strip()
         except Exception:  # noqa: BLE001
             answer = "复杂分析暂时不可用。"
@@ -301,6 +303,29 @@ class McaiGraph:
                 answer = f"{lifecycle_names[lifecycle_tool]}失败：{reason}"
             return {"decision": _response(answer, status="answered"), "next_node": "end"}
 
+        deterministic_evidence_tools = {
+            "console.command": "console",
+            "files.list": "files",
+        }
+        evidence_tool = next((tool for tool in reversed(tools) if tool in deterministic_evidence_tools), "")
+        if evidence_tool and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
+            expected_kind = deterministic_evidence_tools[evidence_tool]
+            evidence_summary = next((
+                str(item.get("summary", "")).strip()
+                for item in reversed(substantive)
+                if item.get("kind") == expected_kind and str(item.get("summary", "")).strip()
+            ), "")
+            if task_state == "SUCCEEDED" and evidence_summary:
+                return {"decision": _response(evidence_summary, status="answered"), "next_node": "end"}
+            reason = next((
+                str(item.get("summary", "")).strip()
+                for item in reversed(evidence)
+                if isinstance(item, dict)
+                and item.get("kind") in {"diagnosis", "tool", "state"}
+                and ("failed" in str(item.get("summary", "")).lower() or "错误" in str(item.get("summary", "")))
+            ), "工具未返回可验证的完成证据")
+            return {"decision": _response(f"操作失败：{reason}", status="answered"), "next_node": "end"}
+
         if continuation:
             return {
                 "decision": {
@@ -323,7 +348,8 @@ class McaiGraph:
             "required": ["answer"],
         }
         try:
-            result = await self.provider.structured(system, [{"role": "user", "content": json.dumps(request, ensure_ascii=False)}], schema)
+            async with asyncio.timeout(30):
+                result = await self.provider.structured(system, [{"role": "user", "content": json.dumps(request, ensure_ascii=False)}], schema)
             answer = str(result.get("answer", "")).strip()
         except Exception:  # noqa: BLE001
             answer = _completion_fallback(task_state, substantive, intent)
@@ -385,6 +411,23 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     lower = message.lower()
     if not message:
         return _direct("消息不能为空。")
+    if (
+        "server.install" in available
+        and re.search(r"(?:下载|安装|部署|搭建|创建|开服|download|install|deploy|setup|create)", lower, re.I)
+        and re.search(r"\b(?:paper|fabric)\b", lower, re.I)
+        and re.search(r"\b\d+\.\d+(?:\.\d+)?(?:-[a-z0-9._-]+)?\b", lower, re.I)
+    ):
+        return _tool_decision(message, "server.install", "需要执行指定平台和版本的受控服务端安装")
+    if (
+        "config.patch" in available
+        and re.search(r"(?:修改|设置|调整|改成|set|change|update).{0,20}(?:视距|view-distance)|(?:视距|view-distance).{0,20}(?:修改|设置|调整|改成|set|change|update)", lower, re.I)
+    ):
+        return _tool_decision(message, "config.patch", "需要受控修改当前实例配置")
+    if (
+        "plugin.resolve" in available
+        and re.search(r"(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find).{0,24}(?:插件|plugin|essentials|luckperms)|(?:插件|plugin|essentials|luckperms).{0,24}(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find)", lower, re.I)
+    ):
+        return _tool_decision(message, "plugin.resolve", "需要解析兼容的官方插件制品")
     lifecycle_routes = (
         (
             "instance.restart",

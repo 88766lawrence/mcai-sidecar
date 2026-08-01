@@ -848,7 +848,8 @@ func consoleEvidenceComplete(verb, output string) bool {
 	case "plugins", "pl":
 		return strings.Contains(lower, "server plugins") || strings.Contains(lower, "plugins (")
 	case "mspt":
-		return strings.Contains(lower, "mspt")
+		return strings.Contains(lower, "mspt") ||
+			strings.Contains(lower, "server tick times (avg/min/max)")
 	default:
 		return strings.TrimSpace(output) != ""
 	}
