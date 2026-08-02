@@ -648,7 +648,8 @@ class McaiGraph:
                 if item.get("kind") == expected_kind and str(item.get("summary", "")).strip()
             ), "")
             if task_state == "SUCCEEDED" and evidence_summary:
-                return {"decision": _response(evidence_summary, status="answered"), "next_node": "end"}
+                normalized_answer = _format_plugin_inventory_answer(intent, evidence_tool, evidence_summary)
+                return {"decision": _response(normalized_answer or evidence_summary, status="answered"), "next_node": "end"}
             reason = next((
                 str(item.get("summary", "")).strip()
                 for item in reversed(evidence)
@@ -959,6 +960,32 @@ def _completion_fallback(task_state: str, evidence: list[dict[str, Any]], intent
     if task_state == "SUCCEEDED":
         return "任务已完成并通过验收。"
     return f"任务未完成（{task_state or 'UNKNOWN'}）：{intent[:120]}"
+
+
+def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_summary: str) -> str | None:
+    """Turn the Paper/Bukkit `plugins` receipt into a user-facing conclusion.
+
+    The unmodified receipt remains in task evidence for the expandable execution
+    trace.  This formatter is deliberately narrow so unrelated console commands
+    continue to return their exact evidence.
+    """
+    if evidence_tool != "console.command":
+        return None
+    if not re.search(r"(?:插件|plugins?).{0,12}(?:列表|有哪些|有什么|多少|已安装|查看|查询)|(?:查看|查询|列出|显示).{0,12}(?:插件|plugins?)", intent, re.I):
+        return None
+
+    clean = re.sub(r"§[0-9a-fk-or]", "", evidence_summary, flags=re.I)
+    match = re.search(r"(?:Server\s+)?Plugins\s*\((\d+)\)\s*:\s*([^\r\n]*)", clean, re.I)
+    if not match:
+        return None
+
+    count = int(match.group(1))
+    names = re.sub(r"\s+", " ", match.group(2)).strip(" ,，")
+    if count == 0:
+        return "当前服务器没有已加载的插件，插件数量为 0。"
+    if names:
+        return f"当前服务器已加载 {count} 个插件：{names}。"
+    return f"当前服务器已加载 {count} 个插件；控制台没有返回插件名称。"
 
 
 def _thread_id(payload: dict[str, Any]) -> str:

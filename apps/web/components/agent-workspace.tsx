@@ -526,7 +526,7 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
         </header>
         <RichText content={message.content} />
         <TaskOutcome task={task} />
-      </section> : <><RichText content={message.content} />{!streaming && !task && <ResponseTrace route={message.route} />}</>}
+      </section> : <><RichText content={message.content} />{!streaming && !task && <ResponseTrace route={message.route} trace={message.trace} />}</>}
     </div>
   </article>;
 }
@@ -561,30 +561,37 @@ function TaskActivity({ content, task, instanceName, onReview }: { content: stri
 }
 
 function TaskOutcome({ task }: { task: TaskRecord }) {
-  const evidence = task.evidence.filter((item) => item.summary.trim()).slice(-3);
+  const evidence = task.evidence.filter((item) => item.summary.trim()).slice(-12);
   const failed = task.state !== "SUCCEEDED";
   return <details className="result-evidence">
-    <summary><span>展开思考与执行过程</span><small>{task.plan.steps.length} 个工具 · {evidence.length} 条证据</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <summary><span>展开规划与执行轨迹</span><small>{task.plan.steps.length} 个工具 · {evidence.length} 条记录</small><ChevronDown size={14} aria-hidden="true" /></summary>
     <div className="result-trace">
+      <section className="result-trace-section" aria-label="规划摘要">
+        <strong>规划</strong>
+        <p><span /><b>{task.intent.split("\n\nAgent operation:")[0]}</b><code>任务目标</code><em className={failed ? "failed" : "success"}>{failed ? "未完成" : "已完成"}</em></p>
+      </section>
       <section className="result-trace-section" aria-label="工具调用过程">
         <strong>工具调用</strong>
         {task.plan.steps.map((step, index) => <p key={step.id}><span /><b>{index + 1}. {toolLabel(step.tool)}</b><code>{step.tool}</code><em className={failed ? "failed" : "success"}>{failed ? "未完成" : "完成"}</em></p>)}
       </section>
       {evidence.length > 0 && <section className="result-trace-section" aria-label="执行证据">
-        <strong>结果依据</strong>
-        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span />{item.summary}<time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
+        <strong>回调、判断与验证</strong>
+        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span /><b>{item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
       </section>}
     </div>
   </details>;
 }
 
-function ResponseTrace({ route }: { route?: ConversationMessage["route"] }) {
+function ResponseTrace({ route, trace }: { route?: ConversationMessage["route"]; trace?: ConversationMessage["trace"] }) {
+  const steps = trace?.filter((item) => item.label.trim() || item.result.trim()) ?? [];
   return <details className="result-evidence response-trace">
-    <summary><span>展开回答过程</span><small>直接回答 · 未调用工具</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <summary><span>展开回答轨迹</span><small>{steps.length ? `${steps.length} 个决策记录` : "直接回答 · 未调用工具"}</small><ChevronDown size={14} aria-hidden="true" /></summary>
     <div className="result-trace">
       <section className="result-trace-section">
         <strong>处理摘要</strong>
-        <p><span /><b>识别为知识问答</b><code>{route ?? "direct"}</code><em className="success">已完成</em></p>
+        {steps.length > 0
+          ? steps.map((item, index) => <p key={`${item.stage}-${index}`}><span /><b>{item.label}</b><code>{item.result}</code><em className="success">{traceStageLabel(item.stage)}</em></p>)
+          : <p><span /><b>识别为知识问答</b><code>{route ?? "direct"}</code><em className="success">已完成</em></p>}
         <p><span />本次回答未修改实例、文件或服务器状态。</p>
       </section>
     </div>
@@ -629,6 +636,8 @@ function taskActivityLabel(state: string) {
 function riskLabel(risk: string) { return ({ read: "只读", low: "低风险", medium: "中风险", high: "高风险", forbidden: "禁止" } as Record<string, string>)[risk] ?? risk; }
 function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
 function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "server.install": "安装 Minecraft 服务端", "config.patch": "修改服务器配置", "console.command": "发送控制台命令", "plugin.resolve": "解析插件兼容性", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.stop": "停止服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
+function evidenceLabel(kind: string) { return ({ state: "状态", tool: "工具", console: "控制台回调", files: "文件回调", verification: "验证", diagnosis: "失败分析", decision: "决策", instance: "实例状态", plugin: "插件证据" } as Record<string, string>)[kind] ?? kind; }
+function traceStageLabel(stage: string) { return ({ routing: "路由", delegation: "委派", tool: "工具", review: "检查", revision: "修正", final: "完成" } as Record<string, string>)[stage] ?? stage; }
 function instanceMeta(instance: ServerProfile) {
   const values = [instance.loader, instance.minecraft_version]
     .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));

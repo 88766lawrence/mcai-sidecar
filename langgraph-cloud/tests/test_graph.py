@@ -189,6 +189,35 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await graph.close()
 
+    async def test_empty_plugin_inventory_is_explained_without_raw_console_noise(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "plugins-empty.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-plugins-empty",
+                "intent": "查看现在有哪些插件\n\nAgent operation: 在当前实例 Minecraft 控制台执行 plugins",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "console.command"}]},
+                "evidence": [{"kind": "console", "summary": "控制台返回：\n[20:03:30] [Server thread/INFO]: Server Plugins (0):"}],
+            })
+            self.assertEqual(response["answer"], "当前服务器没有已加载的插件，插件数量为 0。")
+            self.assertNotIn("20:03:30", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_loaded_plugin_inventory_reports_count_and_names(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "plugins-loaded.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-plugins-loaded",
+                "intent": "查询服务器插件列表",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "console.command"}]},
+                "evidence": [{"kind": "console", "summary": "控制台返回： Server Plugins (2): §aEssentials, §bLuckPerms"}],
+            })
+            self.assertEqual(response["answer"], "当前服务器已加载 2 个插件：Essentials, LuckPerms。")
+        finally:
+            await graph.close()
+
     async def test_files_completion_uses_real_evidence_without_model(self):
         graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "files.sqlite3")
         try:
