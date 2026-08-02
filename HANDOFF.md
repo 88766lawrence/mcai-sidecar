@@ -1,5 +1,41 @@
 # MCAI 项目交接记录
 
+## 2026-08-02 Agent 工作台界面重构（Linux 同步待重试）
+
+### 本轮完成内容
+
+登录后的 Agent 页面已从普通聊天布局改为紧凑的三栏运维工作台，同时保留米黄色纸张基调：
+
+- 左侧为实例选择、实例资源上下文与会话列表；资源区只展示当前已知上下文，不伪造服务器文件内容。
+- 中间新增顶部会话切换器和标签栏；消息按 `COMMAND`、`TOOLS`、`OUTPUT`、`DONE` 分层展示，用户指令以深色命令块呈现，最终成功/失败结果以明确状态卡呈现。
+- 工具调用过程默认收起为“执行记录”；展开后才显示计划、步骤、工具标识和证据。进行中的状态只显示“正在规划”，不暴露内部推理文本。
+- 右侧工具面板改为常驻：有任务时展示任务、调用工具与最新证据；无任务时展示可用能力、会话策略和系统提示词入口。
+- 会话轮询增加版本保护与相同消息列表复用，减少轮询替换历史消息导致的滚动跳动；用户在消息区按下/向上滚动后不再自动追随最新消息，仍可使用“回到最新消息”。
+- 375/390px 窄屏自动隐藏非核心右栏并保留标签、状态、结果与输入框，截图验证无横向滚动。
+
+### 修改文件
+
+- `apps/web/components/agent-workspace.tsx`
+- `apps/web/app/globals.css`
+
+### 本地验收（已完成）
+
+- `npm run typecheck -w @mcai/web`：通过。
+- `npm run build -w @mcai/web`：通过。
+- 本机生产预览（Edge 无头）桌面 `1440×1024`：通过；断言包含常驻右栏、标签栏、折叠执行记录、最终结果卡，且 `scrollWidth === viewportWidth`。
+- 本机生产预览移动 `390×844`：通过；`scrollWidth === viewportWidth`，输入框和最终结果未被遮挡。
+- 视觉截图为本地忽略文件：`.deploy/workbench-desktop.png`、`.deploy/workbench-mobile.png`，均基于真实 React/Next 生产构建和受控模拟 API 数据，不是手工拼图。
+
+### 同步状态
+
+- Windows 本地：已完成且已构建验证。
+- Linux `191.40.37.148`：尚未更新。本轮两次 SCP 和一次只读 SSH 检查均在 22 端口握手前超时，未上传文件、未重启 `mcai-web.service`，也未触及 Cloud、Agent、模型云或 Minecraft。
+- GitHub：本地提交 `0ab0d26 Redesign agent operations workbench` 已创建；直接推送到 `origin/main` 需要用户对本次提交重新明确授权，当前尚未推送。在 Linux 网络恢复前，不应声称三端一致。
+
+### Linux 恢复连接后的最小发布步骤
+
+仅使用 `.deploy/deploy-agent-ui.sh` 发布，因为它只备份/覆盖上述两个 Web 文件，执行 Web 类型检查与生产构建，然后只重启 `mcai-web.service`。发布后必须重新核对两个文件的 SHA-256，并访问 `http://127.0.0.1:3000/`；不应运行任何会重启 Cloud、Agent、模型云或 Minecraft 的旧部署脚本。
+
 ## 2026-08-02 模型适配器与 Agent 循环修复（当前最新状态）
 
 ### 本轮结论

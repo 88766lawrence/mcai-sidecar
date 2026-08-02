@@ -44,6 +44,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const messageStreamRef = useRef<HTMLDivElement>(null);
   const activeSessionIdRef = useRef("");
   const followLatestRef = useRef(true);
+  const messageLoadVersionRef = useRef(0);
   const sendingRef = useRef(false);
   const streamRouteRef = useRef<ChatRoute | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
@@ -112,10 +113,17 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }, []);
 
   const loadMessages = useCallback(async (sessionId: string) => {
-    if (!sessionId) return setMessages([]);
+    const requestVersion = ++messageLoadVersionRef.current;
+    if (!sessionId) {
+      setMessages([]);
+      return;
+    }
     try {
-      setMessages(await api<ConversationMessage[]>(`/sessions/${sessionId}/messages`));
+      const nextMessages = await api<ConversationMessage[]>(`/sessions/${sessionId}/messages`);
+      if (requestVersion !== messageLoadVersionRef.current || activeSessionIdRef.current !== sessionId) return;
+      setMessages((currentMessages) => sameMessageList(currentMessages, nextMessages) ? currentMessages : nextMessages);
     } catch (cause) {
+      if (requestVersion !== messageLoadVersionRef.current) return;
       setError(cause instanceof Error ? cause.message : "无法加载会话");
     }
   }, []);
@@ -351,10 +359,25 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     }
   }
 
-  return <main ref={workspaceRef} className={`agent-shell paper-ops ${activeTask ? "with-inspector" : "conversation-only"}`}>
-    <header className="agent-topbar">
+  return <main ref={workspaceRef} className={`agent-shell paper-ops workbench-layout ${activeTask ? "with-inspector" : "conversation-only"}`}>
+    <header className="agent-topbar workbench-topbar">
       <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="打开会话"><Menu size={19} /></button>
       <div className="brand"><span className="brand-symbol"><img src="/brand/mcai-symbol.png" alt="" /></span><strong>MCAI</strong><span>Agent 工作台</span></div>
+      <div className="workbench-session-switcher">
+        <span>会话</span>
+        <div>
+          <MessageSquare size={14} />
+          <select aria-label="切换会话" value={activeSessionId} onChange={(event) => {
+            const session = sessions.find((item) => item.id === event.target.value);
+            if (session) void selectSession(session);
+          }}>
+            {!sessions.length && <option value="">新建会话</option>}
+            {groupedSessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
+          </select>
+          <ChevronDown size={13} aria-hidden="true" />
+        </div>
+        <button className="topbar-new-session" onClick={() => void createSession()} disabled={loading} aria-label="新建会话" title="新建会话"><Plus size={17} /></button>
+      </div>
       <div className="agent-context">{current ? <><Server size={15} /><strong>{current.name}</strong><span>{instanceMeta(current)}</span></> : "未选择实例"}</div>
       <div className={`cloud-state ${cloudOnline ? "online" : "offline"}`}><Cloud size={15} /><span>{cloudOnline ? "本地云在线" : "本地云离线"}</span></div>
       <button className="icon-button" onClick={() => void refresh()} aria-label="刷新"><RefreshCw size={17} /></button>
@@ -371,6 +394,15 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         <label>当前实例</label>
         <div><Server size={15} /><select value={selectedInstance} onChange={(event) => selectInstance(event.target.value)}>{instances.map((instance) => <option key={instance.instance_id} value={instance.instance_id}>{instance.name}</option>)}</select><ChevronDown size={14} /></div>
       </div>
+      <section className="resource-browser" aria-label="当前实例资源">
+        <div className="resource-browser-head"><span>资源浏览器</span><small>{current?.provider_type === "mcsmanager" ? "MCSManager" : current?.provider_type ?? "未连接"}</small></div>
+        <div className="resource-tree">
+          <div className="resource-root"><Server size={14} /><span>{current?.name ?? "未选择实例"}</span><i className={`status-dot ${current?.state ?? "unknown"}`} /></div>
+          <div className="resource-item current"><MessageSquare size={14} /><span>当前会话</span><small>{activeSession?.title ?? "新建会话"}</small></div>
+          <div className="resource-item"><FileClock size={14} /><span>运行记录</span><small>{currentTasks.length} 条</small></div>
+          <div className="resource-item"><Wrench size={14} /><span>受控工具</span><small>已连接</small></div>
+        </div>
+      </section>
       <div className="session-section-head"><span>会话</span><button onClick={() => void createSession()} aria-label="新建会话"><Plus size={16} /></button></div>
       <div className="session-list">
         {groupedSessions.map((session) => <div key={session.id} className={`session-row ${session.id === activeSessionId ? "selected" : ""}`}>
@@ -383,6 +415,11 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     </aside>
 
     <section className="agent-conversation">
+      <div className="workbench-tabs" role="tablist" aria-label="工作区标签">
+        <span className="workbench-tab context"><Server size={14} />{current?.name ?? "实例"}</span>
+        <span className="workbench-tab active" role="tab" aria-selected="true"><MessageSquare size={14} /><span>Agent · {activeSession?.title ?? "新会话"}</span><i className="tab-close"><X size={13} aria-hidden="true" /></i></span>
+        <button className="workbench-tab add" onClick={() => void createSession()} disabled={loading} aria-label="新建 Agent 会话" title="新建 Agent 会话"><Plus size={17} /></button>
+      </div>
       {error && <div className="error-banner" role="alert"><AlertTriangle size={16} /><span>{error}</span><button onClick={() => setError("")} aria-label="关闭错误提示"><X size={14} /></button></div>}
       <div className="conversation-head">
         <div className="instance-status-strip">
@@ -394,17 +431,19 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         <button className="prompt-button" onClick={openPrompt} disabled={!activeSession}><Settings2 size={16} /><span>会话设置</span></button>
       </div>
       <div
-        className="message-stream"
+        className="message-stream workbench-message-stream"
         ref={messageStreamRef}
         onScroll={updateScrollPosition}
         onWheel={(event) => {
           if (event.deltaY < 0) followLatestRef.current = false;
         }}
+        onPointerDown={() => { followLatestRef.current = false; }}
       >
+        <div className="stream-label"><span>执行记录</span><small>{current ? `${current.name} / ${instanceMeta(current)}` : "等待选择实例"}</small></div>
         {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>今天要处理什么？</h2><p>直接提问或描述操作，MCAI 会使用当前实例的信息完成任务。</p><div className="suggestions"><button onClick={() => setIntent("启动服务器")}>启动实例</button><button onClick={() => setIntent("分析最近一次崩服的原因")}>分析崩服</button><button onClick={() => setIntent("把视距调整为 10")}>调整配置</button></div></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
         {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
-        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>思考中</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
+        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
       </div>
       {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
@@ -414,15 +453,27 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       </div>
     </section>
 
-    {activeTask && <aside className="agent-inspector">
-      <div className="inspector-head"><span>执行上下文</span>{activeTask && <span className={`risk ${activeTask.risk}`}>{riskLabel(activeTask.risk)}</span>}</div>
+    <aside className="agent-inspector workbench-right-rail">
+      <div className="inspector-head"><span>工具面板</span>{activeTask ? <span className={`risk ${activeTask.risk}`}>{riskLabel(activeTask.risk)}</span> : <span className="tool-count">已就绪</span>}</div>
       <div className="instance-health"><span className={`status-dot ${current?.state ?? "unknown"}`} /><div><strong>{current?.state === "running" ? "实例运行中" : current?.state ?? "未知状态"}</strong><small>{current ? instanceMeta(current) : "等待实例信息"}</small></div></div>
-      <>
+      {activeTask ? <>
         <div className="task-summary"><small>当前任务</small><strong>{activeTask.intent}</strong><span>{stateLabel(activeTask.state)}</span></div>
         <section className="inspector-section"><h2><ClipboardCheck size={15} />调用工具</h2>{activeTask.plan.steps.map((step) => <div className="plan-step" key={step.id}><span><Wrench size={12} /></span><div><strong>{toolLabel(step.tool)}</strong><small>{step.requires_confirmation ? "执行前需要确认" : "自动执行"}</small></div></div>)}</section>
         <section className="inspector-section"><h2><FileClock size={15} />最新证据</h2>{activeTask.evidence.slice(-4).reverse().map((item, index) => <div className="evidence" key={`${item.at}-${index}`}><span /><p>{item.summary}<small>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small></p></div>)}</section>
-      </>
-    </aside>}
+      </> : <>
+        <section className="inspector-section tool-directory">
+          <h2><Wrench size={15} />可用能力</h2>
+          <div className="tool-directory-row"><span><Server size={14} /></span><div><strong>实例控制</strong><small>启动、停止、重启与状态验证</small></div></div>
+          <div className="tool-directory-row"><span><FileClock size={14} /></span><div><strong>日志与文件</strong><small>读取控制台、目录和执行证据</small></div></div>
+          <div className="tool-directory-row"><span><Wrench size={14} /></span><div><strong>受控执行</strong><small>高风险变更仍需确认</small></div></div>
+        </section>
+        <section className="inspector-section session-policy">
+          <h2><Settings2 size={15} />会话策略</h2>
+          <p>当前会话会优先使用已选实例上下文。工具过程默认折叠，仅在需要时展开查看。</p>
+          <button onClick={openPrompt} disabled={!activeSession}><Settings2 size={14} />编辑系统提示词</button>
+        </section>
+      </>}
+    </aside>
 
     {promptOpen && activeSession && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPromptOpen(false); }}><div className="modal prompt-modal" role="dialog" aria-modal="true">
       <div className="modal-head"><div><span className="eyebrow">SESSION INSTRUCTIONS</span><h2>系统提示词</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="关闭系统提示词设置"><X size={18} /></button></div>
@@ -455,17 +506,17 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
     }, messageRef.current ?? undefined);
     return () => media.revert();
   }, { scope: messageRef });
-  if (message.role === "user") return <article ref={messageRef} className="chat-message user"><span className="user-avatar"><UserRound size={15} /></span><div><small>你</small><p>{message.content}</p></div></article>;
+  if (message.role === "user") return <article ref={messageRef} className="chat-message user workbench-record"><span className="user-avatar"><UserRound size={15} /></span><div><div className="message-meta"><strong>COMMAND</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.content}</p></div></article>;
   const isTaskRequest = message.task_phase === "request";
   if (isTaskRequest) {
-    return <article ref={messageRef} className="chat-message assistant task-request"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>MCAI</strong></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
+    return <article ref={messageRef} className="chat-message assistant task-request workbench-record"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>TOOLS</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
   const completedTask = task && terminal(task.state);
   const failedTask = completedTask && task.state !== "SUCCEEDED";
   return <article ref={messageRef} className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
     <span className="bot-avatar"><Bot size={16} /></span>
     <div>
-      <div className="message-meta"><strong>MCAI</strong>{streaming && <span>正在回答</span>}</div>
+      <div className="message-meta"><strong>{completedTask ? "DONE" : "OUTPUT"}</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{streaming && <span>输出中</span>}</div>
       {completedTask ? <section className={`answer-result ${failedTask ? "failed" : "success"}`}>
         <header>
           <span className="answer-result-icon">{failedTask ? <CircleAlert size={17} /> : <CheckCircle2 size={17} />}</span>
@@ -486,7 +537,7 @@ function TaskActivity({ content, task, instanceName, onReview }: { content: stri
   const isComplete = Boolean(task && terminal(task.state));
   return <details className={`task-activity ${failedTask ? "failed" : ""}`}>
     <summary>
-      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "查看思考过程" : "思考中"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : "展开查看工具调用"}</small></span></span>
+      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "执行记录" : "正在规划"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : "展开查看工具调用"}</small></span></span>
       <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
     </summary>
     <div className="task-activity-content">
@@ -535,6 +586,17 @@ function inlineText(value: string): ReactNode[] {
 }
 
 function terminal(state: string) { return ["SUCCEEDED", "FAILED", "ROLLED_BACK", "REJECTED", "CANCELLED", "EXPIRED", "MANUAL_INTERVENTION"].includes(state); }
+function sameMessageList(left: ConversationMessage[], right: ConversationMessage[]) {
+  return left.length === right.length && left.every((message, index) => {
+    const candidate = right[index];
+    return candidate
+      && message.id === candidate.id
+      && message.content === candidate.content
+      && message.task_id === candidate.task_id
+      && message.task_phase === candidate.task_phase
+      && message.created_at === candidate.created_at;
+  });
+}
 function taskActivityLabel(state: string) {
   if (state === "WAITING_CONFIRMATION") return "待确认";
   if (state === "SUCCEEDED") return "已完成";
