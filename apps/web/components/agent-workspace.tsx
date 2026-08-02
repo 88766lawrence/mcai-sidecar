@@ -508,6 +508,7 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
   }, { scope: messageRef });
   if (message.role === "user") return <article ref={messageRef} className="chat-message user workbench-record"><span className="user-avatar"><UserRound size={15} /></span><div><div className="message-meta"><strong>COMMAND</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.content}</p></div></article>;
   const isTaskRequest = message.task_phase === "request";
+  if (isTaskRequest && task && terminal(task.state)) return null;
   if (isTaskRequest) {
     return <article ref={messageRef} className="chat-message assistant task-request workbench-record"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>TOOLS</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
@@ -525,7 +526,7 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
         </header>
         <RichText content={message.content} />
         <TaskOutcome task={task} />
-      </section> : <RichText content={message.content} />}
+      </section> : <><RichText content={message.content} />{!streaming && !task && <ResponseTrace route={message.route} />}</>}
     </div>
   </article>;
 }
@@ -561,10 +562,32 @@ function TaskActivity({ content, task, instanceName, onReview }: { content: stri
 
 function TaskOutcome({ task }: { task: TaskRecord }) {
   const evidence = task.evidence.filter((item) => item.summary.trim()).slice(-3);
-  if (!evidence.length) return null;
+  const failed = task.state !== "SUCCEEDED";
   return <details className="result-evidence">
-    <summary><span>查看执行记录</span><small>{evidence.length} 条证据</small><ChevronDown size={14} aria-hidden="true" /></summary>
-    <div>{evidence.map((item, index) => <p key={`${item.at}-${index}`}><span />{item.summary}<time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}</div>
+    <summary><span>展开思考与执行过程</span><small>{task.plan.steps.length} 个工具 · {evidence.length} 条证据</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <div className="result-trace">
+      <section className="result-trace-section" aria-label="工具调用过程">
+        <strong>工具调用</strong>
+        {task.plan.steps.map((step, index) => <p key={step.id}><span /><b>{index + 1}. {toolLabel(step.tool)}</b><code>{step.tool}</code><em className={failed ? "failed" : "success"}>{failed ? "未完成" : "完成"}</em></p>)}
+      </section>
+      {evidence.length > 0 && <section className="result-trace-section" aria-label="执行证据">
+        <strong>结果依据</strong>
+        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span />{item.summary}<time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
+      </section>}
+    </div>
+  </details>;
+}
+
+function ResponseTrace({ route }: { route?: ConversationMessage["route"] }) {
+  return <details className="result-evidence response-trace">
+    <summary><span>展开回答过程</span><small>直接回答 · 未调用工具</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <div className="result-trace">
+      <section className="result-trace-section">
+        <strong>处理摘要</strong>
+        <p><span /><b>识别为知识问答</b><code>{route ?? "direct"}</code><em className="success">已完成</em></p>
+        <p><span />本次回答未修改实例、文件或服务器状态。</p>
+      </section>
+    </div>
   </details>;
 }
 
