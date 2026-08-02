@@ -50,6 +50,26 @@ describe("draftPlan", () => {
     expect(plan.acceptance).toEqual([{ type: "instance_state", expected: "stopped" }]);
   });
 
+  it("builds a multi-step read-only health inspection without obeying negated stop text", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance",
+      "revision-1",
+      "对当前实例完成只读健康检查：执行 version、plugins 并读取最近日志；不要重启或停止服务器。",
+      { preferredTool: "logs.query" },
+    );
+
+    expect(plan.steps).toEqual([
+      { id: "s1", tool: "console.command", args: { command: "version" }, risk: "read" },
+      { id: "s2", tool: "console.command", args: { command: "plugins" }, risk: "read" },
+      { id: "s3", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" },
+    ]);
+  });
+
+  it("does not treat a negated stop instruction as authorization to stop", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "检查日志，但不要停止服务器", { preferredTool: "logs.query" });
+    expect(plan.steps[0]?.tool).toBe("logs.query");
+  });
+
   it("creates a read-only console plan for list", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "在控制台执行 list");
 

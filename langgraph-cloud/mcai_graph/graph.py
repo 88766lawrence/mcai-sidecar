@@ -635,6 +635,10 @@ class McaiGraph:
                 answer = f"{lifecycle_names[lifecycle_tool]}失败：{reason}"
             return {"decision": _response(answer, status="answered"), "next_node": "end"}
 
+        health_answer = _format_readonly_health_answer(intent, substantive, tools)
+        if task_state == "SUCCEEDED" and health_answer:
+            return {"decision": _response(health_answer, status="answered"), "next_node": "end"}
+
         deterministic_evidence_tools = {
             "console.command": "console",
             "files.list": "files",
@@ -986,6 +990,53 @@ def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_su
     if names:
         return f"当前服务器已加载 {count} 个插件：{names}。"
     return f"当前服务器已加载 {count} 个插件；控制台没有返回插件名称。"
+
+
+def _format_readonly_health_answer(intent: str, evidence: list[dict[str, Any]], tools: list[str]) -> str | None:
+    required_tools = ["console.command", "console.command", "logs.query"]
+    if tools != required_tools or not re.search(r"(?:只读|健康检查|健康巡检|综合检查|完整检查)", intent):
+        return None
+
+    console_receipts = [str(item.get("summary", "")).strip() for item in evidence if item.get("kind") == "console"]
+    log_receipt = next((str(item.get("summary", "")).strip() for item in reversed(evidence) if item.get("kind") == "logs"), "")
+    version_receipt = next((item for item in console_receipts if re.search(r"(?:This server is running|Paper|Spigot|Bukkit|Minecraft).*(?:version|1\.\d+)", item, re.I)), "")
+    plugin_receipt = next((item for item in console_receipts if re.search(r"(?:Server\s+)?Plugins\s*\(\d+\)", item, re.I)), "")
+
+    version_match = re.search(r"This server is running[^\r\n]*", version_receipt, re.I)
+    if not version_match:
+        version_match = re.search(r"(?:Paper|Spigot|Bukkit)[^\r\n]*(?:1\.\d+(?:\.\d+)?)[^\r\n]*", version_receipt, re.I)
+    version_text = re.sub(r"\s+", " ", version_match.group(0)).strip() if version_match else "version 命令已成功返回，原始结果见执行轨迹"
+    plugin_answer = _format_plugin_inventory_answer("查看服务器插件列表", "console.command", plugin_receipt)
+    plugin_text = plugin_answer.rstrip("。") if plugin_answer else "plugins 命令已成功返回，原始结果见执行轨迹"
+
+    signals: list[str] = []
+    if re.search(r"Paper Watchdog|has not responded for\s+\d+\s+seconds", log_receipt, re.I):
+        seconds = re.search(r"has not responded for\s+(\d+)\s+seconds", log_receipt, re.I)
+        signals.append(f"Paper Watchdog 检测到主线程超过 {seconds.group(1)} 秒未响应" if seconds else "Paper Watchdog 检测到主线程无响应")
+    if re.search(r"Can't keep up", log_receipt, re.I):
+        lag = re.search(r"Running\s+(\d+)ms\s+or\s+(\d+)\s+ticks behind", log_receipt, re.I)
+        signals.append(f"服务器曾落后 {lag.group(1)}ms（{lag.group(2)} ticks）" if lag else "日志出现 Can't keep up 卡顿告警")
+    if re.search(r"PaperVersionFetcher|Error while parsing version", log_receipt, re.I):
+        signals.append("Paper 版本检查访问远端 API 失败")
+    if not signals and re.search(r"(?:\bERROR\b|\bWARN(?:ING)?\b|Exception)", log_receipt, re.I):
+        signals.append("日志包含 ERROR/WARN 或异常堆栈")
+    if not log_receipt:
+        log_text = "日志工具未返回可分析内容"
+        conclusion = "检查未完整通过：缺少日志证据。"
+    elif signals:
+        log_text = "；".join(signals)
+        conclusion = "服务器当前可响应，但存在真实卡顿或外部版本检查异常，不能判定为完全健康。"
+    else:
+        log_text = "最近日志中未匹配到 ERROR、WARN、崩溃或卡顿关键词"
+        conclusion = "三项只读检查均已完成，暂未发现明显异常信号。"
+
+    return "\n".join((
+        "只读健康检查已完成。",
+        f"- 服务端：{version_text}",
+        f"- 插件：{plugin_text}",
+        f"- 日志：{log_text}。",
+        f"- 结论：{conclusion}",
+    ))
 
 
 def _thread_id(payload: dict[str, Any]) -> str:

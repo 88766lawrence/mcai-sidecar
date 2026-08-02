@@ -12,7 +12,16 @@ interface DraftPlanOptions {
 export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string, options: DraftPlanOptions = {}): TaskPlan {
   const id = `task_${randomUUID()}`;
   const normalized = intent.toLowerCase();
-  if (/\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/.test(normalized)) {
+  if (isReadonlyHealthInspection(normalized)) {
+    return plan(id, instanceRef, inventoryRevision, intent, [
+      { id: "s1", tool: "console.command", args: { command: "version" }, risk: "read" },
+      { id: "s2", tool: "console.command", args: { command: "plugins" }, risk: "read" },
+      { id: "s3", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" },
+    ], []);
+  }
+  const stopPattern = /\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/;
+  const negatedStopPattern = /(?:不要|不得|禁止|无需|不应|别|不可|避免)[^\r\n，。；;]{0,10}(?:\b(?:stop|shutdown)\b|停止|关闭|关服)/;
+  if (stopPattern.test(normalized) && !negatedStopPattern.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "instance.stop",
@@ -139,6 +148,14 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     ]);
   }
   return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" }], []);
+}
+
+function isReadonlyHealthInspection(intent: string) {
+  const asksForInspection = /(?:只读|健康检查|健康巡检|综合检查|完整检查|health\s*check|inspection)/i.test(intent);
+  const asksForVersion = /(?:\bversion\b|版本|服务端类型)/i.test(intent);
+  const asksForPlugins = /(?:\bplugins?\b|插件)/i.test(intent);
+  const asksForLogs = /(?:日志|\blogs?\b|error|warn|崩溃|卡顿)/i.test(intent);
+  return asksForInspection && asksForVersion && asksForPlugins && asksForLogs;
 }
 
 function parsePluginProject(intent: string) {

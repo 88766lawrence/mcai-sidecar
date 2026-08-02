@@ -218,6 +218,55 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await graph.close()
 
+    async def test_readonly_health_inspection_summarizes_all_three_tool_receipts(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-inspection.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-health-inspection",
+                "intent": "完成只读健康检查：version、plugins、日志；不要停止服务器",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [
+                    {"tool": "console.command"},
+                    {"tool": "console.command"},
+                    {"tool": "logs.query"},
+                ]},
+                "evidence": [
+                    {"kind": "console", "summary": "控制台返回：This server is running Paper version 1.21.1-133"},
+                    {"kind": "console", "summary": "控制台返回：Server Plugins (0):"},
+                    {"kind": "logs", "summary": "Recent log excerpt: Server started normally. Done (2.1s)!"},
+                ],
+            })
+            self.assertIn("Paper version 1.21.1-133", response["answer"])
+            self.assertIn("插件数量为 0", response["answer"])
+            self.assertIn("未匹配到 ERROR、WARN", response["answer"])
+            self.assertIn("暂未发现明显异常", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_readonly_health_inspection_prefers_real_version_line_and_named_log_signals(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-signals.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-health-signals",
+                "intent": "完成只读健康检查：version、plugins、日志；不要停止服务器",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [
+                    {"tool": "console.command"}, {"tool": "console.command"}, {"tool": "logs.query"},
+                ]},
+                "evidence": [
+                    {"kind": "console", "summary": "PaperVersionFetcher https://api.papermc.io/v2/projects/paper/versions/1.21.1\nThis server is running Paper version 1.21.1-133"},
+                    {"kind": "console", "summary": "Server Plugins (0):"},
+                    {"kind": "logs", "summary": "Paper Watchdog: The server has not responded for 15 seconds\nCan't keep up! Running 18436ms or 368 ticks behind\nPaperVersionFetcher Error while parsing version"},
+                ],
+            })
+            self.assertIn("This server is running Paper version 1.21.1-133", response["answer"])
+            self.assertIn("主线程超过 15 秒未响应", response["answer"])
+            self.assertIn("落后 18436ms（368 ticks）", response["answer"])
+            self.assertIn("版本检查访问远端 API 失败", response["answer"])
+            self.assertNotIn("papermc.io/v2", response["answer"])
+        finally:
+            await graph.close()
+
     async def test_files_completion_uses_real_evidence_without_model(self):
         graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "files.sqlite3")
         try:
