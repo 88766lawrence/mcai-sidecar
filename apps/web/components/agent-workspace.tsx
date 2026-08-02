@@ -380,8 +380,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       </div>
       <div className="agent-context">{current ? <><Server size={15} /><strong>{current.name}</strong><span>{instanceMeta(current)}</span></> : "未选择实例"}</div>
       <div className={`cloud-state ${cloudOnline ? "online" : "offline"}`}><Cloud size={15} /><span>{cloudOnline ? "本地云在线" : "本地云离线"}</span></div>
-      <button className="icon-button" onClick={() => void refresh()} aria-label="刷新"><RefreshCw size={17} /></button>
-      <button className="icon-button" onClick={onLogout} aria-label="退出"><LogOut size={18} /></button>
+      <button className="icon-button topbar-refresh" onClick={() => void refresh()} aria-label="刷新工作台" title="刷新工作台"><RefreshCw size={17} /></button>
+      <button className="icon-button topbar-logout" onClick={onLogout} aria-label="退出登录" title="退出登录"><LogOut size={18} /></button>
     </header>
 
     <aside className={`agent-sidebar ${sidebarOpen ? "open" : ""}`}>
@@ -447,7 +447,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       </div>
       {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
-        <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="询问知识、诊断问题，或描述你想完成的操作…" rows={2} />
+        <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="询问问题，或描述要完成的操作…" rows={2} />
         <button onClick={sending ? cancelMessage : () => void sendMessage()} disabled={!sending && (loading || !intent.trim())} aria-label={sending ? "停止发送" : "发送"} title={sending ? "停止发送" : "发送"}>{sending ? <Square size={17} /> : <Send size={19} />}</button>
         <div className="composer-hint"><ShieldCheck size={13} />工具调用仍需策略校验，高风险操作必须确认</div>
       </div>
