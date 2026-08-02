@@ -79,6 +79,40 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision["route"], "tool")
         self.assertEqual(decision["trace"][0]["result"], "files.list")
 
+    async def test_natural_plugin_inventory_query_uses_console(self):
+        decision = await self.graph.route({
+            "threadId": "session-plugin-inventory",
+            "message": "查看服务器插件有哪些",
+            "history": [],
+            "availableTools": ["console.command", "files.list"],
+        })
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["trace"][0]["result"], "console.command")
+        self.assertIn("plugins", decision["toolIntent"])
+
+    async def test_explicit_plugin_directory_correction_uses_files_list(self):
+        decision = await self.graph.route({
+            "threadId": "session-plugin-directory",
+            "message": "我说插件目录",
+            "history": [],
+            "availableTools": ["console.command", "files.list"],
+        })
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["trace"][0]["result"], "files.list")
+        self.assertIn("/plugins", decision["toolIntent"])
+
+    async def test_wrong_root_directory_evidence_continues_to_plugins(self):
+        response = await self.graph.respond({
+            "threadId": "session-wrong-plugin-directory",
+            "intent": "查看服务器插件有哪些\n\nAgent operation: 列出目录文件",
+            "taskState": "SUCCEEDED",
+            "plan": {"steps": [{"tool": "files.list"}]},
+            "evidence": [{"kind": "files", "summary": "实例目录 /：共 2 项：plugins、server.jar"}],
+        })
+        self.assertIn("不是插件目录", response["answer"])
+        self.assertEqual(response["continuation"]["trace"][0]["result"], "files.list")
+        self.assertIn("/plugins", response["continuation"]["toolIntent"])
+
     async def test_missing_plugin_evidence_continues_with_files_list(self):
         response = await self.graph.respond({
             "threadId": "session-3",

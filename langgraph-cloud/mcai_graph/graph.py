@@ -591,6 +591,20 @@ class McaiGraph:
 
         plugin_name = _plugin_name_from_intent(intent)
         files_evidence = next((str(item.get("summary", "")) for item in reversed(substantive) if item.get("kind") == "files"), "")
+        expects_plugin_directory = "files.list" in tools and bool(re.search(r"(?:/plugins\b|plugins/|插件)", intent, re.I))
+        if task_state == "SUCCEEDED" and expects_plugin_directory and files_evidence and not re.search(r"(?:目录\s*/plugins\b|/plugins\s*[：:])", files_evidence, re.I):
+            continuation = _tool_decision(
+                "列出当前实例 /plugins 目录并返回实际插件文件清单",
+                "files.list",
+                "上一轮文件工具返回了错误目录",
+            )
+            return {
+                "decision": {
+                    **_response("上一轮读取的是实例根目录，不是插件目录；正在纠正并读取 /plugins。", status="answered"),
+                    "continuation": continuation,
+                },
+                "next_node": "end",
+            }
         if task_state == "SUCCEEDED" and "files.list" in tools and plugin_name and files_evidence:
             normalized_evidence = files_evidence.lower()
             aliases = {plugin_name.lower()}
@@ -791,7 +805,11 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
         return _delegate_decision(delegate)
     if "logs.query" in available and re.search(r"(?:读取|查看|查询|检查|分析|为什么).{0,12}(?:日志|崩服|报错|卡服)|(?:日志|崩服|报错|卡服).{0,12}(?:原因|分析|检查)", message, re.I):
         return _tool_decision(message, "logs.query", "需要当前实例真实日志")
-    if "files.list" in available and re.search(r"(?:确认|检查|查看|读取|列出).{0,16}(?:plugins/?|插件.{0,6}(?:目录|文件|jar|落盘))|(?:plugins/?).{0,16}(?:确认|检查|查看|读取|列出)", message, re.I):
+    plugin_directory_request = bool(re.search(r"(?:/plugins\b|plugins/|plugins\s*(?:目录|文件夹|folder|directory)|插件\s*(?:目录|文件夹|文件|jar))", message, re.I))
+    plugin_inventory_request = bool(re.search(r"(?:插件|plugins?).{0,8}(?:列表|有哪些|有什么|多少|已安装|list)|(?:查看|查询|列出|显示).{0,10}(?:服务器|服务端|当前)?\s*(?:插件|plugins?)", message, re.I))
+    if "console.command" in available and plugin_inventory_request and not plugin_directory_request:
+        return _tool_decision("在当前实例 Minecraft 控制台执行 plugins", "console.command", "需要实时插件列表")
+    if "files.list" in available and (plugin_directory_request or re.search(r"(?:确认|检查|查看|读取|列出).{0,16}(?:plugins/?|插件.{0,6}(?:目录|文件|jar|落盘))|(?:plugins/?).{0,16}(?:确认|检查|查看|读取|列出)", message, re.I)):
         return _tool_decision("列出当前实例 /plugins 目录并返回实际文件清单", "files.list", "需要文件级证据")
     if "files.list" in available and re.search(r"(?:确定|确认|核实|真的).{0,20}(?:essentials|luckperms|插件).{0,12}(?:安装|存在|落盘)|(?:essentials|luckperms|插件).{0,20}(?:确定|确认|核实|真的|安装了吗|存在吗)", lower, re.I):
         return _tool_decision("列出当前实例 /plugins 目录并确认目标插件 JAR 是否实际落盘", "files.list", "安装声明必须由文件级证据确认")
@@ -800,7 +818,7 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     if "console.command" in available:
         if re.search(r"(?:服务器|服务端).{0,5}(?:版本|version)|(?:什么|哪种).{0,4}服务端", message, re.I):
             return _tool_decision("在当前实例 Minecraft 控制台执行 version", "console.command", "需要实时服务端版本")
-        if re.search(r"(?:已安装|当前).{0,4}插件|插件列表", message, re.I):
+        if re.search(r"(?:已安装|当前).{0,4}插件|插件列表|插件.{0,6}(?:有哪些|有什么|多少)", message, re.I):
             return _tool_decision("在当前实例 Minecraft 控制台执行 plugins", "console.command", "需要实时插件列表")
     if "files.list" in available and re.search(r"根目录|文件列表|目录列表|列出.{0,8}(?:文件|目录)", message, re.I):
         return _tool_decision(message, "files.list", "需要当前实例文件清单")

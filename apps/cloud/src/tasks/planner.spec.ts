@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftPlan, extractRealtimeLogIntent } from "./planner";
+import { draftPlan, extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "./planner";
 
 describe("draftPlan", () => {
   it("creates a controlled Paper installation plan for any supported release", () => {
@@ -148,5 +148,19 @@ describe("draftPlan", () => {
     });
 
     expect(plan.steps).toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
+  });
+
+  it("uses the read-only plugins console command for a natural-language plugin inventory query", () => {
+    expect(extractConsoleCommandIntent("查看服务器插件有哪些")).toBe("plugins");
+    expect(draftPlan("mcs:daemon:instance", "revision-1", "查看服务器插件有哪些").steps).toEqual([{
+      id: "s1", tool: "console.command", args: { command: "plugins" }, risk: "read",
+    }]);
+  });
+
+  it("treats an explicit plugin-directory correction as a files tool request", () => {
+    expect(extractConsoleCommandIntent("我说插件目录")).toBeUndefined();
+    expect(extractFilesListIntent("我说插件目录")).toContain("/plugins");
+    expect(draftPlan("mcs:daemon:instance", "revision-1", "我说插件目录", { preferredTool: "files.list" }).steps)
+      .toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
   });
 });

@@ -52,6 +52,36 @@ describe("ChatService", () => {
     expect(await readFile(join(directory, "conversations.json"), "utf8")).toContain("回答要简洁");
   });
 
+  it("routes plugin inventory and plugin-directory corrections without trusting the model", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.1",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = { route: vi.fn() } as unknown as ModelGatewayService;
+    const consoleTask = { id: "task-console", state: "SNAPSHOTTING" };
+    const filesTask = { id: "task-files", state: "SNAPSHOTTING" };
+    const tasks = {
+      create: vi.fn().mockResolvedValueOnce(consoleTask).mockResolvedValueOnce(filesTask),
+      get: vi.fn().mockImplementation((id: string) => id === consoleTask.id ? consoleTask : filesTask),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const inventory = await service.send(session.id, "tenant-1", "查看服务器插件有哪些");
+    const directoryResult = await service.send(session.id, "tenant-1", "我说插件目录");
+
+    expect(inventory.message).toMatchObject({ route: "tool", task_id: "task-console" });
+    expect(directoryResult.message).toMatchObject({ route: "tool", task_id: "task-files" });
+    expect(tasks.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ intent: "查看服务器插件有哪些" }));
+    expect(tasks.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      intent: expect.stringContaining("/plugins"),
+      preferredTool: "files.list",
+    }));
+    expect(model.route).not.toHaveBeenCalled();
+  });
+
   it("appends one final answer when message polls overlap after a terminal tool callback", async () => {
     const store = new CloudStore();
     store.instances.set("instance-1", {

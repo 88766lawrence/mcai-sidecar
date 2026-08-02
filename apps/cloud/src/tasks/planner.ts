@@ -43,7 +43,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "forbidden.shell", args: {}, risk: "forbidden" }], []);
   }
   if (options.preferredTool === "files.list") {
-    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
+    const path = isPluginDirectoryIntent(intent) ? "/plugins" : "/";
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "files.list", args: { path }, risk: "read" }], []);
   }
   if (options.preferredTool === "logs.query") {
@@ -114,7 +114,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     ]);
   }
   if (/根目录|目录|文件|文件夹|list.*file|files?.*list|directory/.test(normalized)) {
-    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
+    const path = isPluginDirectoryIntent(intent) ? "/plugins" : "/";
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "files.list",
@@ -188,10 +188,21 @@ export function extractConsoleCommandIntent(intent: string) {
   if (/\b(?:server version|minecraft version)\b|\u670d\u52a1\u7aef.{0,4}\u7248\u672c|\u670d\u52a1\u5668.{0,4}\u7248\u672c/i.test(intent)) {
     return "version";
   }
-  if (/\b(?:plugin list|installed plugins?)\b|\u63d2\u4ef6.{0,4}\u5217\u8868|\u5df2\u5b89\u88c5.{0,4}\u63d2\u4ef6/i.test(intent)) {
+  const explicitlyRequestsPluginFiles = isPluginDirectoryIntent(intent);
+  if (!explicitlyRequestsPluginFiles && (/\b(?:plugin list|installed plugins?|what plugins?)\b|插件.{0,8}(?:列表|有哪些|有什么|多少|已安装)|(?:查看|查询|列出|显示).{0,10}(?:服务器|服务端|当前)?\s*插件|已安装.{0,4}插件/i.test(intent))) {
     return "plugins";
   }
   return undefined;
+}
+
+export function extractFilesListIntent(intent: string) {
+  if (!isPluginDirectoryIntent(intent)) return undefined;
+  if (!/(?:查看|读取|列出|显示|检查|打开|里面|内容|文件|目录|我说|show|read|list|inspect)/i.test(intent)) return undefined;
+  return "列出当前实例 /plugins 目录并返回实际插件文件清单";
+}
+
+function isPluginDirectoryIntent(intent: string) {
+  return /(?:\/plugins\b|plugins[\\/]|plugins\s*(?:目录|文件夹|folder|directory)|插件\s*(?:目录|文件夹|文件|jar))/i.test(intent);
 }
 
 export function extractRealtimeLogIntent(intent: string) {
