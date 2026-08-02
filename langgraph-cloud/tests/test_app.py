@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from mcai_graph import app as app_module
+from mcai_graph.graph import ModelProviderError
 
 
 class FakeGraph:
@@ -21,6 +22,9 @@ class FakeGraph:
         self.payload = payload
         return {"status": "answered", "answer": "任务已完成。", "requestId": "response-test"}
 
+    async def probe(self):
+        return {"model": "test"}
+
 
 class ToolGraph(FakeGraph):
     async def route(self, payload):
@@ -32,6 +36,11 @@ class ToolGraph(FakeGraph):
             "toolIntent": "启动当前实例",
             "requestId": "request-tool-test",
         }
+
+
+class UnavailableGraph(FakeGraph):
+    async def probe(self):
+        raise ModelProviderError("RATE_LIMIT", [])
 
 
 class AppTests(unittest.TestCase):
@@ -56,6 +65,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["runtime"], "python-langgraph")
         self.assertTrue(response.json()["configured"])
+
+    def test_ready_verifies_a_model_response(self):
+        response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(response.json()["model"], "test")
+
+    def test_ready_reports_the_provider_failure_code(self):
+        with patch.object(app_module, "current_graph", return_value=UnavailableGraph()):
+            response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"]["code"], "RATE_LIMIT")
 
     def test_stream_announces_route_before_answer_content(self):
         with patch.object(app_module, "current_graph", return_value=ToolGraph()):

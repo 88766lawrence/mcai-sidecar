@@ -1,5 +1,56 @@
 # MCAI 项目交接记录
 
+## 2026-08-02 模型适配器与 Agent 循环修复（当前最新状态）
+
+### 本轮结论
+
+模型服务本身可用；此前“模型云暂时不可用”“暂时没有可用回答”和聊天里出现原始 JSON，根因是 MCAI 的兼容适配与超时策略，而不是所有配置模型都失效。当前 Linux 测试端已部署修复，且只重启了 `mcai-model-cloud`，没有重启 `mcai-cloud`、`mcai-agent`、`mcai-web` 或 Minecraft 实例。
+
+当前运行环境：
+
+- Windows 工作区：`E:\aimcs`
+- Linux 源码：`/opt/mcai-src`
+- LangGraph 运行 release：`/opt/mcai-langgraph-cloud/releases/20260801130804`
+- 当前 release 软链接：`/opt/mcai-langgraph-cloud/current`
+- 最新可回滚备份：`/tmp/mcai-model-adapter-backup-20260802150053`
+
+### 已修复的模型行为
+
+1. 兼容 OpenAI 风格但不严格遵守 JSON Schema 的上游：接受自然文本、`answer/content/text/response/message/output/result/final/summary` 等安全正文键，以及嵌套内容；绝不暴露 `analysis` 或 `reasoning` 字段。
+2. 子 Agent（规划/诊断）不再对同一个模型依次浪费三轮 `response_format` 探测。它使用兼容的 prompt 模式，并在主模型慢响应时允许一次 20 秒的正文生成窗口，再为备用模型保留时间。
+3. 子 Agent 输出预算从 512 降至 256 tokens，并采用固定的短结果模板：诊断必须覆盖“已知事实、推断、验证、风险、验收”；规划必须覆盖“阶段、依赖、风险、验收、回滚、停止条件”。
+4. 若上游在 token 上限前截断 JSON，例如 `{"route":"direct","answer":"...` 未闭合，系统只恢复公开 `answer` 正文，不会把原始 JSON 显示在聊天气泡中。
+5. 双层 JSON 包装会递归解包；兼容网关返回的顶层或嵌套 `content` 也不会丢失。
+6. `availableTools: []` 现在真正表示没有工具。模型即使尝试选择工具，也会降级为“未执行任何操作”。
+7. 对话历史增加每条 1,600 字符、总计 6,000 字符的压缩上限，保留最新上下文，避免旧日志或长回调拖慢后续模型请求。
+8. `/health` 只表示进程和配置存在；新增 `/ready` 会真实调用一次模型并要求回显随机 nonce，不能再把假健康误报为模型可用。
+9. 模型失败会返回明确的认证、限流、网络、超时或格式错误状态，而不再一律伪装成“没有可用回答”。
+10. 路由提示词要求模型在事实不确定时省略或标明不确定，禁止编造项目名、版本、性能指标或工具能力。
+
+### 真实验收记录（2026-08-02）
+
+Linux 最新部署执行了 54 项 Python LangGraph/FastAPI 单元与集成测试，全部通过。部署脚本同时验证 `/health` 和实际推理 `/ready`；仅有服务启动初期的一次瞬时 `curl connection refused`，随后 readiness 成功，部署以退出码 0 完成。
+
+无真实服务器数据的复杂 Agent 验收（`/tmp/verify-offline-delegate.mjs`）通过：虚构性能诊断题走 `delegate/diagnostics` 并覆盖事实、推断、验证、风险和验收；虚构大型 Paper 治理题走 `delegate/planner` 并覆盖阶段、依赖、风险、验收、回滚和停止条件。验收请求只发送虚构压测文本和 synthetic 实例标识；没有读取或发送真实实例日志、文件或控制台内容。
+
+通用模型/Cloud 流式验收（`/tmp/verify-model-runtime.mjs`）通过：
+
+- `/ready`：`status=ready`、`runtime=python-langgraph`，实际使用 `MiniMax-M3`；
+- `17 × 19`：`route=direct`，返回 `323`；
+- Paper/Fabric 概念题：`route=direct`，有实质回答且不再显示原始 JSON；
+- 请求“启动服务器”但 `availableTools=[]`：没有创建工具任务；
+- Cloud NDJSON 流式路径：`route=direct`，输出自然语言，收到多个 `delta` 后结束。
+
+工具回调闭环验收（`/tmp/verify-langgraph-loop.mjs`）通过：用户确认“需要”后恢复 `files.list`；安装插件任务只有中间状态时会继续读取 `/plugins` 取证；真实只读 `files.list /plugins` 任务为 `SUCCEEDED`；当前证据为 `.paper-remapped`、`bStats`、`spark`；最终回答明确说明未发现 EssentialsX，不能确认已安装，没有假称成功。
+
+### 未覆盖的安全边界
+
+本轮没有把 Linux 测试实例的真实控制台日志、文件列表或性能数据发送给外部模型服务。真实日志“读取 → 模型诊断 → 回答”的端到端验收仍需要用户明确授权：`允许将 Linux 测试实例日志发送给已配置的模型服务用于 Agent 验收`。在未授权前，可验证的是本地受控读取、工具回调和完全虚构的模型分析，不应声称已经完成真实日志外发分析。
+
+### 当前同步状态与下一步
+
+截至本节写入时，Windows 工作区与 Linux `/opt/mcai-src`/运行 release 已部署相同的 `app.py`、`graph.py`、`test_app.py`、`test_graph.py`。GitHub 尚待本轮最终哈希核对后提交推送；提交前必须再次执行 `git diff --check`，并比较四个文件的 Windows/Linux SHA-256。
+
 更新时间：2026-08-01 13:18（Asia/Hong_Kong）
 
 ## 当前结论

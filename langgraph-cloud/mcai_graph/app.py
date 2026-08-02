@@ -11,7 +11,7 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .graph import McaiGraph, ModelProvider, ProviderConfig
+from .graph import McaiGraph, ModelProvider, ModelProviderError, ProviderConfig
 
 
 CONFIG_PATH = Path(os.environ.get("MCAI_MODEL_CONFIG", "/etc/mcai-model-cloud/config.json"))
@@ -59,6 +59,16 @@ async def health() -> dict[str, Any]:
         "configured": bool(provider.get("apiKey") and provider.get("baseUrl") and provider.get("model")),
         "runtime": "python-langgraph",
     }
+
+
+@app.get("/ready")
+async def ready() -> dict[str, Any]:
+    config = load_config()
+    try:
+        result = await current_graph(config).probe()
+    except ModelProviderError as error:
+        raise HTTPException(status_code=503, detail={"code": error.code}) from error
+    return {"status": "ready", "runtime": "python-langgraph", "model": result["model"]}
 
 
 @app.post("/v1/chat")

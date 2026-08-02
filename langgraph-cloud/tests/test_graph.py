@@ -1,10 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 
-from mcai_graph.graph import McaiGraph, ProviderConfig, _deterministic_decision, _infer_pending_action
+from mcai_graph.graph import (
+    MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS,
+    MODEL_REQUEST_TIMEOUT_SECONDS,
+    McaiGraph,
+    ModelProvider,
+    ModelProviderError,
+    ProviderConfig,
+    _decision_schema,
+    _deterministic_decision,
+    _history,
+    _infer_pending_action,
+    _max_tokens_for_schema,
+    _normalize_decision,
+    _provider_content,
+    _router_prompt,
+    _thread_id,
+)
 
 
 class FakeProvider:
@@ -152,8 +169,92 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await graph.close()
 
+    async def test_explicit_offline_diagnosis_runs_the_delegate_node(self):
+        decision = await self.graph.route({
+            "threadId": "session-offline-diagnosis",
+            "message": "不读取当前服务器数据，仅根据以下证据诊断故障根因，并给出验证方案与验收标准。",
+            "availableTools": ["logs.query", "console.command"],
+        })
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "diagnostics")
+        self.assertEqual(decision["answer"], "已根据真实任务证据完成。")
+
+    async def test_delegate_prompts_require_a_concise_complete_result_template(self):
+        class CapturingProvider:
+            config = ProviderConfig("test", "http://example.invalid/v1", "test")
+
+            def __init__(self):
+                self.systems = []
+
+            async def structured(self, system, _messages, _schema):
+                self.systems.append(system)
+                return {"answer": "模板化回答"}
+
+        provider = CapturingProvider()
+        graph = McaiGraph(provider, Path(self.temp.name) / "delegate-template.sqlite3")
+        try:
+            planner = await graph.route({
+                "threadId": "session-template-plan",
+                "message": "不读取实时数据，为大型 Paper 服务器制定三阶段性能治理方案，包含风险、回滚和停止条件。",
+                "availableTools": ["logs.query"],
+            })
+            diagnostics = await graph.route({
+                "threadId": "session-template-diagnosis",
+                "message": "不读取实时数据，仅根据以下证据诊断故障根因，并给出验证方案与验收标准。",
+                "availableTools": ["logs.query"],
+            })
+            self.assertEqual(planner["route"], "delegate")
+            self.assertEqual(diagnostics["route"], "delegate")
+            self.assertIn("阶段、依赖、风险、验收、回滚、停止条件", provider.systems[0])
+            self.assertIn("已知事实、推断、验证、风险、验收", provider.systems[1])
+        finally:
+            await graph.close()
+
+    async def test_failed_delegate_is_reported_as_unavailable_not_as_a_successful_delegate(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "delegate-failure.sqlite3")
+        try:
+            decision = await graph.route({
+                "threadId": "session-offline-delegate-failure",
+                "message": "不读取当前服务器数据，仅根据以下证据诊断故障根因。",
+                "availableTools": ["logs.query", "console.command"],
+            })
+            self.assertEqual(decision["route"], "direct")
+            self.assertEqual(decision["providerStatus"], "unavailable")
+            self.assertEqual(decision["providerError"], "INTERNAL_ERROR")
+        finally:
+            await graph.close()
+
+    async def test_model_completion_failure_preserves_an_unavailable_status(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "completion-failure.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-completion-failure",
+                "intent": "解释一个自定义任务结果",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "custom.operation"}]},
+                "evidence": [],
+            })
+            self.assertEqual(response["status"], "unavailable")
+            self.assertEqual(response["providerStatus"], "unavailable")
+            self.assertEqual(response["providerError"], "INTERNAL_ERROR")
+        finally:
+            await graph.close()
+
 
 class RoutingTests(unittest.TestCase):
+    def test_router_prompt_requires_uncertain_facts_to_remain_explicit(self):
+        prompt = _router_prompt({"instance": {}, "availableTools": []})
+        self.assertIn("不得编造项目名、版本号、性能指标或工具能力", prompt)
+
+    def test_anonymous_requests_do_not_share_checkpoint_state(self):
+        first = _thread_id({"instance": {"id": "same-instance"}})
+        second = _thread_id({"instance": {"id": "same-instance"}})
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("anonymous:"))
+
+    def test_request_id_is_a_stable_thread_fallback(self):
+        self.assertEqual(_thread_id({"request_id": "request-42"}), "request-42")
+
     def test_plugin_install_routes_to_controlled_tool(self):
         decision = _deterministic_decision("帮我安装 EssentialsX", [], {"plugin.install"})
         self.assertEqual(decision["trace"][0]["result"], "plugin.install")
@@ -199,6 +300,289 @@ class RoutingTests(unittest.TestCase):
             {"instance.restart"},
         )
         self.assertEqual(pending["tool"], "instance.restart")
+
+    def test_explicit_offline_diagnosis_delegates_without_model_routing(self):
+        decision = _deterministic_decision(
+            "不读取当前服务器数据，仅根据以下证据诊断故障根因，并给出验证方案与验收标准。",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "diagnostics")
+
+    def test_explicit_offline_plan_delegates_without_model_routing(self):
+        decision = _deterministic_decision(
+            "不读取实时数据，为大型 Paper 服务器制定三阶段性能治理方案，包含风险、回滚和停止条件。",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "planner")
+
+    def test_current_log_diagnosis_remains_a_controlled_tool_request(self):
+        decision = _deterministic_decision(
+            "读取当前实例最近一小时日志，结合错误与异常行诊断最可能故障原因。",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "logs.query")
+
+    def test_explicit_operation_is_not_swallowed_by_offline_delegate_keywords(self):
+        decision = _deterministic_decision(
+            "离线安装方案：下载 Paper 1.21.1 服务端。",
+            [],
+            {"server.install"},
+        )
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "server.install")
+
+
+class ModelAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def test_output_budgets_keep_routing_and_answers_concise(self):
+        answer_schema = {"required": ["answer"]}
+        self.assertEqual(_max_tokens_for_schema(answer_schema), 256)
+        self.assertEqual(_max_tokens_for_schema(_decision_schema()), 384)
+        self.assertGreater(MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS, MODEL_REQUEST_TIMEOUT_SECONDS)
+
+    async def test_plain_model_text_is_a_safe_direct_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            return "2" if mode == "json_schema" else '{"answer":"2"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "1+1"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertEqual(decision["answer"], "2")
+        self.assertEqual(modes, ["json_schema"])
+
+    async def test_truncated_routing_json_recovers_the_public_answer_only(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"route":"direct","answer":"Paper uses plugins\\nFabric uses a mod loader'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertFalse(decision["answer"].startswith("{"))
+        self.assertIn("Paper uses plugins", decision["answer"])
+        self.assertIn("Fabric uses a mod loader", decision["answer"])
+
+    async def test_truncated_double_wrapped_json_recovers_the_nested_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"answer":"{\\"route\\":\\"direct\\",\\"answer\\":\\"Paper uses plugins'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertEqual(decision["answer"], "Paper uses plugins")
+
+    async def test_content_compatibility_field_is_not_lost(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"content":"Paper 更适合插件生态，Fabric 更适合模组。"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "Paper 和 Fabric 的区别"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("Paper", decision["answer"])
+
+    async def test_nested_content_compatibility_field_is_not_lost(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"content":{"text":"Paper is a server implementation; Fabric is a mod loader."}}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("Fabric", decision["answer"])
+
+    async def test_provider_authentication_failure_is_reported(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            raise RuntimeError("provider HTTP 401")
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(caught.exception.code, "AUTHENTICATION")
+
+    async def test_request_timeout_moves_to_the_configured_fallback_model(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary", ("fallback",)))
+        seen = []
+
+        async def request(model, _system, _messages, _schema, _mode):
+            seen.append(model)
+            if model == "primary":
+                raise TimeoutError()
+            return '{"route":"direct","answer":"fallback answered","toolIntent":null,"preferredTool":null,"delegate":null,"pendingAction":null}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(seen, ["primary", "fallback"])
+        self.assertEqual(decision["answer"], "fallback answered")
+        self.assertEqual(decision["providerModel"], "fallback")
+
+    async def test_response_format_failure_uses_the_next_compatible_mode(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            if mode == "json_schema":
+                raise RuntimeError("provider HTTP 400: response_format is unsupported")
+            return '{"content":"compatible answer"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(modes, ["json_schema", "json_object"])
+        self.assertEqual(decision["answer"], "compatible answer")
+
+    async def test_answer_only_schema_prefers_the_compatibility_prompt_mode(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            return "concise answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(modes, ["prompt"])
+        self.assertEqual(decision["answer"], "concise answer")
+
+    async def test_answer_only_empty_primary_moves_directly_to_fallback(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary", ("fallback",)))
+        seen = []
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(model, _system, _messages, _schema, mode):
+            seen.append((model, mode))
+            return "" if model == "primary" else "fallback answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(seen, [("primary", "prompt"), ("fallback", "prompt")])
+        self.assertEqual(decision["answer"], "fallback answer")
+
+    async def test_answer_only_structured_sections_are_preserved(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"facts":"MSPT is elevated","verification":"sample GC pauses"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "diagnose"}], answer_schema)
+        self.assertIn("事实", decision["answer"])
+        self.assertIn("验证", decision["answer"])
+
+    async def test_answer_only_double_wrapped_json_is_unwrapped_for_the_ui(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"answer":"{\\"answer\\":\\"clean answer\\"}"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(decision["answer"], "clean answer")
+
+    def test_provider_content_handles_compatible_envelopes_without_reasoning(self):
+        self.assertEqual(
+            _provider_content({"choices": [{"message": {"content": {"content": "compatible"}}}]}),
+            "compatible",
+        )
+        self.assertEqual(_provider_content({"answer": "top-level compatible"}), "top-level compatible")
+        self.assertEqual(_provider_content({"choices": [{"message": {"reasoning_content": "private"}}]}), "")
+
+    def test_history_is_bounded_but_keeps_recent_context(self):
+        history = [{"role": "assistant", "content": "a" * 8_000}, {"role": "user", "content": "recent context"}]
+        messages = _history({"history": history, "message": "current request"})
+        self.assertLessEqual(sum(len(message["content"]) for message in messages[:-1]), 6_000)
+        self.assertEqual(messages[-2]["content"], "recent context")
+        self.assertEqual(messages[-1]["content"], "current request")
+
+    async def test_empty_content_is_not_treated_as_a_model_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return ""
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(caught.exception.code, "EMPTY_RESPONSE")
+
+    async def test_provider_total_timeout_is_reported_before_graph_timeout(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            await asyncio.sleep(0.1)
+            return "late answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema(), timeout_seconds=0.01)
+        self.assertEqual(caught.exception.code, "TIMEOUT")
+
+    async def test_probe_rejects_an_answer_that_does_not_echo_the_readiness_nonce(self):
+        class NonceIgnoringProvider:
+            config = ProviderConfig("test", "http://example.invalid/v1", "primary")
+
+            async def structured(self, *_args, **_kwargs):
+                return {"answer": "ready", "providerModel": "primary"}
+
+        graph = McaiGraph(NonceIgnoringProvider(), Path(tempfile.mkdtemp()) / "probe.sqlite")
+        with self.assertRaises(ModelProviderError) as caught:
+            await graph.probe()
+        self.assertEqual(caught.exception.code, "INVALID_RESPONSE")
+
+    async def test_route_timeout_is_not_reported_as_an_internal_error(self):
+        class TimeoutProvider:
+            async def structured(self, *_args, **_kwargs):
+                raise TimeoutError()
+
+        graph = McaiGraph(TimeoutProvider(), Path(tempfile.mkdtemp()) / "timeout.sqlite")
+        result = await graph._model_route({"request": {"message": "compare Paper and Fabric", "availableTools": []}})
+        self.assertEqual(result["decision"]["providerError"], "TIMEOUT")
+        self.assertEqual(result["decision"]["providerStatus"], "unavailable")
+
+    def test_disallowed_model_tool_is_downgraded_without_execution(self):
+        decision = _normalize_decision({
+            "route": "tool",
+            "answer": "正在执行",
+            "toolIntent": "停止实例",
+            "preferredTool": "instance.stop",
+        }, set())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("未执行", decision["answer"])
 
 
 if __name__ == "__main__":
