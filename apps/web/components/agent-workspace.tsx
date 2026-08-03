@@ -161,7 +161,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     if (!followLatestRef.current) return;
     const stream = messageStreamRef.current;
     if (stream) stream.scrollTop = stream.scrollHeight;
-  }, [messages, planning, streamingMessage]);
+  }, [messages, planning, streamingMessage, tasks]);
 
   function updateScrollPosition() {
     const stream = messageStreamRef.current;
@@ -536,20 +536,27 @@ function TaskActivity({ content, task, instanceName, onReview }: { content: stri
   const recovery = task ? [...task.evidence].reverse().find((item) => item.kind === "decision") : undefined;
   const failedTask = Boolean(task && terminal(task.state) && task.state !== "SUCCEEDED");
   const isComplete = Boolean(task && terminal(task.state));
-  return <details className={`task-activity ${failedTask ? "failed" : ""}`}>
+  const liveEvidence = task?.evidence.filter((item) => item.summary.trim()).slice(-5) ?? [];
+  return <details className={`task-activity ${failedTask ? "failed" : ""} ${!isComplete ? "live" : ""}`} open={!isComplete} aria-live="polite">
     <summary>
-      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "执行记录" : "正在规划"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : "展开查看工具调用"}</small></span></span>
+      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "执行记录" : task ? stateLabel(task.state) : "正在规划"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : task ? "实时更新工具调用与回调" : "正在生成执行计划"}</small></span></span>
       <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
     </summary>
     <div className="task-activity-content">
       {content.trim() && <section className="task-activity-copy"><span>任务说明</span><RichText content={content} /></section>}
       {task && <section className="process-list" aria-label="工具执行记录">
-        {task.plan.steps.map((step, index) => <div className="process-row" key={step.id}>
+        {task.plan.steps.map((step, index) => {
+          const progress = taskStepProgress(task, index);
+          return <div className={`process-row ${progress.className}`} key={step.id}>
           <span className="process-index">{index + 1}</span>
           <div><strong>{toolLabel(step.tool)}</strong><code>{step.tool}</code></div>
-          <span className={`process-state ${failedTask ? "failed" : task.state === "SUCCEEDED" ? "success" : "pending"}`}>{failedTask ? "未完成" : task.state === "SUCCEEDED" ? "完成" : "等待"}</span>
-        </div>)}
+          <span className={`process-state ${progress.className}`}>{progress.label}</span>
+        </div>})}
         <div className="process-target"><span>目标实例</span><strong>{instanceName ?? task.instance_ref}</strong><time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour12: false })}</time></div>
+      </section>}
+      {!isComplete && liveEvidence.length > 0 && <section className="live-evidence" aria-label="实时回调">
+        <strong>最新回调</strong>
+        {liveEvidence.map((item, index) => <p key={`${item.at}-${index}`}><span /> <b>{item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
       </section>}
       {failedTask && <div className="failure-analysis">
         <div><strong>失败原因</strong><p>{diagnosis?.summary ?? "未收到可识别的诊断证据，请检查实例控制台日志。"}</p></div>
@@ -632,6 +639,17 @@ function taskActivityLabel(state: string) {
   if (state === "SUCCEEDED") return "已完成";
   if (terminal(state)) return "未完成";
   return "处理中";
+}
+function taskStepProgress(task: TaskRecord, index: number) {
+  if (task.state === "SUCCEEDED") return { className: "success", label: "完成" };
+  if (terminal(task.state)) return { className: "failed", label: "未完成" };
+  const resultKinds = new Set(["console", "files", "logs", "config", "instance", "download", "plugin", "verification"]);
+  const completed = task.state === "VERIFYING"
+    ? task.plan.steps.length
+    : Math.min(task.plan.steps.length, task.evidence.filter((item) => resultKinds.has(item.kind)).length);
+  if (index < completed) return { className: "success", label: "完成" };
+  if (index === completed && ["SNAPSHOTTING", "EXECUTING", "VERIFYING"].includes(task.state)) return { className: "active", label: task.state === "VERIFYING" ? "验证中" : "执行中" };
+  return { className: "pending", label: "等待" };
 }
 function riskLabel(risk: string) { return ({ read: "只读", low: "低风险", medium: "中风险", high: "高风险", forbidden: "禁止" } as Record<string, string>)[risk] ?? risk; }
 function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
