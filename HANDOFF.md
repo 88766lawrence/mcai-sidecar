@@ -1,9 +1,9 @@
 # MCAI Sidecar 项目交接文档
 
-> 最后核对时间：2026-08-03 12:56（Asia/Hong_Kong）
+> 最后核对时间：2026-08-03 13:16（Asia/Hong_Kong）
 > Windows 工作区：`E:\aimcs`
 > Linux 测试端：`191.40.37.148`
-> 当前功能基线：`78ac562 Show live agent execution progress`（文档提交以本地 `HEAD` 为准）
+> 当前功能基线：`29084bf Add two-model goal planning pipeline`（文档提交以本地 `HEAD` 为准）
 
 ## 1. 当前结论
 
@@ -17,8 +17,9 @@ MCAI Sidecar 是位于 Web 用户和 MCSManager 之间的安全 Minecraft AI 运
 - 当前模型运行时为 Python LangGraph，实际 readiness 模型为 `MiniMax-M3`。
 - 页面保留米黄色运维工作台风格；任务执行期间自动展开实时步骤与回调，完成后结果优先展示且轨迹默认折叠。
 - Agent 已能完成一个任务内的多步骤只读检查，例如依次执行 `version → plugins → logs.query`，等待真实回调后汇总结果。
+- 简短运维目标已进入两阶段模型流水线：规划模型先补全步骤、约束和验收条件，执行模型再选择受控工具；原始授权边界会单独保留并校验，规划模型不得擅自增加安装、配置、重启或停服。
 - 最新真实检查确认测试实例运行 Paper 1.21.1，已加载插件数为 0；日志存在 Paper Watchdog 主线程无响应和 `Can't keep up` 卡顿证据。
-- GitHub 当前为本地 `ahead 7, behind 1`。不要声称三端已经完全一致，也不要强推覆盖远端。
+- GitHub 当前为本地 `ahead 9, behind 1`（本交接文档提交后为 `ahead 10`）。不要声称三端已经完全一致，也不要强推覆盖远端。
 
 ## 2. 产品目标和硬性原则
 
@@ -194,6 +195,17 @@ GET 127.0.0.1:3000/           -> HTTP 200
 8. LangGraph 根据 `taskState + plan + evidence` 输出最终回答，或返回 continuation 创建下一任务。
 9. continuation 保持原会话、原实例、父任务和链深度，最大深度为 6。
 
+### 8.1 两阶段模型目标规划
+
+对于“看看服务器有没有问题”“检查一下服务器”等简短、面向当前实例的运维目标：
+
+1. LangGraph `planner` 节点调用独立的规划 Provider，把短句补全为步骤、工具范围、只读/变更边界和验收标准。
+2. Linux 未显式配置 `provider.plannerModel` 时，自动使用第一个 `fallbackModels` 作为规划模型；主 `provider.model` 继续作为执行/路由模型。当前配置因此形成备用模型规划、`MiniMax-M3` 执行的两个 Provider 实例。
+3. 规划结果最多 1600 字，并经过授权升级检查；原文未授权时，规划结果不得新增安装、删除、配置修改、重启、停止或管理员权限动作。
+4. 执行模型同时接收原始用户目标和细化后的任务说明，再选择一个受控入口工具。Cloud 安全 Planner 根据完整细化意图生成实际多步骤 `task-plan/v1`。
+5. UI 只展示安全的“目标已细化”摘要和工具轨迹，不展示模型私有思维链。
+6. 规划模型异常时仅允许使用确定性的安全技能补全兜底；风险策略、确认和 Agent 本机白名单仍然不可绕过。
+
 ### 7.2 当前可验证的循环形式
 
 - 单任务多步骤：一个计划包含多个工具，Go Agent 顺序执行并逐步回调。
@@ -358,14 +370,32 @@ loopComplete=true
 - 落后 18436ms / 368 ticks
 - Paper 版本检查远端 API 失败
 
-### 12.3 测试门禁
+### 12.3 两阶段模型短句验收
+
+Linux 真实输入仅为：`看看服务器有没有问题`
+
+结果：
+
+```text
+route=tool
+plannerVisible=true
+tools=console.command,console.command,logs.query
+task=SUCCEEDED
+passed=true
+```
+
+最终回答确认 Paper 1.21.1、已加载插件 0，并从真实日志识别 Watchdog 超过 10 秒未响应、落后 8014ms / 160 ticks 和 Paper 版本检查 API 异常。验收会话已保留在 Web，会话标题以 `Two-model short goal` 开头。
+
+第一次真实验收暴露了旧完成节点依赖“健康检查”固定关键词的问题：三步已执行成功但只返回最后一条插件回调。随后改为以精确工具序列 `console.command → console.command → logs.query` 识别健康检查技能，第二次真实验收通过。
+
+### 12.4 测试门禁
 
 最新 Linux 发布门禁：
 
-- Cloud Planner：16/16 通过。
+- Cloud：34/34 通过。
 - Cloud TypeScript typecheck：通过。
 - Cloud Nest 生产构建：通过。
-- Python LangGraph/FastAPI：61/61 通过。
+- Python LangGraph/FastAPI：65/65 通过。
 - Web Next.js 生产构建：通过（最近 UI 发布）。
 - 四个 MCAI systemd 服务：active。
 - 模型 `/ready`：ready。
@@ -377,6 +407,7 @@ loopComplete=true
 - `.deploy/verify-complex-agent.mjs`
 - `.deploy/verify-plugin-inventory.mjs`
 - `.deploy/verify-agent-trace-final.mjs`
+- `.deploy/verify-two-model-short-goal.mjs`
 - `.deploy/verify-readonly-agent-loop.mjs`
 
 这些脚本会在 Linux 本机读取受保护配置生成短期认证。禁止把生成的 bearer token 下载到 Windows 或输出到日志。
@@ -400,6 +431,7 @@ loopComplete=true
 最新提交顺序：
 
 ```text
+29084bf Add two-model goal planning pipeline
 78ac562 Show live agent execution progress
 a218544 Run multi-step read-only health checks
 757427b Explain tool results and expose execution trace
@@ -456,6 +488,8 @@ d12148a Fix instance lifecycle routing
 这些脚本针对当时的明确文件集合。使用前必须重新阅读，不要把旧 payload 直接用于新代码。
 
 2026-08-03 12:55 已用 `.deploy/deploy-agent-ui.sh` 发布实时执行过程 UI，只重启 `mcai-web.service`；Linux 自动备份为 `/tmp/mcai-agent-ui-backup-20260803125520`。Linux Web 类型检查、生产构建、本机首页健康检查和公网运行态截图验收均通过。
+
+2026-08-03 13:14 已用 `.deploy/deploy-two-model-planner.sh` 发布两阶段模型流水线，只重启 `mcai-model-cloud` 和 `mcai-cloud`；最终自动备份为 `/tmp/mcai-two-model-planner-backup-20260803131456`。Cloud 34 项、LangGraph/FastAPI 65 项、Cloud typecheck/build、模型 readiness、Cloud health 和四服务 active 检查均通过。
 
 ### 14.3 最近可用回滚点
 
