@@ -257,13 +257,41 @@
 预期：
 
 - 从当前实例自动识别平台和 Minecraft 版本，不要求用户重复填写。
-- 首选聚合源；只有聚合源明确返回无兼容版本时，才进入该插件登记的官方发布源。
+- 按固定可信链依次尝试 Modrinth、PaperMC Hangar、Hangar 审核记录指向的精确 GitHub Release 资产；只有上一来源明确无兼容制品时才能切换。
 - 网络超时、认证错误或异常响应不得伪装成“无版本”并触发不受控回退。
-- 官方源必须是预登记的 HTTPS 域名，且版本说明包含相同 Minecraft release train。
-- 下载资产必须匹配预期核心 JAR 名称、1 Byte 至 64 MiB 限制，并通过官方 SHA-256 或 SHA-512 元数据校验。
+- Hangar 搜索必须是公开项目的精确规范化名称/slug 匹配，禁止采用模糊相似项目。
+- 外链只允许 `https://github.com/{owner}/{repo}/releases/download/{tag}/{asset.jar}`，且必须与 GitHub Release API 中的同名资产和 URL 完全一致。
+- 下载资产必须匹配安全 JAR 文件名、1 Byte 至 64 MiB 限制，并通过来源提供的 SHA-256 或 SHA-512 元数据校验。
 - 工具计划只能包含 `plugin.resolve`；不得上传到 `/plugins`，不得安装或重启。
 - 最终证据必须包含来源、插件版本、兼容性等级和完整哈希。
 - 哈希不符、来源不可信、版本线不匹配或官方元数据缺失时必须失败。
+
+### AC-014 任意插件名与旧历史抗干扰
+
+在同一会话先保留一次插件解析失败记录，再输入：`看看 ProtocolLib 能不能装，先别安装`
+
+预期：
+
+- 明确的新操作不得被旧失败回答覆盖为 `direct`，必须重新进入 `plugin.resolve`。
+- Cloud 计划中的 `project` 必须为 `protocollib`，不得误解析为 `agent`、`operation`、`plugin` 等保留词。
+- 同样规则必须覆盖未硬编码的名字，例如 `看看 Citizens 能不能装，先别安装` 应解析为 `citizens`。
+- 任务实时 evidence 至少可观察到查询来源、来源切换、制品校验和终态。
+- “别安装”必须保持只解析；不得生成 `plugin.install` 或 `instance.restart`。
+
+### AC-015 配置读取、修改与验证闭环
+
+分别测试：
+
+- `读取 plugins/Example/config.yml，告诉我当前欢迎语`
+- `把 plugins/Example/config.yml 的 welcome.message 改成“欢迎回来”`
+
+预期：
+
+- 未给出文件路径或键值且无法从上下文可靠确定时可以适当澄清，不得猜测。
+- 读取使用 `config.inspect`，支持 YAML、JSON、Properties/Conf，密码、API Key、secret、token 等字段必须脱敏。
+- 修改使用结构化 `config.patch`，支持嵌套键，写前快照、写后复读并校验哈希；跨越标量的非法键路径必须拒绝。
+- 修改需要审批；未批准时不得写文件，不得附加重启。
+- 修改成功后最终回答必须引用真实路径、键和值验证，失败则给出具体原因和回滚状态。
 
 ## 7. P1 扩展用例
 

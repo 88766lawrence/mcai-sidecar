@@ -331,6 +331,22 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		return errors.New("direct file downloads are not enabled; use the controlled server.install operation")
 	case "config.patch":
 		return e.configPatch(ctx, p, plan, step, emit)
+	case "config.inspect":
+		target, err := security.NormalizeRelative(stringArg(step.Args, "path"))
+		if err != nil {
+			return err
+		}
+		contents, err := p.ReadFile(ctx, plan.InstanceRef, target)
+		if err != nil {
+			return err
+		}
+		if len(contents) > 2<<20 {
+			return errors.New("configuration file exceeds the 2 MiB limit")
+		}
+		digest := sha256.Sum256(contents)
+		excerpt := sanitizeConfiguration(contents)
+		emit("", "config", fmt.Sprintf("Read %s (%d bytes, sha256:%s)\n%s", target, len(contents), hex.EncodeToString(digest[:8]), excerpt))
+		return nil
 	case "console.command":
 		command, requiredRisk, err := validateConsoleCommand(step)
 		if err != nil {
@@ -390,6 +406,27 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 	default:
 		return fmt.Errorf("tool %q is not registered", step.Tool)
 	}
+}
+
+func sanitizeConfiguration(contents []byte) string {
+	lines := strings.Split(string(contents), "\n")
+	for index, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "password") || strings.Contains(lower, "passwd") || strings.Contains(lower, "api_key") ||
+			strings.Contains(lower, "api-key") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+			separator := strings.IndexAny(line, "=:")
+			if separator >= 0 {
+				lines[index] = line[:separator+1] + " [REDACTED]"
+			} else {
+				lines[index] = "[REDACTED SENSITIVE CONFIGURATION LINE]"
+			}
+		}
+	}
+	value := strings.Join(lines, "\n")
+	if len(value) > 32*1024 {
+		value = value[:32*1024] + "\n…"
+	}
+	return value
 }
 
 func (e *Executor) startInstance(ctx context.Context, p provider.Provider, instanceRef string, emit EventSink) error {
@@ -551,16 +588,19 @@ func (e *Executor) configPatch(ctx context.Context, p provider.Provider, plan pr
 		return errors.New("configuration file exceeds the 2 MiB limit")
 	}
 	patches, ok := step.Args["patch"].([]any)
-	if !ok || len(patches) != 1 {
-		return errors.New("exactly one structured property patch is required")
+	if !ok || len(patches) == 0 || len(patches) > 20 {
+		return errors.New("between one and twenty structured configuration patches are required")
 	}
-	patch, ok := patches[0].(map[string]any)
-	if !ok || stringArg(patch, "op") != "replace" {
-		return errors.New("unsupported patch operation")
-	}
-	after, err := patchProperties(before, stringArg(patch, "key"), patch["value"])
-	if err != nil {
-		return err
+	after := append([]byte(nil), before...)
+	for _, item := range patches {
+		patch, ok := item.(map[string]any)
+		if !ok || (stringArg(patch, "op") != "replace" && stringArg(patch, "op") != "add") {
+			return errors.New("unsupported patch operation")
+		}
+		after, err = patchConfiguration(after, target, stringArg(patch, "key"), patch["value"])
+		if err != nil {
+			return err
+		}
 	}
 	snapshotDir := filepath.Join(e.dataDir, "snapshots", plan.TaskID)
 	if err := os.MkdirAll(snapshotDir, 0o700); err != nil {

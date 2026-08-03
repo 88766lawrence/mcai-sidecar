@@ -1,9 +1,9 @@
 # MCAI Sidecar 项目交接文档
 
-> 最后核对时间：2026-08-03 13:16（Asia/Hong_Kong）
+> 最后核对时间：2026-08-03 21:38（Asia/Hong_Kong）
 > Windows 工作区：`E:\aimcs`
 > Linux 测试端：`191.40.37.148`
-> 当前功能基线：`29084bf Add two-model goal planning pipeline`（文档提交以本地 `HEAD` 为准）
+> 当前功能基线：本轮“实例能力识别、通用插件可信源、配置工作流与实时进度”变更（最终提交以本地 `HEAD` 为准）
 
 ## 1. 当前结论
 
@@ -19,7 +19,11 @@ MCAI Sidecar 是位于 Web 用户和 MCSManager 之间的安全 Minecraft AI 运
 - Agent 已能完成一个任务内的多步骤只读检查，例如依次执行 `version → plugins → logs.query`，等待真实回调后汇总结果。
 - 简短运维目标已进入两阶段模型流水线：规划模型先补全步骤、约束和验收条件，执行模型再选择受控工具；原始授权边界会单独保留并校验，规划模型不得擅自增加安装、配置、重启或停服。
 - 最新真实检查确认测试实例运行 Paper 1.21.1，已加载插件数为 0；日志存在 Paper Watchdog 主线程无响应和 `Can't keep up` 卡顿证据。
-- GitHub 当前为本地 `ahead 9, behind 1`（本交接文档提交后为 `ahead 10`）。不要声称三端已经完全一致，也不要强推覆盖远端。
+- Agent 库存上报会从控制台、`logs/latest.log` 与根目录特征补全平台和 Minecraft 版本；已知 Paper 1.21.1 时，插件任务不再重复询问。
+- 插件解析为通用可信源链：Modrinth → PaperMC Hangar → Hangar 审核过的精确 GitHub Release 资产/官方登记源；每次切换、校验和失败都形成实时 evidence。
+- `config.inspect` 和扩展后的 `config.patch` 支持 Properties、YAML、JSON；读取时脱敏，写入时快照、复读哈希验证并保留回滚。
+- 真实短句 `看看 ProtocolLib 能不能装，先别安装` 已在带旧失败历史的同一会话通过：只执行 `plugin.resolve`，确认 ProtocolLib 5.4.0 与 Paper 1.21.1 精确兼容并验证 SHA-256，未安装、未重启。
+- GitHub 同步状态必须以本轮提交后的 `git status --short --branch` 和实际 push 结果为准；禁止强推覆盖远端。
 
 ## 2. 产品目标和硬性原则
 
@@ -737,6 +741,8 @@ Linux 回滚备份：
 
 ## 24. 2026-08-03 插件官方源自动下载回退
 
+> 本节记录上一阶段实现；通用 Hangar/GitHub 安全链、库存补全、配置工具和最新真实验收以第 25 节为准。
+
 `apps/agent/internal/executor/plugins.go` 的插件解析链已从单一 Modrinth 扩展为受控多源解析：
 
 1. 仍优先使用 Modrinth 的精确 loader + Minecraft 版本结果，并验证 Modrinth SHA-512。
@@ -755,6 +761,47 @@ Linux 回滚备份：
 - Linux 四个服务保持 active。
 - Linux 回滚点：`/tmp/mcai-plugin-official-fallback-backup-20260803201829`。
 
+## 25. 2026-08-03 通用能力链、实时进度与真实黑盒验收
+
+本轮没有针对单个提示词硬编码结果，而是修复了从实例库存、自然语言路由、制品解析、配置工具到 UI 证据呈现的完整链路。
+
+### 25.1 实例能力识别
+
+- MCSManager profile 为 unknown 时，从控制台输出、`logs/latest.log` 和根目录特征识别 Paper、Purpur、Spigot、Fabric、Forge 及 Minecraft 版本。
+- `ListInstances` 与 `GetInstance` 都返回补全后的 profile，库存定期上报后 Cloud 持久使用这些事实。
+- profile 已知时不重复探测；测试实例真实库存为 `paper / 1.21.1 / running`。
+
+### 25.2 通用插件可信源链
+
+- 顺序为 Modrinth → PaperMC Hangar → Hangar 审核过的 GitHub Release 外链 → 已登记官方 GitHub 源。
+- Hangar 项目搜索只接受规范化名称/slug 精确匹配；版本必须公开、Release channel、明确支持当前 Minecraft 版本。
+- Hangar 原生 CDN 使用其 SHA-256；Hangar 外链 GitHub 时，URL 必须是精确 release asset，GitHub API 的资产名、URL、大小和 `sha256:` digest 全部一致后才下载。
+- 每个来源开始、失败切换、成功与哈希校验都上报 `kind=source/plugin` evidence，Web 运行期每秒刷新并自动展开。
+- 必需依赖不会静默递归安装；需要单独审批和统一回滚后才可继续。
+
+### 25.3 配置闭环
+
+- 新增只读 `config.inspect`：路径归一化、2 MiB 上限、32 KiB 摘要、SHA-256、敏感字段脱敏。
+- `config.patch` 支持最多 20 个结构化 patch，覆盖 Properties/Conf、嵌套 YAML 和嵌套 JSON。
+- 写前快照，写后复读并验证哈希；非法格式、跨标量路径和验证失败均拒绝或回滚。
+- 润色 Agent 只有在路径、键和值明确时输出结构化 `MCAI_CONFIG` 标记；信息不足时先 inspect 或适当澄清，不得编造配置。
+
+### 25.4 路由与历史抗干扰
+
+- Cloud 插件名抽取优先读取原始用户句子，再读取 `Agent operation`；`agent/operation/plugin/server` 等保留词不能成为项目名。
+- 支持任意合法 ASCII 插件项目名，不依赖 EssentialsX/LuckPerms 固定列表。
+- “别安装/不要安装/不可安装/without install/do not install”等表达确定性路由到 `plugin.resolve`；旧失败历史不能让明确的新工具请求退化为 direct。
+
+### 25.5 验收证据
+
+- Windows：Go 全量测试通过；Cloud 41/41；Web typecheck；Python `py_compile`；`git diff --check`。
+- Linux：Go 全量测试通过；Cloud 41/41；LangGraph 86/86；Web typecheck 与生产 build 通过。
+- Linux 真实外网：EssentialsX 和 ProtocolLib 两条制品解析测试通过；ProtocolLib 经 Modrinth 404 后切换 Hangar，最终验证 GitHub Release 5.4.0 的大小与 SHA-256。
+- 同一带旧失败历史的会话输入 `看看 ProtocolLib 能不能装，先别安装`：`route=tool`、`tools=[plugin.resolve]`、`task=SUCCEEDED`；最终回答确认 Paper 1.21.1 兼容，未安装、未重启。
+- 实际时间线：`SNAPSHOTTING → EXECUTING/Modrinth → EXECUTING/Hangar → SUCCEEDED`，最终 10 条 evidence。
+- 真实网页截图：`output/capability-chain-live-20260803.png`；截图由已部署 Web 与真实 Cloud 会话生成，不是 mock，轨迹已展开，1600px 无横向溢出、无 page error。
+- 最新成功部署回滚点：`/tmp/mcai-capability-chain-backup-20260803213431`。
+
 ---
 
-交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；本轮修复已在本地提交，但 2026-08-03 因访问 `github.com:443` 超时尚未推送，恢复网络后应先核对 `git status --short --branch` 再执行非强制推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。
+交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；GitHub 是否完成同步以本轮最终 push 结果为准。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

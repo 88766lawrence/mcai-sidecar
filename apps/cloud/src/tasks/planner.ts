@@ -58,6 +58,32 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
   if (options.preferredTool === "logs.query") {
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" }], []);
   }
+  const configPath = extractConfigurationPath(intent);
+  if (options.preferredTool === "config.inspect" && configPath) {
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1", tool: "config.inspect", args: { path: configPath }, risk: "read",
+    }], []);
+  }
+  const configPatch = parseConfigurationPatch(intent);
+  if (options.preferredTool === "config.patch" && configPatch) {
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1",
+      tool: "config.patch",
+      args: {
+        path: configPatch.path,
+        patch: [{ op: "replace", key: configPatch.key, value: configPatch.value }],
+        expected_revision: inventoryRevision,
+      },
+      risk: "medium",
+      requires_confirmation: true,
+      rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" },
+    }], [{ type: "config_semantics", expected: `${configPatch.key}=${String(configPatch.value)}` }]);
+  }
+  if (options.preferredTool === "config.patch" && configPath) {
+    return plan(id, instanceRef, inventoryRevision, intent, [{
+      id: "s1", tool: "config.inspect", args: { path: configPath }, risk: "read",
+    }], []);
+  }
   const consoleCommand = extractConsoleCommandIntent(intent);
   if (consoleCommand) {
     const risk = consoleCommandRisk(consoleCommand);
@@ -182,11 +208,56 @@ function isReadonlyHealthInspection(intent: string) {
 }
 
 function parsePluginProject(intent: string) {
-  const known = intent.match(/\b(essentialsx?|luckperms|viaversion|viabackwards|geyser|floodgate|spark|worldedit|worldguard|placeholderapi|vault)\b/i)?.[1];
-  if (known) return known.toLowerCase() === "essentials" ? "essentialsx" : known.toLowerCase();
-  const explicit = intent.match(/(?:安装|部署|更新|升级|install|deploy|update)\s+(?:the\s+)?([a-z0-9][a-z0-9_-]{1,63})(?:\s+(?:插件|plugin))?/i)?.[1];
-  if (!explicit || /^(?:a|an|the|plugin|插件)$/i.test(explicit)) return undefined;
-  return explicit.toLowerCase();
+  const reserved = /^(?:a|an|the|agent|operation|plugin|server|current|resolve|install|deploy|update|query|search)$/i;
+  const normalize = (candidate: string | undefined) => {
+    if (!candidate || reserved.test(candidate)) return undefined;
+    return candidate.toLowerCase() === "essentials" ? "essentialsx" : candidate.toLowerCase();
+  };
+  // The exact user sentence is kept before the model's normalized
+  // "Agent operation" suffix.  Search it first so a negated clause such as
+  // "先别安装\n\nAgent operation: ..." cannot turn the word Agent into a
+  // plugin project.  The same generic rules then cover model-normalized input.
+  const separator = /\n\s*\nAgent operation:\s*/i;
+  const segments = intent.split(separator);
+  for (const segment of segments) {
+    const candidates = [
+      segment.match(/\b([a-z0-9][a-z0-9_-]{1,63})\s*(?:插件|plugin)/i)?.[1],
+      segment.match(/(?:解析|查询|查找|搜索|安装|部署|更新|升级|resolve|query|search|install|deploy|update)\s+(?:the\s+)?([a-z0-9][a-z0-9_-]{1,63})/i)?.[1],
+      segment.match(/\b([a-z0-9][a-z0-9_-]{1,63})\s*(?:能不能|是否|能否|可不可以|可以)?\s*(?:安装|装|部署|更新|升级)/i)?.[1],
+    ];
+    for (const candidate of candidates) {
+      const project = normalize(candidate);
+      if (project) return project;
+    }
+  }
+  return undefined;
+}
+
+function extractConfigurationPath(intent: string) {
+  const marker = intent.match(/\bMCAI_CONFIG\s+path=([^\s]+\.(?:ya?ml|json|properties|conf))\b/i)?.[1];
+  const natural = intent.match(/\b((?:plugins|config)\/[A-Za-z0-9_.\/-]+\.(?:ya?ml|json|properties|conf)|server\.properties)\b/i)?.[1];
+  return (marker ?? natural)?.replace(/^\//, "");
+}
+
+function parseConfigurationPatch(intent: string): { path: string; key: string; value: unknown } | undefined {
+  const path = extractConfigurationPath(intent);
+  if (!path) return undefined;
+  const marker = intent.match(/\bMCAI_CONFIG\s+path=[^\s]+\s+key=([A-Za-z0-9_.-]+)\s+value_json=([^\r\n]+)/i);
+  if (marker) {
+    try {
+      return { path, key: marker[1], value: JSON.parse(marker[2].trim()) };
+    } catch {
+      return undefined;
+    }
+  }
+  const natural = intent.match(/(?:配置项|键|key)\s*[：:=]\s*([A-Za-z0-9_.-]+)[^\r\n]{0,32}?(?:设为|设置为|改为|value\s*[：:=]|to)\s*["“]?([^"”\r\n]+)["”]?/i);
+  if (!natural) return undefined;
+  const raw = natural[2].trim();
+  let value: unknown = raw;
+  if (/^(?:true|false|null|-?\d+(?:\.\d+)?)$/i.test(raw)) {
+    try { value = JSON.parse(raw.toLowerCase()); } catch { value = raw; }
+  }
+  return { path, key: natural[1], value };
 }
 
 function parseServerInstallIntent(intent: string) {

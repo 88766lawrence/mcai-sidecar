@@ -35,7 +35,7 @@ func TestOfficialPluginResolverVerifiesModrinthHash(t *testing.T) {
 	defer server.Close()
 
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2"}
-	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1")
+	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,9 +55,138 @@ func TestOfficialPluginResolverRejectsHashMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL}
-	if _, err := resolver.Resolve(context.Background(), "example", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "SHA-512") {
+	if _, err := resolver.Resolve(context.Background(), "example", "paper", "1.21.1", nil); err == nil || !strings.Contains(err.Error(), "SHA-512") {
 		t.Fatalf("expected SHA-512 mismatch, got %v", err)
 	}
+}
+
+func TestOfficialPluginResolverFallsBackToVerifiedHangarRelease(t *testing.T) {
+	contents := []byte("placeholderapi-hangar-release")
+	digest := sha256.Sum256(contents)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/placeholderapi/version":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/v1/projects/PlaceholderAPI/versions":
+			_, _ = fmt.Fprintf(writer, `{"pagination":{"count":1,"limit":25,"offset":0},"result":[{"id":22698,"name":"2.12.2","visibility":"public","reviewState":"reviewed","channel":{"name":"Release"},"downloads":{"PAPER":{"fileInfo":{"name":"PlaceholderAPI-2.12.2.jar","sizeBytes":%d,"sha256Hash":"%s"},"externalUrl":"","downloadUrl":%q}},"pluginDependencies":{},"platformDependencies":{"PAPER":["1.21.1"]}}]}`, len(contents), hex.EncodeToString(digest[:]), server.URL+"/artifact.jar")
+		case "/artifact.jar":
+			_, _ = writer.Write(contents)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resolver := &officialPluginResolver{
+		httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1",
+	}
+	var progress []string
+	artifact, err := resolver.Resolve(context.Background(), "placeholderapi", "paper", "1.21.1", func(source, status string) {
+		progress = append(progress, source+":"+status)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Source != "hangar" || artifact.Project != "placeholderapi" || artifact.VersionNumber != "2.12.2" {
+		t.Fatalf("unexpected Hangar artifact: %#v", artifact)
+	}
+	if artifact.LocalSHA256 != hex.EncodeToString(digest[:]) || string(artifact.Contents) != string(contents) {
+		t.Fatalf("Hangar artifact was not verified: %#v", artifact)
+	}
+	if len(progress) < 4 || !strings.HasPrefix(progress[0], "Modrinth:") || !strings.Contains(strings.Join(progress, "\n"), "Hangar:已找到") {
+		t.Fatalf("missing multi-source progress: %#v", progress)
+	}
+}
+
+func TestOfficialPluginResolverRejectsHangarDependencyWithoutApproval(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/example/version":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/api/v1/projects":
+			_, _ = writer.Write([]byte(`{"result":[{"name":"example","visibility":"public","namespace":{"slug":"example"},"supportedPlatforms":{"PAPER":["1.21.1"]}}]}`))
+		case "/api/v1/projects/example/versions":
+			_, _ = writer.Write([]byte(`{"result":[{"id":1,"name":"1.0.0","visibility":"public","channel":{"name":"Release"},"downloads":{"PAPER":{}},"pluginDependencies":{"RequiredPlugin":"required"},"platformDependencies":{"PAPER":["1.21.1"]}}]}`))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1"}
+	_, err := resolver.Resolve(context.Background(), "example", "paper", "1.21.1", nil)
+	if err == nil || !strings.Contains(err.Error(), "separate approval") {
+		t.Fatalf("expected dependency approval failure, got %v", err)
+	}
+}
+
+func TestHangarDiscoverySelectsOnlyExactCompatibleProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/projects" || request.URL.Query().Get("query") != "vault" {
+			t.Fatalf("unexpected request %s", request.URL.String())
+		}
+		_, _ = writer.Write([]byte(`{"result":[
+			{"name":"VaultTaxesWithGUI","visibility":"public","namespace":{"slug":"VaultTaxesWithGUI"},"supportedPlatforms":{"PAPER":["1.21.1"]}},
+			{"name":"Vault","visibility":"public","namespace":{"slug":"Vault"},"supportedPlatforms":{"PAPER":["1.20.6"]}},
+			{"name":"Vault","visibility":"public","namespace":{"slug":"VaultModern"},"supportedPlatforms":{"PAPER":["1.21.1"]}}
+		]}`))
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), hangarBase: server.URL + "/api/v1"}
+	discovered, err := resolver.findExactHangarProject(context.Background(), "vault", "1.21.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovered != "VaultModern" {
+		t.Fatalf("discovered %q, want exact compatible Vault project", discovered)
+	}
+}
+
+func TestReviewedHangarGitHubExternalAssetRequiresMatchingDigest(t *testing.T) {
+	contents := []byte("reviewed-hangar-github-asset")
+	digest := sha256.Sum256(contents)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/protocollib/version":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/v1/projects":
+			_, _ = writer.Write([]byte(`{"result":[{"name":"ProtocolLib","visibility":"public","namespace":{"slug":"ProtocolLib"},"supportedPlatforms":{"PAPER":["1.21.1"]}}]}`))
+		case "/api/v1/projects/ProtocolLib/versions":
+			_, _ = writer.Write([]byte(`{"result":[{"id":54,"name":"5.4.0","visibility":"public","reviewState":"reviewed","channel":{"name":"Release"},"downloads":{"PAPER":{"fileInfo":null,"externalUrl":"https://github.com/dmulloy2/ProtocolLib/releases/download/5.4.0/ProtocolLib.jar","downloadUrl":null}},"pluginDependencies":{},"platformDependencies":{"PAPER":["1.21.1"]}}]}`))
+		case "/repos/dmulloy2/ProtocolLib/releases/tags/5.4.0":
+			_, _ = fmt.Fprintf(writer, `{"draft":false,"prerelease":false,"assets":[{"name":"ProtocolLib.jar","browser_download_url":"https://github.com/dmulloy2/ProtocolLib/releases/download/5.4.0/ProtocolLib.jar","digest":"sha256:%s","size":%d}]}`, hex.EncodeToString(digest[:]), len(contents))
+		case "/external/ProtocolLib.jar":
+			_, _ = writer.Write(contents)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1", githubBase: server.URL}
+	// Test servers cannot own github.com; redirect the exact trusted URL to the
+	// local artifact while preserving the URL checked in both metadata sources.
+	resolver.httpClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Hostname() == "github.com" {
+			request.URL.Scheme = "http"
+			request.URL.Host = strings.TrimPrefix(server.URL, "http://")
+			request.URL.Path = "/external/ProtocolLib.jar"
+		}
+		return http.DefaultTransport.RoundTrip(request)
+	})
+	artifact, err := resolver.Resolve(context.Background(), "protocollib", "paper", "1.21.1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Source != "hangar-reviewed-github" || artifact.LocalSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("unexpected reviewed external artifact: source=%q hash=%q", artifact.Source, artifact.LocalSHA256)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 func TestOfficialPluginResolverFallsBackToVerifiedGitHubRelease(t *testing.T) {
@@ -79,7 +208,7 @@ func TestOfficialPluginResolverFallsBackToVerifiedGitHubRelease(t *testing.T) {
 	defer server.Close()
 
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
-	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1")
+	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +233,7 @@ func TestOfficialPluginResolverRejectsGitHubReleaseWithoutMatchingMinecraftTrain
 	}))
 	defer server.Close()
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
-	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "do not declare support") {
+	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !strings.Contains(err.Error(), "do not declare support") {
 		t.Fatalf("expected release-train compatibility failure, got %v", err)
 	}
 }
@@ -125,7 +254,7 @@ func TestOfficialPluginResolverRejectsGitHubDigestMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
-	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("expected GitHub SHA-256 mismatch, got %v", err)
 	}
 }
@@ -134,21 +263,47 @@ func TestLiveOfficialEssentialsXFallback(t *testing.T) {
 	if os.Getenv("MCAI_LIVE_PLUGIN_RESOLVE") != "1" {
 		t.Skip("set MCAI_LIVE_PLUGIN_RESOLVE=1 to query official plugin sources")
 	}
-	artifact, err := newOfficialPluginResolver().Resolve(context.Background(), "essentialsx", "paper", "1.21.1")
+	artifact, err := newOfficialPluginResolver().Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifact.Source != "github-official" || artifact.Project != "essentialsx" || !strings.HasSuffix(artifact.FileName, ".jar") {
+	if (artifact.Source != "hangar" && artifact.Source != "github-official") || artifact.Project != "essentialsx" || !strings.HasSuffix(artifact.FileName, ".jar") {
 		t.Fatalf("unexpected live official artifact: %#v", artifact)
 	}
-	if len(artifact.Contents) == 0 || len(artifact.LocalSHA256) != 64 || !strings.HasPrefix(artifact.Compatibility, "official-") {
+	if len(artifact.Contents) == 0 || len(artifact.LocalSHA256) != 64 || artifact.Compatibility == "" {
 		t.Fatalf("live official artifact was not verified: %#v", artifact)
+	}
+}
+
+func TestLiveMultipleNonModrinthPluginSources(t *testing.T) {
+	if os.Getenv("MCAI_LIVE_PLUGIN_RESOLVE") != "1" {
+		t.Skip("set MCAI_LIVE_PLUGIN_RESOLVE=1 to query official plugin sources")
+	}
+	// EssentialsX is covered by TestLiveOfficialEssentialsXFallback above.
+	// ProtocolLib is intentionally resolved by name here: it is absent from
+	// Modrinth, so this also exercises exact Hangar project discovery.
+	for _, project := range []string{"protocollib"} {
+		t.Run(project, func(t *testing.T) {
+			var progress []string
+			artifact, err := newOfficialPluginResolver().Resolve(context.Background(), project, "paper", "1.21.1", func(source, status string) {
+				progress = append(progress, source+":"+status)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if artifact.Project != project || artifact.Source != "hangar-reviewed-github" || len(artifact.LocalSHA256) != 64 || len(artifact.Contents) == 0 {
+				t.Fatalf("unexpected verified artifact: project=%q source=%q version=%q file=%q hash_length=%d size=%d", artifact.Project, artifact.Source, artifact.VersionNumber, artifact.FileName, len(artifact.LocalSHA256), len(artifact.Contents))
+			}
+			if !strings.Contains(strings.Join(progress, "\n"), "Modrinth:") || !strings.Contains(strings.Join(progress, "\n"), "Hangar:") {
+				t.Fatalf("source fallback was not observable: %#v", progress)
+			}
+		})
 	}
 }
 
 type staticPluginResolver struct{ artifact resolvedPlugin }
 
-func (r staticPluginResolver) Resolve(context.Context, string, string, string) (resolvedPlugin, error) {
+func (r staticPluginResolver) Resolve(context.Context, string, string, string, pluginResolutionProgress) (resolvedPlugin, error) {
 	return r.artifact, nil
 }
 
@@ -157,7 +312,7 @@ type recordingPluginResolver struct {
 	version string
 }
 
-func (r *recordingPluginResolver) Resolve(_ context.Context, _ string, loader string, version string) (resolvedPlugin, error) {
+func (r *recordingPluginResolver) Resolve(_ context.Context, _ string, loader string, version string, _ pluginResolutionProgress) (resolvedPlugin, error) {
 	r.loader, r.version = loader, version
 	return resolvedPlugin{}, errors.New("recorded")
 }

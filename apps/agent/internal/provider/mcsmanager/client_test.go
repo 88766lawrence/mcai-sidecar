@@ -219,3 +219,48 @@ func TestProfileRevisionIgnoresRuntimeState(t *testing.T) {
 		t.Fatalf("unexpected state mapping: stopped=%s running=%s", stopped.State, running.State)
 	}
 }
+
+func TestEnrichProfileDiscoversPaperVersionFromRuntimeEvidence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		switch request.URL.Path {
+		case "/api/protected_instance/outputlog":
+			_, _ = writer.Write([]byte(`{"status":200,"data":"This server is running Paper version git-Paper-123 (MC: 1.21.1)"}`))
+		case "/api/files/":
+			_, _ = writer.Write([]byte(`{"status":200,"data":"[Server thread/INFO]: Running Minecraft 1.21.1"}`))
+		case "/api/files/list":
+			_, _ = writer.Write([]byte(`{"status":200,"data":{"items":[{"name":"paper-global.yml"},{"name":"server.jar"}],"total":2}}`))
+		default:
+			t.Fatalf("unexpected request %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := client.enrichProfile(context.Background(), provider.Instance{
+		Ref: "mcs:daemon:instance", Platform: "unknown", Loader: "unknown", MinecraftVersion: "",
+	})
+	if got.Platform != "paper" || got.Loader != "paper" || got.MinecraftVersion != "1.21.1" {
+		t.Fatalf("unexpected enriched profile: %#v", got)
+	}
+}
+
+func TestEnrichProfileDoesNotProbeKnownCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		t.Fatalf("known profile should not make an evidence request: %s", request.URL.Path)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := client.enrichProfile(context.Background(), provider.Instance{
+		Ref: "mcs:daemon:instance", Platform: "paper", Loader: "paper", MinecraftVersion: "1.21.1",
+	})
+	if got.Loader != "paper" || got.MinecraftVersion != "1.21.1" {
+		t.Fatalf("known capability changed: %#v", got)
+	}
+}

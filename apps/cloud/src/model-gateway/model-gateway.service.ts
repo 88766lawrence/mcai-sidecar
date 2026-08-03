@@ -225,6 +225,7 @@ function chatPayload(input: {
       "logs.query",
       "files.list",
       "server.install",
+      "config.inspect",
       "config.patch",
       "plugin.resolve",
       "plugin.install",
@@ -237,7 +238,7 @@ function chatPayload(input: {
 }
 
 const controlledTools = new Set([
-  "logs.query", "files.list", "server.install", "config.patch", "plugin.resolve",
+  "logs.query", "files.list", "server.install", "config.inspect", "config.patch", "plugin.resolve",
   "plugin.install", "console.command", "instance.start", "instance.stop", "instance.restart",
 ]);
 

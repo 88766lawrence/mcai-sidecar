@@ -693,6 +693,10 @@ class RoutingTests(unittest.TestCase):
         decision = _deterministic_decision("帮我安装 EssentialsX", [], {"plugin.install"})
         self.assertEqual(decision["trace"][0]["result"], "plugin.install")
 
+    def test_unlisted_plugin_name_routes_to_generic_install_workflow(self):
+        decision = _deterministic_decision("安装 CoreProtect", [], {"plugin.install", "plugin.resolve"})
+        self.assertEqual(decision["preferredTool"], "plugin.install")
+
     def test_server_install_routes_without_model(self):
         cases = (
             ("安装 Paper 1.21.4 服务端", "server.install"),
@@ -707,8 +711,47 @@ class RoutingTests(unittest.TestCase):
         decision = _deterministic_decision("把服务器 view-distance 修改为 8", [], {"config.patch"})
         self.assertEqual(decision["preferredTool"], "config.patch")
 
+    def test_config_inspection_routes_to_readonly_tool(self):
+        decision = _deterministic_decision(
+            "读取 plugins/Lobby/config.yml 配置文件", [], {"config.inspect", "config.patch"}
+        )
+        self.assertEqual(decision["preferredTool"], "config.inspect")
+
+    def test_structured_plugin_config_routes_to_patch(self):
+        decision = _deterministic_decision(
+            '修改插件配置\nMCAI_CONFIG path=plugins/Lobby/config.yml key=welcome.message value_json="欢迎"',
+            [],
+            {"config.inspect", "config.patch"},
+        )
+        self.assertEqual(decision["preferredTool"], "config.patch")
+
     def test_plugin_resolve_routes_without_installing(self):
         decision = _deterministic_decision("解析 EssentialsX 兼容版本和制品，但不要安装", [], {"plugin.resolve"})
+        self.assertEqual(decision["preferredTool"], "plugin.resolve")
+
+    def test_explicit_install_wins_over_intermediate_resolve_wording(self):
+        decision = _deterministic_decision(
+            "安装 EssentialsX 插件，但不要重启；先解析兼容制品并显示下载校验进度。",
+            [],
+            {"plugin.resolve", "plugin.install", "instance.restart"},
+        )
+        self.assertEqual(decision["preferredTool"], "plugin.install")
+
+    def test_explicit_no_install_stays_resolve_only(self):
+        decision = _deterministic_decision(
+            "查询 EssentialsX 官方制品，只解析和校验下载，不要安装，不要重启。",
+            [],
+            {"plugin.resolve", "plugin.install", "instance.restart"},
+        )
+        self.assertEqual(decision["preferredTool"], "plugin.resolve")
+
+    def test_colloquial_plugin_probe_ignores_stale_failure_history(self):
+        decision = _deterministic_decision(
+            "看看 ProtocolLib 能不能装，先别安装",
+            [{"role": "assistant", "content": "上一次解析失败，未找到兼容制品"}],
+            {"plugin.resolve", "plugin.install"},
+        )
+        self.assertEqual(decision["route"], "tool")
         self.assertEqual(decision["preferredTool"], "plugin.resolve")
 
     def test_restart_routes_to_controlled_tool_without_model(self):

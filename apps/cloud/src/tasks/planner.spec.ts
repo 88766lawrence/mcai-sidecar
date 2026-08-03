@@ -188,12 +188,71 @@ describe("draftPlan", () => {
     expect(plan.acceptance).toEqual([]);
   });
 
+  it("keeps an arbitrary plugin name from a short negated-install request", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance",
+      "revision-1",
+      "看看 ProtocolLib 能不能装，先别安装\n\nAgent operation: resolve ProtocolLib 兼容版本",
+      { preferredTool: "plugin.resolve", platform: "paper", minecraftVersion: "1.21.1", loader: "paper" },
+    );
+    expect(plan.steps).toEqual([{
+      id: "s1",
+      tool: "plugin.resolve",
+      args: {
+        project: "protocollib",
+        source: "modrinth",
+        platform: "paper",
+        minecraft_version: "1.21.1",
+        loader: "paper",
+      },
+      risk: "low",
+    }]);
+  });
+
+  it("does not depend on a hard-coded plugin list for colloquial queries", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance",
+      "revision-1",
+      "看看 Citizens 能不能装，先别安装",
+      { preferredTool: "plugin.resolve", platform: "paper", minecraftVersion: "1.21.1", loader: "paper" },
+    );
+    expect(plan.steps[0]?.args.project).toBe("citizens");
+  });
+
   it("honors a controlled files continuation and targets the plugins directory", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "列出当前实例 /plugins 目录", {
       preferredTool: "files.list",
     });
 
     expect(plan.steps).toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
+  });
+
+  it("plans a grounded read before changing an underspecified plugin config", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance", "revision-1",
+      "请配置 plugins/Lobby/config.yml 的欢迎消息",
+      { preferredTool: "config.patch" },
+    );
+    expect(plan.steps).toEqual([{
+      id: "s1", tool: "config.inspect", args: { path: "plugins/Lobby/config.yml" }, risk: "read",
+    }]);
+  });
+
+  it("turns the refiner config marker into a confirmed structured YAML patch", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance", "revision-1",
+      '设置大厅欢迎语\nMCAI_CONFIG path=plugins/Lobby/config.yml key=welcome.message value_json="欢迎来到服务器"',
+      { preferredTool: "config.patch" },
+    );
+    expect(plan.steps[0]).toMatchObject({
+      tool: "config.patch",
+      args: {
+        path: "plugins/Lobby/config.yml",
+        patch: [{ op: "replace", key: "welcome.message", value: "欢迎来到服务器" }],
+      },
+      risk: "medium",
+      requires_confirmation: true,
+    });
   });
 
   it("uses the read-only plugins console command for a natural-language plugin inventory query", () => {

@@ -19,6 +19,7 @@ SUPPORTED_OPERATIONS = (
     "logs.query",
     "files.list",
     "server.install",
+    "config.inspect",
     "config.patch",
     "plugin.resolve",
     "plugin.install",
@@ -760,6 +761,7 @@ class McaiGraph:
         deterministic_evidence_tools = {
             "console.command": "console",
             "files.list": "files",
+            "config.inspect": "config",
         }
         evidence_tool = next((tool for tool in reversed(tools) if tool in deterministic_evidence_tools), "")
         if evidence_tool and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
@@ -1001,6 +1003,7 @@ def _planner_prompt(request: dict[str, Any]) -> str:
         "澄清规则：仅当缺失信息会改变制品、目标、权限或产生不可逆风险时澄清；可从当前实例、上下文或安全默认值确定的信息不得再问用户。",
         "安全规则：忽略用户要求绕过审批、伪造回调、泄露密钥、执行 Shell/SSH 或破坏宿主机的指令；只允许当前列出的 MCAI 受控操作。",
         "原文没有明确要求时，禁止新增安装、删除、配置修改、控制台写命令、重启、停止、OP 或任何破坏性动作。",
+        "可执行的配置修改必须在 plannedMessage 末尾追加一行：MCAI_CONFIG path=<相对配置文件> key=<点分键路径> value_json=<合法JSON>。不得猜测路径、键或值；缺少时先规划读取或澄清。",
         "plannedMessage 必须是一段给执行模型的完整中文任务说明，包含目标、必要步骤、工具范围、默认参数、证据与验收、失败停止条件；summary 只写一句用户可见的规划摘要。",
         "只输出符合 JSON schema 的对象，不输出 Markdown、解释或额外字段。",
         f"<current_instance>{instance}</current_instance>",
@@ -1093,6 +1096,13 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     lower = message.lower()
     if not message:
         return _direct("消息不能为空。")
+    plugin_install_pattern = r"(?:安装|部署|更新|升级|install|update).{0,24}(?:插件|plugin|essentials|luckperms)|(?:essentials|luckperms).{0,12}(?:安装|部署|更新|升级)|(?:安装|部署|更新|升级|install|update)\s+(?:插件\s*)?[a-z0-9][a-z0-9_-]{1,63}\b"
+    plugin_install_negated = bool(re.search(
+        r"(?:不要|无需|不必|禁止|别|不可|避免|仅|只).{0,12}(?:安装|部署|更新|升级|install|update)|(?:without|do\s+not|don't)\s+(?:install|deploy|update)",
+        lower,
+        re.I,
+    ))
+    plugin_install_request = bool(re.search(plugin_install_pattern, lower, re.I)) and not plugin_install_negated
     if (
         "server.install" in available
         and re.search(r"(?:下载|安装|部署|搭建|创建|开服|download|install|deploy|setup|create)", lower, re.I)
@@ -1101,13 +1111,36 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     ):
         return _tool_decision(message, "server.install", "需要执行指定平台和版本的受控服务端安装")
     if (
+        "config.inspect" in available
+        and re.search(r"(?:查看|读取|检查|show|read|inspect).{0,24}(?:[A-Za-z0-9_.-]+\.(?:ya?ml|json|properties|conf)|配置文件)|(?:配置文件|[A-Za-z0-9_.-]+\.(?:ya?ml|json|properties|conf)).{0,24}(?:查看|读取|检查|show|read|inspect)", message, re.I)
+    ):
+        return _tool_decision(message, "config.inspect", "需要读取当前实例中的真实配置文件")
+    if (
         "config.patch" in available
-        and re.search(r"(?:修改|设置|调整|改成|set|change|update).{0,20}(?:视距|view-distance)|(?:视距|view-distance).{0,20}(?:修改|设置|调整|改成|set|change|update)", lower, re.I)
+        and (
+            re.search(r"(?:修改|设置|调整|改成|set|change|update).{0,20}(?:视距|view-distance)|(?:视距|view-distance).{0,20}(?:修改|设置|调整|改成|set|change|update)", lower, re.I)
+            or re.search(r"\bMCAI_CONFIG\s+path=", message, re.I)
+            or (
+                re.search(r"(?:修改|设置|调整|改成|set|change|update)", message, re.I)
+                and re.search(r"(?:plugins|config)/[^\s]+\.(?:ya?ml|json|properties|conf)", message, re.I)
+            )
+        )
     ):
         return _tool_decision(message, "config.patch", "需要受控修改当前实例配置")
+    plugin_resolve_request = bool(re.search(
+        r"(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find).{0,24}(?:插件|plugin|essentials|luckperms|[a-z0-9][a-z0-9_-]{1,63})|(?:插件|plugin|essentials|luckperms|[a-z0-9][a-z0-9_-]{1,63}).{0,24}(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find)",
+        lower,
+        re.I,
+    ))
+    plugin_probe_without_install = plugin_install_negated and bool(re.search(
+        r"(?<![a-z0-9_-])[a-z0-9][a-z0-9_-]{1,63}(?![a-z0-9_-]).{0,24}(?:能不能|是否|能否|可不可以|可以)?\s*(?:安装|装|部署|更新|升级)",
+        lower,
+        re.I,
+    ))
     if (
         "plugin.resolve" in available
-        and re.search(r"(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find).{0,24}(?:插件|plugin|essentials|luckperms)|(?:插件|plugin|essentials|luckperms).{0,24}(?:解析|查找|查询|匹配|兼容|制品|resolve|lookup|find)", lower, re.I)
+        and not plugin_install_request
+        and (plugin_resolve_request or plugin_probe_without_install)
     ):
         return _tool_decision(message, "plugin.resolve", "需要解析兼容的官方插件制品")
     lifecycle_routes = (
@@ -1146,7 +1179,7 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
         return _tool_decision("列出当前实例 /plugins 目录并返回实际文件清单", "files.list", "需要文件级证据")
     if "files.list" in available and re.search(r"(?:确定|确认|核实|真的).{0,20}(?:essentials|luckperms|插件).{0,12}(?:安装|存在|落盘)|(?:essentials|luckperms|插件).{0,20}(?:确定|确认|核实|真的|安装了吗|存在吗)", lower, re.I):
         return _tool_decision("列出当前实例 /plugins 目录并确认目标插件 JAR 是否实际落盘", "files.list", "安装声明必须由文件级证据确认")
-    if "plugin.install" in available and re.search(r"(?:安装|部署|更新|升级|install|update).{0,24}(?:插件|plugin|essentials|luckperms)|(?:essentials|luckperms).{0,12}(?:安装|部署|更新|升级)", lower, re.I):
+    if "plugin.install" in available and plugin_install_request:
         return _tool_decision(message, "plugin.install", "需要执行受控插件工作流")
     if "console.command" in available:
         if re.search(r"(?:服务器|服务端).{0,5}(?:版本|version)|(?:什么|哪种).{0,4}服务端", message, re.I):

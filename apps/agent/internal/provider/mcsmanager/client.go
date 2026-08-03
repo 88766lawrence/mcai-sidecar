@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,6 +46,9 @@ type apiResponse[T any] struct {
 	Time   int64 `json:"time"`
 }
 
+var minecraftVersionPattern = regexp.MustCompile(`(?i)(?:minecraft(?:\s+server)?\s+version|implementing\s+api\s+version|\bmc\s*[:=])[^0-9]{0,32}(1\.\d+(?:\.\d+)?)|\b(?:paper|purpur|fabric|forge|spigot)[^\r\n]{0,64}?\b(1\.\d+(?:\.\d+)?)\b`)
+var plainMinecraftVersionPattern = regexp.MustCompile(`^1\.\d+(?:\.\d+)?$`)
+
 func New(endpoint, apiKey string, daemonIDs []string) (*Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))) {
@@ -65,7 +69,7 @@ func (c *Client) ListInstances(ctx context.Context) ([]provider.Instance, error)
 			return nil, fmt.Errorf("list daemon %s: %w", daemonID, err)
 		}
 		for _, item := range response.Data.Data {
-			result = append(result, profile(daemonID, item))
+			result = append(result, c.enrichProfile(ctx, profile(daemonID, item)))
 		}
 	}
 	return result, nil
@@ -80,7 +84,66 @@ func (c *Client) GetInstance(ctx context.Context, ref string) (provider.Instance
 	if err := c.call(ctx, http.MethodGet, "/api/instance", url.Values{"daemonId": {daemonID}, "uuid": {uuid}}, nil, &response); err != nil {
 		return provider.Instance{}, err
 	}
-	return profile(daemonID, response.Data), nil
+	return c.enrichProfile(ctx, profile(daemonID, response.Data)), nil
+}
+
+// enrichProfile turns runtime evidence into shared inventory facts. MCSManager
+// frequently reports a universal process with an empty version, even though
+// the console and server files identify the implementation precisely. Keeping
+// this at the provider boundary means every task receives the same facts,
+// instead of rediscovering them inside one specific executor workflow.
+func (c *Client) enrichProfile(ctx context.Context, instance provider.Instance) provider.Instance {
+	loader := strings.ToLower(strings.TrimSpace(instance.Loader))
+	version := strings.TrimSpace(instance.MinecraftVersion)
+	if loader != "" && loader != "unknown" && plainMinecraftVersionPattern.MatchString(version) {
+		return instance
+	}
+
+	var evidence strings.Builder
+	if output, err := c.ReadOutput(ctx, instance.Ref, 256); err == nil {
+		evidence.WriteString(output)
+		evidence.WriteByte('\n')
+	}
+	if latest, err := c.ReadFile(ctx, instance.Ref, "logs/latest.log"); err == nil {
+		evidence.Write(latest)
+		evidence.WriteByte('\n')
+	}
+	if listing, err := c.ListFiles(ctx, instance.Ref, "/"); err == nil {
+		evidence.WriteString(listing)
+	}
+	lower := strings.ToLower(evidence.String())
+	if loader == "" || loader == "unknown" {
+		switch {
+		case strings.Contains(lower, "purpur"):
+			loader = "purpur"
+		case strings.Contains(lower, "paper") || strings.Contains(lower, "paper-global.yml"):
+			loader = "paper"
+		case strings.Contains(lower, "fabric") || strings.Contains(lower, "fabric-server-launcher.properties"):
+			loader = "fabric"
+		case strings.Contains(lower, "forge") || strings.Contains(lower, "neoforge"):
+			loader = "forge"
+		case strings.Contains(lower, "spigot.yml") || strings.Contains(lower, "bukkit.yml"):
+			loader = "spigot"
+		}
+	}
+	if !plainMinecraftVersionPattern.MatchString(version) {
+		if match := minecraftVersionPattern.FindStringSubmatch(evidence.String()); len(match) > 0 {
+			for _, candidate := range match[1:] {
+				if candidate != "" {
+					version = candidate
+					break
+				}
+			}
+		}
+	}
+	if loader != "" && loader != "unknown" {
+		instance.Loader = loader
+		instance.Platform = loader
+	}
+	if plainMinecraftVersionPattern.MatchString(version) {
+		instance.MinecraftVersion = version
+	}
+	return instance
 }
 
 func (c *Client) ReadOutput(ctx context.Context, ref string, sizeKB int) (string, error) {

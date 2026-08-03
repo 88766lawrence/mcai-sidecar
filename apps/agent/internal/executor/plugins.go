@@ -24,6 +24,7 @@ import (
 
 const (
 	modrinthAPI = "https://api.modrinth.com/v2"
+	hangarAPI   = "https://hangar.papermc.io/api/v1"
 	githubAPI   = "https://api.github.com"
 )
 
@@ -41,6 +42,17 @@ var githubPluginSources = map[string]githubPluginSource{
 	"essentialsx": {Owner: "EssentialsX", Repository: "Essentials", AssetPrefix: "EssentialsX-"},
 }
 
+// Hangar project identifiers preserve publisher capitalization. These are
+// identity aliases only: resolution and compatibility still come from the
+// official Hangar API, and an unlisted project is attempted with its supplied
+// slug rather than being rejected by a hard-coded allow list.
+var hangarProjectAliases = map[string]string{
+	"essentials": "Essentials", "essentialsx": "Essentials",
+	"placeholderapi": "PlaceholderAPI", "coreprotect": "CoreProtect",
+	"viaversion": "ViaVersion", "viabackwards": "ViaBackwards",
+	"geyser": "Geyser", "floodgate": "Floodgate", "luckperms": "LuckPerms",
+}
+
 type resolvedPlugin struct {
 	Project       string
 	VersionID     string
@@ -55,37 +67,277 @@ type resolvedPlugin struct {
 }
 
 type pluginResolver interface {
-	Resolve(context.Context, string, string, string) (resolvedPlugin, error)
+	Resolve(context.Context, string, string, string, pluginResolutionProgress) (resolvedPlugin, error)
 }
+
+type pluginResolutionProgress func(source, status string)
 
 type officialPluginResolver struct {
 	httpClient *http.Client
 	apiBase    string
+	hangarBase string
 	githubBase string
 }
 
 func newOfficialPluginResolver() *officialPluginResolver {
-	return &officialPluginResolver{httpClient: &http.Client{Timeout: 45 * time.Second}, apiBase: modrinthAPI, githubBase: githubAPI}
+	return &officialPluginResolver{httpClient: &http.Client{Timeout: 45 * time.Second}, apiBase: modrinthAPI, hangarBase: hangarAPI, githubBase: githubAPI}
 }
 
-func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
-	artifact, err := r.resolveModrinth(ctx, project, loader, minecraftVersion)
-	if err == nil {
+func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, minecraftVersion string, progress pluginResolutionProgress) (resolvedPlugin, error) {
+	project = strings.ToLower(strings.TrimSpace(project))
+	reportPluginProgress(progress, "Modrinth", "正在查询兼容版本")
+	artifact, modrinthErr := r.resolveModrinth(ctx, project, loader, minecraftVersion)
+	if modrinthErr == nil {
+		reportPluginProgress(progress, "Modrinth", "已找到并校验官方制品")
 		return artifact, nil
 	}
-	project = strings.ToLower(strings.TrimSpace(project))
-	if !errors.Is(err, errNoCompatiblePluginVersion) {
-		return resolvedPlugin{}, err
+	var attempts []string
+	attempts = append(attempts, "Modrinth: "+modrinthErr.Error())
+	reportPluginProgress(progress, "Modrinth", "未找到可用制品，切换下一可信来源")
+	if r.hangarBase != "" {
+		reportPluginProgress(progress, "Hangar", "正在查询 PaperMC 官方插件仓库")
+		artifact, hangarErr := r.resolveHangar(ctx, project, loader, minecraftVersion)
+		if hangarErr == nil {
+			reportPluginProgress(progress, "Hangar", "已找到并校验官方制品")
+			return artifact, nil
+		}
+		attempts = append(attempts, "Hangar: "+hangarErr.Error())
+		reportPluginProgress(progress, "Hangar", "未找到可用制品，切换下一可信来源")
 	}
 	source, supported := githubPluginSources[project]
-	if !supported {
+	if supported {
+		reportPluginProgress(progress, "official GitHub", "正在查询项目官方发布页")
+		official, githubErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source)
+		if githubErr == nil {
+			reportPluginProgress(progress, "official GitHub", "已找到并校验官方制品")
+			return official, nil
+		}
+		attempts = append(attempts, "official GitHub: "+githubErr.Error())
+		reportPluginProgress(progress, "official GitHub", "没有可用的已校验发布制品")
+	}
+	if len(attempts) == 1 {
+		return resolvedPlugin{}, modrinthErr
+	}
+	return resolvedPlugin{}, fmt.Errorf("no trusted compatible artifact found after %d sources: %s", len(attempts), strings.Join(attempts, "; "))
+}
+
+func reportPluginProgress(progress pluginResolutionProgress, source, status string) {
+	if progress != nil {
+		progress(source, status)
+	}
+}
+
+func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
+	loader = strings.ToLower(strings.TrimSpace(loader))
+	if loader == "purpur" || loader == "spigot" || loader == "bukkit" {
+		loader = "paper"
+	}
+	if loader != "paper" {
+		return resolvedPlugin{}, fmt.Errorf("Hangar supports Paper-compatible plugin resolution; got %q", loader)
+	}
+	if !minecraftVersionPattern.MatchString(minecraftVersion) {
+		return resolvedPlugin{}, errors.New("Hangar resolution requires a valid Minecraft version")
+	}
+	projectID := project
+	if alias := hangarProjectAliases[project]; alias != "" {
+		projectID = alias
+	} else {
+		discovered, err := r.findExactHangarProject(ctx, project, minecraftVersion)
+		if err != nil {
+			return resolvedPlugin{}, err
+		}
+		projectID = discovered
+	}
+	endpoint := strings.TrimRight(r.hangarBase, "/") + "/projects/" + url.PathEscape(projectID) + "/versions?limit=25&offset=0"
+	var response struct {
+		Result []struct {
+			ID          int64  `json:"id"`
+			Name        string `json:"name"`
+			Visibility  string `json:"visibility"`
+			ReviewState string `json:"reviewState"`
+			Channel     struct {
+				Name string `json:"name"`
+			} `json:"channel"`
+			Downloads map[string]struct {
+				FileInfo struct {
+					Name       string `json:"name"`
+					SizeBytes  int64  `json:"sizeBytes"`
+					SHA256Hash string `json:"sha256Hash"`
+				} `json:"fileInfo"`
+				ExternalURL string `json:"externalUrl"`
+				DownloadURL string `json:"downloadUrl"`
+			} `json:"downloads"`
+			PluginDependencies   map[string]any      `json:"pluginDependencies"`
+			PlatformDependencies map[string][]string `json:"platformDependencies"`
+		} `json:"result"`
+	}
+	if err := r.getHangarJSON(ctx, endpoint, &response); err != nil {
 		return resolvedPlugin{}, err
 	}
-	official, officialErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source)
-	if officialErr != nil {
-		return resolvedPlugin{}, fmt.Errorf("Modrinth has no compatible version and official source fallback failed: %w", officialErr)
+	for _, version := range response.Result {
+		if version.ID <= 0 || version.Name == "" || version.Visibility != "public" || !strings.EqualFold(version.Channel.Name, "Release") {
+			continue
+		}
+		if len(version.PluginDependencies) > 0 {
+			return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares plugin dependencies that require separate approval", version.Name)
+		}
+		compatible := false
+		for _, candidate := range version.PlatformDependencies["PAPER"] {
+			if candidate == minecraftVersion {
+				compatible = true
+				break
+			}
+		}
+		if !compatible {
+			continue
+		}
+		download, ok := version.Downloads["PAPER"]
+		if !ok {
+			continue
+		}
+		if download.ExternalURL != "" && download.DownloadURL == "" {
+			return r.resolveReviewedHangarGitHubAsset(ctx, project, version.ID, version.Name, download.ExternalURL)
+		}
+		if download.DownloadURL == "" {
+			continue
+		}
+		if filepath.Base(download.FileInfo.Name) != download.FileInfo.Name || !strings.HasSuffix(strings.ToLower(download.FileInfo.Name), ".jar") {
+			return resolvedPlugin{}, errors.New("Hangar did not provide a safe JAR filename")
+		}
+		declared256 := strings.ToLower(strings.TrimSpace(download.FileInfo.SHA256Hash))
+		if len(declared256) != 64 || download.FileInfo.SizeBytes <= 0 || download.FileInfo.SizeBytes > 64<<20 {
+			return resolvedPlugin{}, errors.New("Hangar release has incomplete artifact integrity metadata")
+		}
+		artifactURL, err := url.Parse(download.DownloadURL)
+		trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "hangarcdn.papermc.io"
+		trustedTest := r.hangarBase != hangarAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
+		if !trustedOfficial && !trustedTest {
+			return resolvedPlugin{}, errors.New("Hangar returned an untrusted artifact URL")
+		}
+		contents, err := r.downloadPluginArtifact(ctx, download.DownloadURL)
+		if err != nil {
+			return resolvedPlugin{}, err
+		}
+		if int64(len(contents)) != download.FileInfo.SizeBytes {
+			return resolvedPlugin{}, errors.New("Hangar artifact size does not match metadata")
+		}
+		actual256 := sha256.Sum256(contents)
+		if hex.EncodeToString(actual256[:]) != declared256 {
+			return resolvedPlugin{}, errors.New("Hangar artifact SHA-256 does not match metadata")
+		}
+		actual512 := sha512.Sum512(contents)
+		return resolvedPlugin{
+			Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
+			FileName: download.FileInfo.Name, SourceURL: download.DownloadURL,
+			SourceSHA512: hex.EncodeToString(actual512[:]), LocalSHA256: declared256,
+			Source: "hangar", Compatibility: "exact-game-version", Contents: contents,
+		}, nil
 	}
-	return official, nil
+	return resolvedPlugin{}, fmt.Errorf("Hangar has no release compatible with Minecraft %s", minecraftVersion)
+}
+
+func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project string, versionID int64, versionNumber, externalURL string) (resolvedPlugin, error) {
+	artifactURL, err := url.Parse(externalURL)
+	if err != nil || artifactURL.Scheme != "https" || artifactURL.Hostname() != "github.com" {
+		return resolvedPlugin{}, errors.New("reviewed Hangar release points to an unsupported external host")
+	}
+	parts := strings.Split(strings.Trim(artifactURL.Path, "/"), "/")
+	if len(parts) < 6 || parts[2] != "releases" || parts[3] != "download" {
+		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL is not a release asset")
+	}
+	owner, repository, tag := parts[0], parts[1], parts[4]
+	assetName, err := url.PathUnescape(strings.Join(parts[5:], "/"))
+	if err != nil || filepath.Base(assetName) != assetName || !strings.HasSuffix(strings.ToLower(assetName), ".jar") {
+		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL has an unsafe asset name")
+	}
+	if r.githubBase == "" {
+		return resolvedPlugin{}, errors.New("GitHub metadata verification is unavailable")
+	}
+	endpoint := strings.TrimRight(r.githubBase, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository) + "/releases/tags/" + url.PathEscape(tag)
+	var release struct {
+		Draft      bool `json:"draft"`
+		Prerelease bool `json:"prerelease"`
+		Assets     []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+			Digest             string `json:"digest"`
+			Size               int64  `json:"size"`
+		} `json:"assets"`
+	}
+	if err := r.getGitHubJSON(ctx, endpoint, &release); err != nil {
+		return resolvedPlugin{}, fmt.Errorf("verify reviewed Hangar external release: %w", err)
+	}
+	if release.Draft || release.Prerelease {
+		return resolvedPlugin{}, errors.New("reviewed Hangar external release is not stable")
+	}
+	for _, asset := range release.Assets {
+		if asset.Name != assetName || asset.BrowserDownloadURL != externalURL {
+			continue
+		}
+		declared256 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.Digest)), "sha256:")
+		if len(declared256) != 64 || asset.Size <= 0 || asset.Size > 64<<20 {
+			return resolvedPlugin{}, errors.New("GitHub release asset has incomplete integrity metadata")
+		}
+		contents, err := r.downloadPluginArtifact(ctx, externalURL)
+		if err != nil {
+			return resolvedPlugin{}, err
+		}
+		if int64(len(contents)) != asset.Size {
+			return resolvedPlugin{}, errors.New("GitHub release asset size does not match metadata")
+		}
+		actual256 := sha256.Sum256(contents)
+		if hex.EncodeToString(actual256[:]) != declared256 {
+			return resolvedPlugin{}, errors.New("GitHub release asset SHA-256 does not match metadata")
+		}
+		actual512 := sha512.Sum512(contents)
+		return resolvedPlugin{
+			Project: project, VersionID: strconv.FormatInt(versionID, 10), VersionNumber: versionNumber,
+			FileName: assetName, SourceURL: externalURL, SourceSHA512: hex.EncodeToString(actual512[:]),
+			LocalSHA256: declared256, Source: "hangar-reviewed-github", Compatibility: "exact-game-version", Contents: contents,
+		}, nil
+	}
+	return resolvedPlugin{}, errors.New("GitHub release API did not contain the exact Hangar-linked asset")
+}
+
+func (r *officialPluginResolver) findExactHangarProject(ctx context.Context, query, minecraftVersion string) (string, error) {
+	endpoint := strings.TrimRight(r.hangarBase, "/") + "/projects?query=" + url.QueryEscape(query) + "&limit=25&offset=0"
+	var response struct {
+		Result []struct {
+			Name       string `json:"name"`
+			Visibility string `json:"visibility"`
+			Namespace  struct {
+				Slug string `json:"slug"`
+			} `json:"namespace"`
+			SupportedPlatforms map[string][]string `json:"supportedPlatforms"`
+		} `json:"result"`
+	}
+	if err := r.getHangarJSON(ctx, endpoint, &response); err != nil {
+		return "", fmt.Errorf("search Hangar projects: %w", err)
+	}
+	normalizedQuery := normalizePluginIdentity(query)
+	for _, candidate := range response.Result {
+		if candidate.Visibility != "public" || (normalizePluginIdentity(candidate.Name) != normalizedQuery && normalizePluginIdentity(candidate.Namespace.Slug) != normalizedQuery) {
+			continue
+		}
+		for _, version := range candidate.SupportedPlatforms["PAPER"] {
+			if version == minecraftVersion {
+				return candidate.Namespace.Slug, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("Hangar search found no exact public project compatible with Minecraft %s", minecraftVersion)
+}
+
+func normalizePluginIdentity(value string) string {
+	return strings.Map(func(character rune) rune {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' {
+			return character
+		}
+		if character >= 'A' && character <= 'Z' {
+			return character + ('a' - 'A')
+		}
+		return -1
+	}, value)
 }
 
 func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
@@ -352,6 +604,31 @@ func (r *officialPluginResolver) getGitHubJSON(ctx context.Context, endpoint str
 	return nil
 }
 
+func (r *officialPluginResolver) getHangarJSON(ctx context.Context, endpoint string, output any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "MCAI-Sidecar/0.1 (controlled-plugin-resolver)")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("Hangar API returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, output); err != nil {
+		return errors.New("Hangar API returned an unexpected response")
+	}
+	return nil
+}
+
 func (r *officialPluginResolver) getJSON(ctx context.Context, endpoint string, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -409,7 +686,9 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 			emit("", "inventory", fmt.Sprintf("已从当前实例日志与文件识别服务端：%s %s", loader, minecraftVersion))
 		}
 	}
-	artifact, err := e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion)
+	artifact, err := e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion, func(source, status string) {
+		emit("", "source", fmt.Sprintf("%s：%s", source, status))
+	})
 	if err != nil {
 		return err
 	}
