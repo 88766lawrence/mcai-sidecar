@@ -772,7 +772,11 @@ class McaiGraph:
                 if item.get("kind") == expected_kind and str(item.get("summary", "")).strip()
             ), "")
             if task_state == "SUCCEEDED" and evidence_summary:
-                normalized_answer = _format_plugin_inventory_answer(intent, evidence_tool, evidence_summary)
+                normalized_answer = (
+                    _format_config_inspection_answer(intent, evidence_summary)
+                    if evidence_tool == "config.inspect"
+                    else _format_plugin_inventory_answer(intent, evidence_tool, evidence_summary)
+                )
                 return {"decision": _response(normalized_answer or evidence_summary, status="answered"), "next_node": "end"}
             reason = next((
                 str(item.get("summary", "")).strip()
@@ -1375,6 +1379,25 @@ def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_su
     if names:
         return f"当前服务器已加载 {count} 个插件：{names}。"
     return f"当前服务器已加载 {count} 个插件；控制台没有返回插件名称。"
+
+
+def _format_config_inspection_answer(intent: str, evidence_summary: str) -> str:
+    """Keep full redacted configuration in evidence and answer only the request."""
+    path_match = re.search(r"Read\s+(/[^\s]+)\s+\((\d+)\s+bytes,\s*sha256:([a-f0-9]+)\)", evidence_summary, re.I)
+    path = path_match.group(1) if path_match else "配置文件"
+    requested_tokens = re.findall(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{1,127})(?![A-Za-z0-9_.-])", intent)
+    ignored = {"read", "show", "inspect", "config", "properties", "json", "yaml", "yml", "conf", "server.properties"}
+    for token in reversed(requested_tokens):
+        if token.lower() in ignored or ("." in token and token.lower().endswith((".properties", ".json", ".yaml", ".yml", ".conf"))):
+            continue
+        value_match = re.search(rf"(?m)^\s*{re.escape(token)}\s*[=:]\s*([^\r\n]*)$", evidence_summary, re.I)
+        if value_match:
+            value = value_match.group(1).strip()
+            return f"{path} 中 `{token}={value}`。此次仅做只读检查，未修改配置。"
+    metadata = ""
+    if path_match:
+        metadata = f"（{path_match.group(2)} bytes，SHA-256 `{path_match.group(3)}`）"
+    return f"已读取 {path}{metadata}。完整脱敏内容已保留在执行轨迹中；此次未修改配置。"
 
 
 def _format_readonly_health_answer(intent: str, evidence: list[dict[str, Any]], tools: list[str]) -> str | None:

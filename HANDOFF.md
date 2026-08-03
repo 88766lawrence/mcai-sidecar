@@ -795,12 +795,13 @@ Linux 回滚备份：
 ### 25.5 验收证据
 
 - Windows：Go 全量测试通过；Cloud 41/41；Web typecheck；Python `py_compile`；`git diff --check`。
-- Linux：Go 全量测试通过；Cloud 41/41；LangGraph 86/86；Web typecheck 与生产 build 通过。
+- Linux：Go 全量测试通过；Cloud 41/41；LangGraph 87/87；Web typecheck 与生产 build 通过。
 - Linux 真实外网：EssentialsX 和 ProtocolLib 两条制品解析测试通过；ProtocolLib 经 Modrinth 404 后切换 Hangar，最终验证 GitHub Release 5.4.0 的大小与 SHA-256。
 - 同一带旧失败历史的会话输入 `看看 ProtocolLib 能不能装，先别安装`：`route=tool`、`tools=[plugin.resolve]`、`task=SUCCEEDED`；最终回答确认 Paper 1.21.1 兼容，未安装、未重启。
 - 实际时间线：`SNAPSHOTTING → EXECUTING/Modrinth → EXECUTING/Hangar → SUCCEEDED`，最终 10 条 evidence。
 - 真实网页截图：`output/capability-chain-live-20260803.png`；截图由已部署 Web 与真实 Cloud 会话生成，不是 mock，轨迹已展开，1600px 无横向溢出、无 page error。
-- 最新成功部署回滚点：`/tmp/mcai-capability-chain-backup-20260803213431`。
+- 真实配置只读短句 `读取 server.properties，告诉我 view-distance 当前值，不要修改配置`：仅执行 `config.inspect`，最终回答为 `/server.properties 中 view-distance=10`，完整脱敏配置只保留在折叠证据，`rcon.password` 已脱敏，未修改配置。
+- 最新成功部署回滚点：`/tmp/mcai-capability-chain-backup-20260803214848`。
 
 ---
 

@@ -514,6 +514,27 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await graph.close()
 
+    async def test_config_inspection_returns_requested_key_not_the_whole_file(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "config-inspect.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-config-inspect",
+                "intent": "读取 server.properties，告诉我 view-distance 当前值，不要修改配置",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "config.inspect"}]},
+                "evidence": [{"kind": "config", "summary": (
+                    "Read /server.properties (1388 bytes, sha256:9cdc981c7b07c929)\n"
+                    "motd=A Minecraft Server\n"
+                    "rcon.password= [REDACTED]\n"
+                    "view-distance=10\n"
+                )}],
+            })
+            self.assertIn("view-distance=10", response["answer"])
+            self.assertIn("未修改配置", response["answer"])
+            self.assertNotIn("rcon.password", response["answer"])
+        finally:
+            await graph.close()
+
     async def test_explicit_offline_diagnosis_runs_the_delegate_node(self):
         decision = await self.graph.route({
             "threadId": "session-offline-diagnosis",
