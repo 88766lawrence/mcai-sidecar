@@ -1,9 +1,9 @@
 # MCAI Sidecar 项目交接文档
 
-> 最后核对时间：2026-08-03 11:59（Asia/Hong_Kong）
+> 最后核对时间：2026-08-03 12:56（Asia/Hong_Kong）
 > Windows 工作区：`E:\aimcs`
 > Linux 测试端：`191.40.37.148`
-> 当前功能基线：`a218544 Run multi-step read-only health checks`（文档提交以本地 `HEAD` 为准）
+> 当前功能基线：`78ac562 Show live agent execution progress`（文档提交以本地 `HEAD` 为准）
 
 ## 1. 当前结论
 
@@ -15,10 +15,10 @@ MCAI Sidecar 是位于 Web 用户和 MCSManager 之间的安全 Minecraft AI 运
 - Linux 上 `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web` 四个服务均为 `active`。
 - Cloud 健康端点、模型进程健康端点、真实模型 readiness 和 Web 首页均通过。
 - 当前模型运行时为 Python LangGraph，实际 readiness 模型为 `MiniMax-M3`。
-- 页面保留米黄色运维工作台风格；结果优先展示，规划、工具调用、回调和验证轨迹默认折叠。
+- 页面保留米黄色运维工作台风格；任务执行期间自动展开实时步骤与回调，完成后结果优先展示且轨迹默认折叠。
 - Agent 已能完成一个任务内的多步骤只读检查，例如依次执行 `version → plugins → logs.query`，等待真实回调后汇总结果。
 - 最新真实检查确认测试实例运行 Paper 1.21.1，已加载插件数为 0；日志存在 Paper Watchdog 主线程无响应和 `Can't keep up` 卡顿证据。
-- GitHub 当前为本地 `ahead 5, behind 1`。不要声称三端已经完全一致，也不要强推覆盖远端。
+- GitHub 当前为本地 `ahead 7, behind 1`。不要声称三端已经完全一致，也不要强推覆盖远端。
 
 ## 2. 产品目标和硬性原则
 
@@ -299,6 +299,8 @@ completion evaluator
 - 中栏：实例标签、对话、最终结果、折叠轨迹、输入框。
 - 右栏：当前任务、工具列表、最新证据。
 - 用户消息显示为 `COMMAND`；最终结果显示为 `DONE`。
+- 任务运行时自动展开执行卡，标题随状态切换为“正在生成计划 / 准备执行 / 正在执行 / 正在验证”。
+- 每个工具步骤分别显示“等待 / 执行中 / 验证中 / 完成”，最近 5 条回调会在执行卡内实时追加；轮询到新证据时保持跟随最新内容，但用户向上滚动后不会强制拉回底部。
 - 完成后隐藏重复的中间任务气泡，只保留一个结果卡。
 - “展开规划与执行轨迹”展示任务目标、工具 ID、回调证据类型、状态和时间。
 - 直接回答使用“展开回答轨迹”，展示安全路由摘要，不展示私有思维链。
@@ -313,6 +315,8 @@ completion evaluator
 - `15-live-direct-collapsed.png`
 - `16-agent-trace-expanded.png`
 - `17-real-plugin-answer-trace.png`
+
+2026-08-03 运行态验收截图位于 `.deploy/audit-20260803/agent-loop-running-linux.png`。该截图使用 Linux 已部署的 Web 构建和受控验收数据，确认 3 个步骤分别显示“完成 / 执行中 / 等待”、执行卡自动展开、最新回调可见且 1600px 视口无横向溢出。
 
 截图脚本使用已部署 Web 构建和受控 API 数据验证布局；真实后端行为由独立 Linux API 验收脚本验证。不要把模拟 UI 数据误称为真实服务器会话。
 
@@ -396,6 +400,7 @@ loopComplete=true
 最新提交顺序：
 
 ```text
+78ac562 Show live agent execution progress
 a218544 Run multi-step read-only health checks
 757427b Explain tool results and expose execution trace
 d78bb2a Route plugin inventory queries correctly
@@ -411,9 +416,9 @@ d12148a Fix instance lifecycle routing
 
 ### 13.3 GitHub 未同步风险
 
-2026-08-03 已成功 fetch。当前本地 `main` 相对 `origin/main` 为 `ahead 5, behind 1`：
+2026-08-03 已成功 fetch。当前本地 `main` 相对 `origin/main` 为 `ahead 7, behind 1`：
 
-- 本地 `HEAD`：文档提交 `8cee6fd`，其下包含 4 个尚未推送的功能/UI 提交。
+- 本地最新功能提交：`78ac562`；其上将继续产生本交接文档提交。
 - 远端 `origin/main`：`2dbfc56 Collapse agent process into results (styles)`。
 - 共同祖先：`7609613 Refine agent workbench hierarchy`。
 
@@ -449,6 +454,8 @@ d12148a Fix instance lifecycle routing
 - 多步骤只读循环：`.deploy/deploy-readonly-loop-fix.sh`
 
 这些脚本针对当时的明确文件集合。使用前必须重新阅读，不要把旧 payload 直接用于新代码。
+
+2026-08-03 12:55 已用 `.deploy/deploy-agent-ui.sh` 发布实时执行过程 UI，只重启 `mcai-web.service`；Linux 自动备份为 `/tmp/mcai-agent-ui-backup-20260803125520`。Linux Web 类型检查、生产构建、本机首页健康检查和公网运行态截图验收均通过。
 
 ### 14.3 最近可用回滚点
 
