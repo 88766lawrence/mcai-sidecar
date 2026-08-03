@@ -1,746 +1,623 @@
-# MCAI 项目交接记录
+# MCAI Sidecar 项目交接文档
 
-## 2026-08-02 Agent 工作台界面重构（Linux 同步待重试）
+> 最后核对时间：2026-08-03 13:16（Asia/Hong_Kong）
+> Windows 工作区：`E:\aimcs`
+> Linux 测试端：`191.40.37.148`
+> 当前功能基线：`29084bf Add two-model goal planning pipeline`（文档提交以本地 `HEAD` 为准）
 
-### 本轮完成内容
+## 1. 当前结论
 
-登录后的 Agent 页面已从普通聊天布局改为紧凑的三栏运维工作台，同时保留米黄色纸张基调：
+MCAI Sidecar 是位于 Web 用户和 MCSManager 之间的安全 Minecraft AI 运维层。用户用自然语言描述目标；Cloud 将目标绑定到页面当前实例并生成受约束任务；Linux 上的 Go Agent 使用本机保存的 MCSManager API Key 执行白名单工具；Python LangGraph 根据真实回调继续验证并生成最终回答。
 
-- 左侧为实例选择、实例资源上下文与会话列表；资源区只展示当前已知上下文，不伪造服务器文件内容。
-- 中间新增顶部会话切换器和标签栏；消息按 `COMMAND`、`TOOLS`、`OUTPUT`、`DONE` 分层展示，用户指令以深色命令块呈现，最终成功/失败结果以明确状态卡呈现。
-- 工具调用过程默认收起为“执行记录”；展开后才显示计划、步骤、工具标识和证据。进行中的状态只显示“正在规划”，不暴露内部推理文本。
-- 右侧工具面板改为常驻：有任务时展示任务、调用工具与最新证据；无任务时展示可用能力、会话策略和系统提示词入口。
-- 会话轮询增加版本保护与相同消息列表复用，减少轮询替换历史消息导致的滚动跳动；用户在消息区按下/向上滚动后不再自动追随最新消息，仍可使用“回到最新消息”。
-- 375/390px 窄屏自动隐藏非核心右栏并保留标签、状态、结果与输入框，截图验证无横向滚动。
+截至本次交接：
 
-### 修改文件
+- Windows 本地代码和 Linux 测试端的最新关键文件一致。
+- Linux 上 `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web` 四个服务均为 `active`。
+- Cloud 健康端点、模型进程健康端点、真实模型 readiness 和 Web 首页均通过。
+- 当前模型运行时为 Python LangGraph，实际 readiness 模型为 `MiniMax-M3`。
+- 页面保留米黄色运维工作台风格；任务执行期间自动展开实时步骤与回调，完成后结果优先展示且轨迹默认折叠。
+- Agent 已能完成一个任务内的多步骤只读检查，例如依次执行 `version → plugins → logs.query`，等待真实回调后汇总结果。
+- 简短运维目标已进入两阶段模型流水线：规划模型先补全步骤、约束和验收条件，执行模型再选择受控工具；原始授权边界会单独保留并校验，规划模型不得擅自增加安装、配置、重启或停服。
+- 最新真实检查确认测试实例运行 Paper 1.21.1，已加载插件数为 0；日志存在 Paper Watchdog 主线程无响应和 `Can't keep up` 卡顿证据。
+- GitHub 当前为本地 `ahead 9, behind 1`（本交接文档提交后为 `ahead 10`）。不要声称三端已经完全一致，也不要强推覆盖远端。
 
-- `apps/web/components/agent-workspace.tsx`
-- `apps/web/app/globals.css`
+## 2. 产品目标和硬性原则
 
-### 本地验收（已完成）
+### 2.1 产品目标
 
-- `npm run typecheck -w @mcai/web`：通过。
-- `npm run build -w @mcai/web`：通过。
-- 本机生产预览（Edge 无头）桌面 `1440×1024`：通过；断言包含常驻右栏、标签栏、折叠执行记录、最终结果卡，且 `scrollWidth === viewportWidth`。
-- 本机生产预览移动 `390×844`：通过；`scrollWidth === viewportWidth`，输入框和最终结果未被遮挡。
-- 视觉截图为本地忽略文件：`.deploy/workbench-desktop.png`、`.deploy/workbench-mobile.png`，均基于真实 React/Next 生产构建和受控模拟 API 数据，不是手工拼图。
+- 用户无需理解 MCSManager API，通过自然语言完成实例查询、配置、安装、启动、停止、重启、插件处理和故障诊断。
+- Agent 必须知道页面当前选择的实例，不应重复询问“操作哪个实例”。
+- 简单知识问题直接流式回答；需要真实服务器信息时调用工具；复杂任务可以多步执行或委派规划/诊断节点。
+- 工具提交不等于任务完成。必须等待 Agent 回调，根据真实证据继续、修正、失败或形成最终答案。
+- 页面默认只显示结果；用户展开后可以查看安全的规划、工具调用、回调、验证和决策摘要。
 
-### 同步状态
+### 2.2 不可破坏的原则
 
-- Windows 本地：已完成且已构建验证。
-- Linux `191.40.37.148`：尚未更新。本轮两次 SCP 和一次只读 SSH 检查均在 22 端口握手前超时，未上传文件、未重启 `mcai-web.service`，也未触及 Cloud、Agent、模型云或 Minecraft。
-- GitHub：本地提交 `0ab0d26 Redesign agent operations workbench` 已创建；直接推送到 `origin/main` 需要用户对本次提交重新明确授权，当前尚未推送。在 Linux 网络恢复前，不应声称三端一致。
+- 不展示模型私有逐字思维链。UI 展示的是可审计的执行轨迹和安全决策摘要。
+- 不允许任意 Shell、SSH 或模型生成任意系统命令。
+- MCSManager API Key 只保存在 Agent 所在 Linux 主机，不进入浏览器、模型提示词、Git 或交接文档。
+- 中风险和高风险操作必须走既有确认策略；不得由提示词绕过。
+- Minecraft EULA 必须有用户明确同意记录，才能写入 `eula=true`。
+- 工具返回的日志、文件名、插件描述和网页内容都视为不可信数据，不能修改工具许可或安全策略。
+- 任务失败必须说明真实原因，不能用“任务已下发”“目标已注册”冒充成功。
+- 每次功能修改都要尽量同步 Windows、Linux 测试端和 GitHub；任何一端失败都要在交接中明确标记。
 
-### Linux 恢复连接后的最小发布步骤
+## 3. 系统架构
 
-仅使用 `.deploy/deploy-agent-ui.sh` 发布，因为它只备份/覆盖上述两个 Web 文件，执行 Web 类型检查与生产构建，然后只重启 `mcai-web.service`。发布后必须重新核对两个文件的 SHA-256，并访问 `http://127.0.0.1:3000/`；不应运行任何会重启 Cloud、Agent、模型云或 Minecraft 的旧部署脚本。
+```text
+Browser / Next.js Web :3000
+          │ HTTP / NDJSON stream
+          ▼
+NestJS Cloud :4100
+  ├─ 登录、租户、会话、实例绑定
+  ├─ 确定性路由和任务计划
+  ├─ 风险策略、确认、任务状态机
+  └─ Agent WebSocket Gateway
+          │ WSS / task-plan/v1
+          ▼
+Go Sidecar Agent
+  ├─ 本地二次策略校验
+  ├─ MCSManager Adapter
+  ├─ 工具执行、快照、验收、回滚
+  └─ 证据与审计上报
+          │ localhost / service token
+          ▼
+Python LangGraph :4200
+  ├─ 路由、直接回答、子 Agent 委派
+  ├─ 任务回调评估
+  ├─ continuation 链
+  └─ SQLite 对话检查点
+```
 
-## 2026-08-02 模型适配器与 Agent 循环修复（当前最新状态）
+职责边界：
 
-### 本轮结论
+1. Web 只负责交互、实例选择、流式展示、确认和轨迹呈现。
+2. Cloud 是租户和任务控制面，不能直接使用面板密钥执行任意动作。
+3. Go Agent 是唯一持有 MCSManager API Key 的执行面，并在服务器本地再次校验。
+4. LangGraph 负责模型兼容、状态恢复和回调后的下一步判断，不直接连接 MCSManager。
+5. `local-cloud/` 是旧 Vercel AI SDK 实现，只作为迁移回退参考，不是当前 systemd 运行时。
 
-模型服务本身可用；此前“模型云暂时不可用”“暂时没有可用回答”和聊天里出现原始 JSON，根因是 MCAI 的兼容适配与超时策略，而不是所有配置模型都失效。当前 Linux 测试端已部署修复，且只重启了 `mcai-model-cloud`，没有重启 `mcai-cloud`、`mcai-agent`、`mcai-web` 或 Minecraft 实例。
+## 4. 仓库结构
 
-当前运行环境：
+```text
+apps/
+  agent/                 Go Sidecar、MCSManager Provider、执行器、审计
+  cloud/                 NestJS API、会话、任务状态机、Agent Gateway
+  web/                   Next.js Agent 运维工作台
+packages/
+  contracts/             Web、Cloud 共用的任务和消息契约
+langgraph-cloud/
+  mcai_graph/            Python LangGraph、模型兼容层、FastAPI
+  tests/                 LangGraph 与接口测试
+local-cloud/             旧模型网关，当前不启用
+scripts/                 项目辅助脚本
+.deploy/                 本地部署/验收脚本与截图，已被 Git 忽略
+HANDOFF.md               本文档
+README.md                项目快速说明
+Minecraft_AI运维_Sidecar_完整技术设计文档_v0.2.docx
+```
 
-- Windows 工作区：`E:\aimcs`
-- Linux 源码：`/opt/mcai-src`
-- LangGraph 运行 release：`/opt/mcai-langgraph-cloud/releases/20260801130804`
-- 当前 release 软链接：`/opt/mcai-langgraph-cloud/current`
-- 最新可回滚备份：`/tmp/mcai-model-adapter-backup-20260802150053`
+关键代码入口：
 
-### 已修复的模型行为
+- Web 主工作台：`apps/web/components/agent-workspace.tsx`
+- Web 样式：`apps/web/app/globals.css`
+- Cloud 对话闭环：`apps/cloud/src/chat/chat.service.ts`
+- Cloud 任务计划：`apps/cloud/src/tasks/planner.ts`
+- Cloud 任务状态机：`apps/cloud/src/tasks/tasks.service.ts`
+- 模型网关：`apps/cloud/src/model-gateway/model-gateway.service.ts`
+- LangGraph：`langgraph-cloud/mcai_graph/graph.py`
+- LangGraph FastAPI：`langgraph-cloud/mcai_graph/app.py`
+- Agent 执行器：`apps/agent/internal/executor/executor.go`
+- MCSManager 客户端：`apps/agent/internal/provider/mcsmanager/client.go`
+- 共享契约：`packages/contracts/src/index.ts`
 
-1. 兼容 OpenAI 风格但不严格遵守 JSON Schema 的上游：接受自然文本、`answer/content/text/response/message/output/result/final/summary` 等安全正文键，以及嵌套内容；绝不暴露 `analysis` 或 `reasoning` 字段。
-2. 子 Agent（规划/诊断）不再对同一个模型依次浪费三轮 `response_format` 探测。它使用兼容的 prompt 模式，并在主模型慢响应时允许一次 20 秒的正文生成窗口，再为备用模型保留时间。
-3. 子 Agent 输出预算从 512 降至 256 tokens，并采用固定的短结果模板：诊断必须覆盖“已知事实、推断、验证、风险、验收”；规划必须覆盖“阶段、依赖、风险、验收、回滚、停止条件”。
-4. 若上游在 token 上限前截断 JSON，例如 `{"route":"direct","answer":"...` 未闭合，系统只恢复公开 `answer` 正文，不会把原始 JSON 显示在聊天气泡中。
-5. 双层 JSON 包装会递归解包；兼容网关返回的顶层或嵌套 `content` 也不会丢失。
-6. `availableTools: []` 现在真正表示没有工具。模型即使尝试选择工具，也会降级为“未执行任何操作”。
-7. 对话历史增加每条 1,600 字符、总计 6,000 字符的压缩上限，保留最新上下文，避免旧日志或长回调拖慢后续模型请求。
-8. `/health` 只表示进程和配置存在；新增 `/ready` 会真实调用一次模型并要求回显随机 nonce，不能再把假健康误报为模型可用。
-9. 模型失败会返回明确的认证、限流、网络、超时或格式错误状态，而不再一律伪装成“没有可用回答”。
-10. 路由提示词要求模型在事实不确定时省略或标明不确定，禁止编造项目名、版本、性能指标或工具能力。
+## 5. Linux 测试环境
 
-### 真实验收记录（2026-08-02）
-
-Linux 最新部署执行了 54 项 Python LangGraph/FastAPI 单元与集成测试，全部通过。部署脚本同时验证 `/health` 和实际推理 `/ready`；仅有服务启动初期的一次瞬时 `curl connection refused`，随后 readiness 成功，部署以退出码 0 完成。
-
-无真实服务器数据的复杂 Agent 验收（`/tmp/verify-offline-delegate.mjs`）通过：虚构性能诊断题走 `delegate/diagnostics` 并覆盖事实、推断、验证、风险和验收；虚构大型 Paper 治理题走 `delegate/planner` 并覆盖阶段、依赖、风险、验收、回滚和停止条件。验收请求只发送虚构压测文本和 synthetic 实例标识；没有读取或发送真实实例日志、文件或控制台内容。
-
-通用模型/Cloud 流式验收（`/tmp/verify-model-runtime.mjs`）通过：
-
-- `/ready`：`status=ready`、`runtime=python-langgraph`，实际使用 `MiniMax-M3`；
-- `17 × 19`：`route=direct`，返回 `323`；
-- Paper/Fabric 概念题：`route=direct`，有实质回答且不再显示原始 JSON；
-- 请求“启动服务器”但 `availableTools=[]`：没有创建工具任务；
-- Cloud NDJSON 流式路径：`route=direct`，输出自然语言，收到多个 `delta` 后结束。
-
-工具回调闭环验收（`/tmp/verify-langgraph-loop.mjs`）通过：用户确认“需要”后恢复 `files.list`；安装插件任务只有中间状态时会继续读取 `/plugins` 取证；真实只读 `files.list /plugins` 任务为 `SUCCEEDED`；当前证据为 `.paper-remapped`、`bStats`、`spark`；最终回答明确说明未发现 EssentialsX，不能确认已安装，没有假称成功。
-
-### 未覆盖的安全边界
-
-本轮没有把 Linux 测试实例的真实控制台日志、文件列表或性能数据发送给外部模型服务。真实日志“读取 → 模型诊断 → 回答”的端到端验收仍需要用户明确授权：`允许将 Linux 测试实例日志发送给已配置的模型服务用于 Agent 验收`。在未授权前，可验证的是本地受控读取、工具回调和完全虚构的模型分析，不应声称已经完成真实日志外发分析。
-
-### 当前同步状态与下一步
-
-截至本节写入时，Windows 工作区与 Linux `/opt/mcai-src`/运行 release 已部署相同的 `app.py`、`graph.py`、`test_app.py`、`test_graph.py`。GitHub 尚待本轮最终哈希核对后提交推送；提交前必须再次执行 `git diff --check`，并比较四个文件的 Windows/Linux SHA-256。
-
-更新时间：2026-08-01 13:18（Asia/Hong_Kong）
-
-## 当前结论
-
-MCAI 的默认模型编排层已从一次性 Vercel AI SDK 路由迁移为 Python LangGraph。对话、待执行动作和任务回调使用 SQLite 检查点；Cloud 能消费回调返回的 continuation，创建下一项受控任务并保持原会话/实例绑定。插件闭环已接入 Modrinth 解析、哈希验证、MCSManager 一次性上传、落盘与启动证据验收和失败删除回滚。
-
-2026-08-01 的 Linux 真实只读验收已确认：用户回复“需要”会恢复 `files.list`；插件安装结果缺少文件证据时会继续读取 `/plugins`；当前实例真实目录只有 `.paper-remapped`、`bStats` 和 `spark`，最终答案明确说明未发现 EssentialsX，不能声称已安装。
-
-控制台能力是受控工具 `console.command`，不是 Linux Shell。Cloud 做第一次风险分级，Go Agent 在服务器本地再次校验；MCSManager API Key 仍只由 Agent 本机读取。
-
-## 本轮已完成
-
-- Web 创建或发送会话时始终使用页面当前选择的实例。
-- 切换实例会自动切到该实例最近会话；没有会话时在首次发送时创建。
-- Cloud 能识别 `console command list`、`在控制台执行 list`、`控制台输入 say hello` 等明确指令。
-- 明确控制台指令使用本地确定性路由，不等待上游模型，避免模型容量或 240 秒超时阻塞执行。
-- Agent 新增 `console.command` 并调用 MCSManager `/api/protected_instance/command`。
-- Agent 在发命令前读取控制台基线，发命令后最多轮询约 3 秒，计算新增日志并作为 `kind=console` 证据回传；不会再把“命令已提交”误当作执行结果。
-- 控制台证据会移除 ANSI/控制字符、隐藏疑似密钥，并限制为最多 8 KiB。
-- 已按服务器安装的 MCSManager 10 源码确认契约：`daemonId`、`uuid` 和 `command` 均为查询参数。
-- 工具执行后不会直接结束；Cloud 会继续根据 Agent 回调生成最终成功结果或失败原因。
-- “在线玩家/多少玩家在线”直接确定性映射为 `console.command list`；TPS/MSPT、服务端版本、插件列表也有只读映射，不依赖模型容量。
-- 模型工具说明已明确：白名单、时间、天气、游戏规则、传送、物品、踢出、封禁等游戏内操作应主动使用 Minecraft 控制台，不得声称没有控制台工具。
-- UI 工具名称显示为“发送控制台命令”，实例停止显示为“停止服务器”。
-- 同一请求使用 `request_id` 去重，防止重复点击或重试创建重复任务。
-- 消息发送中，发送按钮会切换为“停止发送”，用户可以立即中止并解锁输入框。
-- 浏览器发送等待上限为 65 秒；Cloud 模型路由上限为 60 秒，不再出现旧版本最长 240 秒占用发送按钮的情况。
-
-## 控制台安全规则
-
-- 仅允许运行中实例执行命令。
-- 仅允许单行可打印命令，最多 256 字节。
-- 禁止把 `stop`、`restart`、`quit`、`end` 当普通控制台命令；必须走专用实例工具。
-- `list/help/version/plugins/pl/tps/mspt/seed` 为只读，无需确认。
-- `say/me` 为低风险，无需确认。
-- `time/weather/difficulty/gamerule/gamemode/give/tp/effect` 等为中风险，必须确认。
-- 未知命令及 `op` 等管理员命令按高风险处理，必须确认。
-- 审计只保存命令动词与 SHA-256，不保存完整敏感参数。
-
-## Linux 测试端
+### 5.1 地址和目录
 
 - 主机：`191.40.37.148`
-- Web：`http://191.40.37.148:3000/`
-- MCSManager：`http://191.40.37.148:23333/`
-- 源码目录：`/opt/mcai-src`
-- Go：`/opt/go/bin/go`，版本 `go1.23.5`
-- 服务：`mcai-model-cloud.service`、`mcai-cloud.service`、`mcai-agent.service`、`mcai-web.service`
-- 2026-07-30 19:29 最终部署后四个服务均为 `active`，Cloud 和模型云健康端点均返回 `ok`。
+- Web 原始地址：`http://191.40.37.148:3000/`
+- 测试反代域名：`https://test.xiangmuban.com/`
+- MCSManager Web：`http://191.40.37.148:23333/`
+- MCSManager Daemon WebSocket：`191.40.37.148:24444`
+- Linux 源码：`/opt/mcai-src`
+- LangGraph release 根目录：`/opt/mcai-langgraph-cloud/releases`
+- 当前运行 release：`/opt/mcai-langgraph-cloud/releases/20260801130804`
+- 当前软链接：`/opt/mcai-langgraph-cloud/current`
+- Node：`/opt/node-v22.17.0-linux-x64/bin/node`
+- Go：`/opt/go/bin/go`
 
-## 真实验收结果
+### 5.2 systemd 服务
 
-通过 Cloud 会话 API 创建绑定实例“测试”的临时会话，并执行：
+| 服务 | 作用 | 当前状态 |
+| --- | --- | --- |
+| `mcai-web.service` | Next.js Web，端口 3000 | active |
+| `mcai-cloud.service` | NestJS Cloud，端口 4100 | active |
+| `mcai-agent.service` | Go Sidecar Agent | active |
+| `mcai-model-cloud.service` | Python LangGraph，回环端口 4200 | active |
 
-1. `console command list`
-2. `console command say MCAI console control ready`
-
-该轮旧验收两条任务均满足：
-
-- 路由：`tool`
-- 工具：`console.command`
-- 状态：`SUCCEEDED`
-- 实例：`mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`
-- Agent 回调包含 `console` 证据
-
-Minecraft `logs/latest.log` 已确认：
+2026-08-03 实测：
 
 ```text
-[Server] MCAI console control ready
-There are 0 of a max of 20 players online:
+GET 127.0.0.1:4100/api/health -> status=ok
+GET 127.0.0.1:4200/health     -> runtime=python-langgraph, configured=true
+GET 127.0.0.1:4200/ready      -> status=ready, model=MiniMax-M3
+GET 127.0.0.1:3000/           -> HTTP 200
 ```
 
-注意：旧验收中的 `console` 证据只证明命令已提交；2026-07-30 19:17 后已修复为回传命令后的真实新增控制台日志。远端 Go 集成测试已断言证据包含 `There are 0 of a max of 20 players online`，Cloud 完成阶段会把该 evidence 发送给结果说明模型，模型不可用时也会直接回退显示控制台证据。
+`/health` 只验证进程和配置存在；判断模型是否真的能推理必须使用 `/ready`。
 
-新版本真实会话验收脚本位于 `.deploy/verify-console-control.mjs`。它会发送自然语言“帮我看看现在有多少玩家在线”，并严格断言：路由为 `tool`、工具为 `console.command`、任务为 `SUCCEEDED`、证据包含真实在线人数、最终消息引用人数结果。该脚本需要读取 `/etc/mcai/setup.json` 生成 5 分钟本机认证令牌；当前执行环境的安全审批拒绝了这一步，尚未运行，不能把它写成已通过。密钥不应输出或复制到脚本外。
+### 5.3 本地敏感文件位置
 
-## 验证状态
+以下位置只能记录路径，不能复制内容：
 
-- 本机 `npm run typecheck`：通过
-- 本机定向测试：Cloud 15 项通过（`planner` 与 `chat`）
-- 本机 `npm run build`：通过
-- 本机 `local-cloud npm test`：6 项通过
-- Linux `go test ./...`：通过
-- Linux Go Agent 构建：通过
-- Linux 全量 TypeScript 类型检查、17 项 Cloud 测试和生产构建：通过
-- Linux 模型云测试：6 项通过
-- 公网 Web `/api` 流式代理：控制台消息约 27ms 返回任务，普通消息约 3.1 秒返回直接回答
-- `git diff --check`：通过
+- Windows SSH 私钥：`E:\aimcs\rainyun-rcs-sidebar.pem`
+- Windows SSH known hosts：`E:\aimcs\.deploy\linux_ssh_known_hosts`
+- Linux 首次配置与管理员哈希：`/etc/mcai/setup.json`
+- Agent 配置：`/etc/mcai/agent.yaml`
+- Agent 凭据：`/etc/mcai/credentials.yaml`
+- 模型配置：`/etc/mcai-model-cloud/config.json`
+- 模型服务环境：`/etc/mcai-model-cloud/mcai-cloud.env`
+- LangGraph 状态：`/var/lib/mcai-model-cloud/langgraph.sqlite3`
 
-## 主要修改文件
+不要将 API Key、密码、JWT、service token、SSH 私钥内容打印到终端输出、截图或 Git 提交。
 
-- `apps/agent/internal/executor/executor.go`
-- `apps/agent/internal/provider/provider.go`
-- `apps/agent/internal/provider/mcsmanager/client.go`
-- `apps/cloud/src/tasks/planner.ts`
-- `apps/cloud/src/chat/chat.service.ts`
-- `apps/cloud/src/model-gateway/model-gateway.service.ts`
-- `apps/web/components/agent-workspace.tsx`
-- `local-cloud/agent.mjs`
-- `packages/contracts/src/index.ts`
-- 对应 Go、Vitest 和 Node 测试文件
+## 6. 当前测试实例
 
-部署与验收辅助文件：
+- 实例名：`测试`
+- 实例引用：`mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`
+- 当前状态：`running`
+- 服务端：Paper
+- Minecraft：1.21.1
+- Paper 构建：`1.21.1-133-ver/1.21.1@3cb8529`
+- Java：25
+- 控制台 `plugins`：`Server Plugins (0)`
+- `/plugins` 目录曾读取到 `.paper-remapped`、`bStats`、`spark`；这些目录不等于已加载插件。
 
-- `.deploy/deploy-console-control.sh`
-- `.deploy/mcai-console-control-update.tar.gz`
-- `.deploy/verify-console-control.mjs`
+最近一次复杂只读健康检查发现：
 
-## Git 状态与后续工作
+- Paper Watchdog 曾报告主线程超过 15 秒未响应。
+- 出现 `Can't keep up`，最大明确证据为落后 `18436ms / 368 ticks`。
+- `PaperVersionFetcher` 访问 Paper API 时失败，但 `version` 命令仍返回了本地真实 Paper 版本。
+- 当前进程可以响应命令，但不能仅凭“running”判定为完全健康。
 
-- 控制台回读与 Web 修复已同步到 Windows 本地、Linux 测试端和 GitHub，提交为 `26c712d Add console evidence and web motion`。
-- 自然语言只读路由已同步到 GitHub，提交为 `ade573b Route common server queries deterministically`；模型控制台工具说明与本交接文档已提交为 `322a22c Teach agent when to use the Minecraft console`。
-- `origin/main` 已包含上述控制台回读、自然语言路由和模型工具说明提交。
-- 控制台主体提交：`d84cc2e Harden chat operations and response handling`。
-- MCSManager 查询参数修复：`e43b3c2 Fix MCSManager console command request`。
-- 确定性控制台路由：`1b6b0d9 Route explicit console commands deterministically`。
-- 当前源码、Linux 测试端和 GitHub 已同步，无未提交功能修改。
-- 后续可继续扩展更多明确操作的本地确定性路由，使启动、文件查询和安装等操作同样不受上游模型容量影响。
-- 中风险和高风险控制台命令仍应通过页面确认按钮进行人工验收，不能绕过确认策略。
+## 7. Agent 路由和循环模型
 
-## 安全注意事项
+### 7.1 请求生命周期
 
-- 不要在文档、日志、提交或聊天中写入模型 API Key、MCSManager API Key、管理员密码或 SSH 私钥内容。
-- 不开放任意 Shell，不允许模型生成或执行 SSH 命令。
-- 不绕过任务风险确认、Minecraft EULA 确认和实例生命周期专用工具。
+1. Web 发送消息，并携带当前会话和页面已选实例。
+2. Cloud 优先检查安全的确定性路由；没有命中时再调用 LangGraph 模型路由。
+3. `direct` 直接流式回答；`delegate` 进入规划或诊断子节点；`tool` 创建受控任务。
+4. Cloud Planner 生成 `task-plan/v1`，计算最高风险。
+5. 中/高风险任务进入确认；只读/低风险任务可自动执行。
+6. Go Agent 逐步执行计划，每一步等待真实结果并上报证据。
+7. 任务到终态后，Cloud 调用 `/v1/respond`。
+8. LangGraph 根据 `taskState + plan + evidence` 输出最终回答，或返回 continuation 创建下一任务。
+9. continuation 保持原会话、原实例、父任务和链深度，最大深度为 6。
 
-## 2026-07-30 22:33 控制台真实回读修复
+### 8.1 两阶段模型目标规划
 
-### 故障复现
+对于“看看服务器有没有问题”“检查一下服务器”等简短、面向当前实例的运维目标：
 
-部署前通过公网 HTTPS 对话 API 对运行中的实例“测试”执行了四条自然语言指令：
+1. LangGraph `planner` 节点调用独立的规划 Provider，把短句补全为步骤、工具范围、只读/变更边界和验收标准。
+2. Linux 未显式配置 `provider.plannerModel` 时，自动使用第一个 `fallbackModels` 作为规划模型；主 `provider.model` 继续作为执行/路由模型。当前配置因此形成备用模型规划、`MiniMax-M3` 执行的两个 Provider 实例。
+3. 规划结果最多 1600 字，并经过授权升级检查；原文未授权时，规划结果不得新增安装、删除、配置修改、重启、停止或管理员权限动作。
+4. 执行模型同时接收原始用户目标和细化后的任务说明，再选择一个受控入口工具。Cloud 安全 Planner 根据完整细化意图生成实际多步骤 `task-plan/v1`。
+5. UI 只展示安全的“目标已细化”摘要和工具轨迹，不展示模型私有思维链。
+6. 规划模型异常时仅允许使用确定性的安全技能补全兜底；风险策略、确认和 Agent 本机白名单仍然不可绕过。
 
-1. `帮我看看现在有多少玩家在线`
-2. `查看服务器 TPS`
-3. `查看服务端版本`
-4. `列出已安装插件`
+### 7.2 当前可验证的循环形式
 
-四条请求均正确路由为 `tool`，工具均为 `console.command`，但 Agent 只上报“控制台已接受命令，但等待窗口内没有新的控制台输出”，任务仍错误地进入 `SUCCEEDED`。普通问题 `1+1等于几？只回答数字。` 能直接返回 `2`，因此问题明确位于 Agent 到 MCSManager 的控制台回读边界，不在登录、会话、模型或 Cloud 路由。
+- 单任务多步骤：一个计划包含多个工具，Go Agent 顺序执行并逐步回调。
+- 跨任务 continuation：证据不足时，LangGraph 请求下一受控工具，Cloud 创建子任务。
+- 验证重试：Agent 对允许自主恢复的步骤做有限次数重试；确认型操作不会被自动重复。
 
-### 根因与实现
+最新真实复杂指令：
 
-- `apps/agent/internal/executor/executor.go` 原先只轮询 MCSManager `/api/protected_instance/outputlog`。该接口在当前 MCSManager 实例上不会及时返回命令后的新增行，但 Minecraft 会正常把结果写入实例根目录的 `logs/latest.log`。
-- 发送命令前现在同时读取面板输出和 `logs/latest.log` 作为两份基线，发送后轮询两种来源；任一来源产生合法增量即可作为 `kind=console` 的真实证据。
-- 两种来源都不可读时，命令不会在无法验证的情况下继续执行。
-- 等待窗口结束仍没有合法增量时，步骤返回错误，不再用“已接受命令”冒充成功证据。
-- 对 `list`、`tps`、`version`、`plugins/pl` 和 `mspt` 增加了结果完整性判断。特别是 Paper 的 `version` 会先输出 `Checking version, please wait...`，该中间状态不再提前结束任务；Agent 会等待 `This server is running Paper version ...` 等最终版本行。
-- `apps/agent/internal/executor/install_test.go` 新增 `logs/latest.log` 回退、无证据失败和版本中间状态等待测试。
+```text
+请对当前实例完成一次只读健康检查：
+1. 在控制台执行 version，确认服务端类型和 Minecraft 版本；
+2. 在控制台执行 plugins，列出已加载插件；
+3. 读取最近日志，检查 ERROR、WARN、崩溃或卡顿证据；
+4. 等待每个工具的真实回调，根据回调继续下一步，最后给出综合结论。
+不要修改配置，不要安装内容，不要重启或停止服务器。
+```
 
-### 部署与回滚
+实际轨迹：
 
-- Linux 源码目录：`/opt/mcai-src`
-- Agent 二进制：`/opt/mcai-agent`
-- 本轮仅重新构建并重启 `mcai-agent.service`，没有重启 Minecraft 实例、Cloud、Web 或模型云。
-- 部署前源码与二进制备份：`/tmp/mcai-console-log-backup-20260730223301`
-- 部署脚本：`.deploy/deploy-console-log-fallback.sh`
-- 四项验收脚本：`.deploy/verify-console-control.mjs`
+```text
+console.command(version)
+  -> console evidence
+console.command(plugins)
+  -> console evidence
+logs.query(60 minutes, 500 lines)
+  -> logs evidence
+completion evaluator
+  -> 综合最终回答
+```
 
-### 真实验收结果
+结果：任务 `SUCCEEDED`、风险 `read`、`loopComplete=true`。测试会话已保留在网页会话列表中，标题以 `Readonly loop` 开头。
 
-目标实例：`mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`
+### 7.3 最新修复的否定语义错误
 
-- 在线玩家：`There are 0 of a max of 20 players online:`；最终回答为当前在线 `0 / 20`。
-- TPS：`TPS from last 1m, 5m, 15m: 20.0, 20.0, 19.57`；最终回答引用三项 TPS 数值。
-- 版本：`This server is running Paper version 1.21.1-133-ver/1.21.1...`；最终回答给出 Paper、Minecraft 和 API 版本。
-- 插件：`Server Plugins (0):`；最终回答说明当前插件数为 0。
+复杂指令第一次执行时，Planner 把“不要重启或停止服务器”中的“停止”误识别为授权，错误生成了 `instance.stop` 高风险计划。任务停在 `WAITING_CONFIRMATION`，没有实际停服。
 
-四条任务的共同验收结果均为：
+提交 `a218544` 已修复：
 
-- `route=tool`
-- `tool=console.command`
-- `state=SUCCEEDED`
-- `kind=console` 证据包含真实 Minecraft 日志行
-- 最终回答引用控制台结果，不再停留在“命令已提交”或“没有新增输出”
+- 识别“不要、不得、禁止、无需、不应、别、不可、避免”等否定上下文。
+- 复合只读健康检查优先生成 `version + plugins + logs.query` 三步只读计划。
+- 新增测试防止否定句再次变成生命周期授权。
+- 最终回答优先解析真正的 `This server is running ...` 行，不再误取 Paper API URL。
+- 日志结果不再机械报告关键词次数，而是归纳 Watchdog、落后 ticks 和版本检查失败等明确类别。
 
-### 验证状态
+## 8. 已实现工具和风险
 
-- Windows 本地 `go test ./...`：通过。
-- Linux `go test ./...`：通过。
-- Linux Agent 构建与 `mcai-agent.service` 重启：通过，服务为 `active`。
-- Linux 四项真实自然语言对话验收：全部通过。
-- `node --check .deploy/verify-console-control.mjs`：通过。
-- `git diff --check`：通过。
+| 工具 | 用途 | 默认风险 | 关键保护 |
+| --- | --- | --- | --- |
+| `logs.query` | 读取受限日志 | read | 时间窗、行数、字节上限、敏感信息清理 |
+| `files.list` | 读取实例目录 | read | 路径限制，不写入 |
+| `console.command` | Minecraft 控制台 | 按命令分类 | 单行、256 字节、运行实例、双层策略 |
+| `server.install` | 安装 Paper/Fabric 任意明确版本 | low/受控 | 官方来源、目标路径、EULA 条件、启动验收 |
+| `plugin.resolve` | 查询兼容制品 | low | Modrinth、版本/loader 过滤 |
+| `plugin.install` | 上传插件 | medium | 哈希、一次性上传、落盘验证、失败删除 |
+| `config.patch` | 修改 Properties 配置 | medium | 路径/键白名单、快照、复读哈希、回滚 |
+| `instance.start` | 启动实例 | low | 幂等状态检查、ready 验收 |
+| `instance.stop` | 停止实例 | high | 明确授权和确认、幂等检查 |
+| `instance.restart` | 重启实例 | high | 明确授权和确认、状态与日志验收 |
+| `snapshot.restore` | 回滚快照 | 受控 | 只用于已有任务恢复路径 |
 
-## 2026-07-30 OpenClaw 式系统提示词改造
+控制台分类：
 
-### 目标与参考边界
+- 只读：`list`、`help`、`version`、`plugins/pl`、`tps`、`mspt`、`seed`。
+- 低风险：`say`、`me`。
+- 中风险：`time`、`weather`、`difficulty`、`gamerule`、`gamemode`、`give`、`tp`、`effect` 等。
+- 高风险：未知命令、管理员权限命令等。
+- 禁止通过普通控制台发送：`stop`、`restart`、`quit`、`end`；必须走实例专用工具。
 
-本轮目标不是复制 OpenClaw 的人格或通用个人助理能力，而是把它成熟的系统提示词组织方法改造成 MCAI 专用的 Minecraft 运维契约。参考项目为 `openclaw/openclaw`，固定参考提交为 `90a22b4f50226b13735e77dde81a92340ae724cf`，上游许可证为 MIT。来源和改造声明已写入根目录 `THIRD_PARTY_NOTICES.md`。
+## 9. 控制台与插件证据语义
 
-参考内容包括 OpenClaw 的 `docs/concepts/system-prompt.md` 和 `src/agents/system-prompt.ts`。MCAI 只吸收了稳定规则在前、动态上下文在后的分层结构，以及工具契约、执行闭环、证据完成和安全优先级等设计思想；OpenClaw 特有的通道、工作区、记忆、个人助理工具和运行时说明没有复制进项目。
+- Agent 发控制台命令前读取面板输出和 `logs/latest.log` 两份基线。
+- 发命令后轮询增量；任一来源得到完整合法结果才形成 `kind=console` 证据。
+- `version` 的 `Checking version, please wait...` 是中间状态，不能提前判定成功。
+- `mspt` 的 Paper 输出是 `Server tick times (avg/min/max)`，不一定包含字面量 `mspt`。
+- `plu�-�G����ƭy�完成后隐藏重复的中间任务气泡，只保留一个结果卡。
+- “展开规划与执行轨迹”展示任务目标、工具 ID、回调证据类型、状态和时间。
+- 直接回答使用“展开回答轨迹”，展示安全路由摘要，不展示私有思维链。
+- 用户向上翻历史时不会自动跳到底部；接近底部才继续跟随新消息。
+- 移动端隐藏非核心右栏，输入区和结果不能横向溢出。
+- 图标使用 Lucide；保留键盘焦点和 `prefers-reduced-motion`。
 
-### 实现内容
+视觉验收截图位于被忽略的 `.deploy/audit-20260802/`：
 
-`local-cloud/agent.mjs` 新增导出的 `buildSystemInstructions(payload)`，系统提示词按以下顺序构建：
+- `13-live-process-collapsed.png`
+- `14-live-process-expanded.png`
+- `15-live-direct-collapsed.png`
+- `16-agent-trace-expanded.png`
+- `17-real-plugin-answer-trace.png`
 
-1. `Identity`：定义 MCAI 是执行导向的 Minecraft 运维 Agent，目标是实际完成和提供可验证证据。
-2. `Tooling`：简单问题直接回答；离线复杂规划或诊断使用 `delegateAnalysis`；实时日志、文件、配置、性能、状态和变更必须使用 `requestOperation`。
-3. `Execution Bias`：目标明确立即执行；工具已接受、命令已提交或任务运行中不算完成；失败或空结果必须依据回调安全重试、调整受控计划或说明阻塞。
-4. `Minecraft Operations`：页面当前实例是唯一执行目标；控制台请求使用 `console.command`；Paper/Fabric 安装使用 `server.install`；Minecraft 控制台与 Linux Shell 严格分离。
-5. `Safety`：不绕过审批、实例锁、路径限制、审计、EULA 和生命周期专用工具；不生成任意 Shell/SSH；不泄露密钥或密码。
-6. `Interaction Style`：只展示工具摘要和最终结果，不暴露内部推理，不复述问题，不追加礼貌性邀请。
-7. `Runtime Context`：在提示词尾部注入当前实例、Cloud 允许操作和低优先级会话偏好，便于稳定前缀缓存且防止会话提示覆盖安全规则。
+2026-08-03 运行态验收截图位于 `.deploy/audit-20260803/agent-loop-running-linux.png`。该截图使用 Linux 已部署的 Web 构建和受控验收数据，确认 3 个步骤分别显示“完成 / 执行中 / 等待”、执行卡自动展开、最新回调可见且 1600px 视口无横向溢出。
 
-`apps/cloud/src/chat/chat.service.ts` 的 Cloud 兜底提示词同步增加执行优先和回调证据约束。任务结果说明 Agent 也明确禁止把“已接受”“已提交”“正在运行”或空证据推断成完成。
+截图脚本使用已部署 Web 构建和受控 API 数据验证布局；真实后端行为由独立 Linux API 验收脚本验证。不要把模拟 UI 数据误称为真实服务器会话。
 
-### 自动化验证
+## 12. 最近真实验收
 
-`local-cloud/agent.test.mjs` 新增分层提示词契约测试，覆盖章节结构、复杂请求委派、实时数据优先使用运维工具、当前实例不重复询问、动态会话上下文和不再出现旧 `file.download` 指令。2026-07-30 23:42 本地结果：
+### 12.1 插件查询
 
-- 模型云：7 项测试全部通过。
-- Cloud：4 个测试文件、17 项测试全部通过。
-- 全仓 TypeScript 类型检查：通过。
-- Cloud 生产构建：通过。
-- 公网 `http://191.40.37.148:3000/api/health`：HTTP 200，`mcai-cloud` 状态为 `ok`。
+输入：`查看现在有哪些插件`
 
-### Linux 部署与线上验收状态
+结果：
 
-改造已同步到 Linux 源码目录 `/opt/mcai-src` 和运行目录 `/opt/mcai-model-cloud`，并重启模型云与 Cloud。最近一次部署前备份为 `/tmp/mcai-openclaw-prompt-backup-20260730234028`。
+```text
+route=tool
+tool=console.command
+command=plugins
+task=SUCCEEDED
+answer=当前服务器没有已加载的插件，插件数量为 0。
+```
 
-部署过程中已验证过直接回答、复杂规划委派、控制台工具路由和停止实例启动路由。最后又加强了“实时数据优先于分析委派”规则，以修复实时日志请求被错误交给 `diagnostics` 的情况。该最后版本已经部署，但本次会话在重跑 `/tmp/verify-chat-routing.mjs` 时无交互 SSH 认证被服务器拒绝，错误为 `Permission denied (publickey,password)`，因此最后四路线上验收必须标记为待重跑，不能写成全部通过。公网健康检查正常，说明 Cloud 当前在线，但健康检查不能替代行为验收。
+原始控制台日志只保留在折叠证据中，最终回答不再显示时间戳和 `[Server thread/INFO]` 噪声。
 
-恢复 SSH 认证后，应执行：
+### 12.2 多步骤只读健康检查
+
+结果：
+
+```text
+tools=console.command,console.command,logs.query
+commands=version,plugins
+task=SUCCEEDED
+evidence=state,console,logs
+loopComplete=true
+```
+
+最终回答引用：
+
+- Paper `1.21.1-133-ver/1.21.1@3cb8529`
+- 已加载插件 0
+- Watchdog 超过 15 秒无响应
+- 落后 18436ms / 368 ticks
+- Paper 版本检查远端 API 失败
+
+### 12.3 两阶段模型短句验收
+
+Linux 真实输入仅为：`看看服务器有没有问题`
+
+结果：
+
+```text
+route=tool
+plannerVisible=true
+tools=console.command,console.command,logs.query
+task=SUCCEEDED
+passed=true
+```
+
+最终回答确认 Paper 1.21.1、已加载插件 0，并从真实日志识别 Watchdog 超过 10 秒未响应、落后 8014ms / 160 ticks 和 Paper 版本检查 API 异常。验收会话已保留在 Web，会话标题以 `Two-model short goal` 开头。
+
+第一次真实验收暴露了旧完成节点依赖“健康检查”固定关键词的问题：三步已执行成功但只返回最后一条插件回调。随后改为以精确工具序列 `console.command → console.command → logs.query` 识别健康检查技能，第二次真实验收通过。
+
+### 12.4 测试门禁
+
+最新 Linux 发布门禁：
+
+- Cloud：34/34 通过。
+- Cloud TypeScript typecheck：通过。
+- Cloud Nest 生产构建：通过。
+- Python LangGraph/FastAPI：65/65 通过。
+- Web Next.js 生产构建：通过（最近 UI 发布）。
+- 四个 MCAI systemd 服务：active。
+- 模型 `/ready`：ready。
+
+常用真实验收脚本：
+
+- `.deploy/verify-model-runtime.mjs`
+- `.deploy/verify-command-matrix.mjs`
+- `.deploy/verify-complex-agent.mjs`
+- `.deploy/verify-plugin-inventory.mjs`
+- `.deploy/verify-agent-trace-final.mjs`
+- `.deploy/verify-two-model-short-goal.mjs`
+- `.deploy/verify-readonly-agent-loop.mjs`
+
+这些脚本会在 Linux 本机读取受保护配置生成短期认证。禁止把生成的 bearer token 下载到 Windows 或输出到日志。
+
+## 13. 当前同步和 Git 状态
+
+### 13.1 Windows 与 Linux
+
+以下关键文件在 2026-08-03 的 Windows 和 Linux SHA-256 一致：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `apps/cloud/src/tasks/planner.ts` | `dcb2be6dd1349dccd5f9fd9de4ca81665f0b94a88d322af7b52f7e08204383d6` |
+| `apps/cloud/src/tasks/planner.spec.ts` | `8e950fc1371279b36e2301679ec665082b51aefd9fdc6e89ad47fd4f4a988e1b` |
+| `apps/web/components/agent-workspace.tsx` | `dc7ca31e305ec9c29288ac1351a7b1f312d0622da04835e5e09b5e4586b52951` |
+| `langgraph-cloud/mcai_graph/graph.py` | `2c39d4ad3c012c5ecc7e8977d4a78b0a75941dd0a879104c086e8f85da0caa5a` |
+| `langgraph-cloud/tests/test_graph.py` | `bd4c143950d50da36dc1909e41812c1bfcb7e162555bda4d233e7ee0b3b2d72b` |
+
+### 13.2 本地提交
+
+最新提交顺序：
+
+```text
+29084bf Add two-model goal planning pipeline
+78ac562 Show live agent execution progress
+a218544 Run multi-step read-only health checks
+757427b Explain tool results and expose execution trace
+d78bb2a Route plugin inventory queries correctly
+cb9c5f7 Collapse agent process into results
+7609613 Refine agent workbench hierarchy
+32f19a2 Prevent stale console entry caching
+da9f953 Redesign agent operations workbench
+05c8d78 Harden LangGraph model adapter
+0748bc8 Complete agent command matrix
+f4aa2ca Complete lifecycle execution and thinking UI
+d12148a Fix instance lifecycle routing
+```
+
+### 13.3 GitHub 未同步风险
+
+2026-08-03 已成功 fetch。当前本地 `main` 相对 `origin/main` 为 `ahead 7, behind 1`：
+
+- 本地最新功能提交：`78ac562`；其上将继续产生本交接文档提交。
+- 远端 `origin/main`：`2dbfc56 Collapse agent process into results (styles)`。
+- 共同祖先：`7609613 Refine agent workbench hierarchy`。
+
+远端 `2dbfc56` 是早期 GitHub 连接器创建的单文件提交，只写入 `apps/web/app/globals.css`。与共同祖先比较，它表现为约 20 行新增、2114 行删除，说明连接器提交的是截断样式文件，不应直接合并覆盖本地完整 CSS。随后对 `agent-workspace.tsx` 的配套写入当时被审批拒绝，因此该远端提交本身不构成完整 UI 功能。
+
+恢复网络后的正确步骤：
+
+1. 从当前本地 `main` 创建临时安全分支。
+2. `git show 2dbfc56:apps/web/app/globals.css`，确认远端 20 行样式是否已由本地 `cb9c5f7` 等提交完整实现。
+3. 合并 `origin/main` 时明确保留本地完整 `apps/web/app/globals.css`；不要接受远端截断文件。
+4. 检查 `git diff 7609613..HEAD -- apps/web/app/globals.css apps/web/components/agent-workspace.tsx`，确认 CSS 和组件成对存在。
+5. 运行 Web typecheck、生产构建、桌面/移动截图和 `git diff --check`。
+6. 以普通非强制 push 更新 `main`。
+
+禁止使用 `git push --force`、`git reset --hard` 或覆盖远端 connector 提交。
+
+## 14. 部署和回滚
+
+### 14.1 发布原则
+
+- 只发布本次涉及的服务，避免无关重启。
+- 发布脚本必须先备份源码、构建产物和运行 release 文件。
+- 先测试和构建，再切换/重启服务。
+- 健康检查失败必须自动恢复备份。
+- Cloud/模型/Web 更新不应顺便重启 Minecraft 实例。
+
+### 14.2 最近部署脚本
+
+- UI：`.deploy/deploy-agent-ui.sh`
+- 模型适配：`.deploy/deploy-model-adapter-fix.sh`
+- 插件查询：`.deploy/deploy-plugin-inventory-fix.sh`
+- 结果与轨迹：`.deploy/deploy-agent-trace-fix.sh`
+- 多步骤只读循环：`.deploy/deploy-readonly-loop-fix.sh`
+
+这些脚本针对当时的明确文件集合。使用前必须重新阅读，不要把旧 payload 直接用于新代码。
+
+2026-08-03 12:55 已用 `.deploy/deploy-agent-ui.sh` 发布实时执行过程 UI，只重启 `mcai-web.service`；Linux 自动备份为 `/tmp/mcai-agent-ui-backup-20260803125520`。Linux Web 类型检查、生产构建、本机首页健康检查和公网运行态截图验收均通过。
+
+2026-08-03 13:14 已用 `.deploy/deploy-two-model-planner.sh` 发布两阶段模型流水线，只重启 `mcai-model-cloud` 和 `mcai-cloud`；最终自动备份为 `/tmp/mcai-two-model-planner-backup-20260803131456`。Cloud 34 项、LangGraph/FastAPI 65 项、Cloud typecheck/build、模型 readiness、Cloud health 和四服务 active 检查均通过。
+
+### 14.3 最近可用回滚点
+
+```text
+/tmp/mcai-readonly-loop-backup-20260802202706
+/tmp/mcai-readonly-loop-backup-20260802202628
+/tmp/mcai-readonly-loop-backup-20260802202432
+/tmp/mcai-agent-trace-backup-20260802201111
+/tmp/mcai-plugin-inventory-backup-20260802195956
+/tmp/mcai-agent-ui-backup-20260802181424
+/tmp/mcai-model-adapter-backup-20260802150053
+```
+
+`20260802202628` 对应一次因 Python 测试失败而自动回滚的尝试；失败原因是正则改造后错误使用 `group(1)`，已在后续 `20260802202706` 修复并通过 61 项测试。不要把失败备份当成首选发布版本。
+
+### 14.4 服务检查命令
 
 ```bash
-/opt/node-v22.17.0-linux-x64/bin/node /tmp/verify-chat-routing.mjs
-/opt/node-v22.17.0-linux-x64/bin/node /tmp/verify-console-control.mjs
+systemctl status mcai-model-cloud mcai-cloud mcai-agent mcai-web
+curl -fsS http://127.0.0.1:4100/api/health
+curl -fsS http://127.0.0.1:4200/health
+curl -fsS http://127.0.0.1:4200/ready
+curl -fsSI http://127.0.0.1:3000/
 ```
 
-预期路由依次为 `direct`、`delegate/planner`、`tool`、`tool`；控制台在线玩家、TPS、版本和插件四项应全部为 `SUCCEEDED`，并带真实 `kind=console` 回调证据。
+日志：
 
-## 2026-07-31 最终复杂 Agent 验收与执行闭环修复
-
-### 本轮目标
-
-本轮不是测试 Minecraft 服务端功能本身，而是验证 MCAI Agent 能否针对简单问题、复杂离线问题和需要实时数据的问题选择正确路径，并且在调用工具后持续等待回调、读取证据、输出结论或明确失败原因。验收要求包括：
-
-1. 简单问题直接回答，不滥用工具或子 Agent。
-2. 复杂离线诊断使用 `diagnostics` 子 Agent，复杂多阶段方案使用 `planner` 子 Agent。
-3. 实时日志、实例状态和控制台问题必须调用实际工具，不允许依靠模型猜测。
-4. 工具提交不是完成；必须等任务进入终态，根据 Agent 回传证据生成最终答案。
-5. 不展示内部思维链，不生成任意 Shell、SSH、进程注入或性能分析脚本。
-6. 结论必须区分事实、推断和待验证项，不伪造测量值或无证据建议回滚。
-
-### 发现并修复的问题
-
-#### 1. 实时日志请求可能被直接回答
-
-真实路由测试发现，询问当前实例实时日志时，模型有时选择 `direct`，导致没有执行 `logs.query`。修复方式是在模型云和 Cloud 两层增加确定性实时日志识别：
-
-- `local-cloud/agent.mjs` 在进入上游模型前识别实时日志意图，固定返回 `requestOperation(logs.query)`。
-- `apps/cloud/src/chat/chat.service.ts` 和 `apps/cloud/src/tasks/planner.ts` 增加同等兜底路由，防止模型容量不足或模型选错工具时跳过实际执行。
-- 对实时数据的工具路由优先级高于离线诊断委派。
-
-#### 2. 复杂规划与诊断委派存在随机性
-
-同一个明确要求“不读取当前实时数据”的多阶段规划问题，有时走 `delegate/planner`，有时被直接回答。修复后：
-
-- 新增 `deterministicDelegationKind`，对明确的离线复杂规划和诊断做确定性委派。
-- 同一句话同时包含诊断和规划语义时，诊断优先。
-- 委派输出改用 `streamText` 流式返回，而不是等待完整文本后一次性输出。
-- Cloud 调用模型云的超时由 60 秒提高到 180 秒，覆盖复杂子 Agent 的真实生成时间。
-
-#### 3. `logs.query` 没有把日志内容交给结果模型
-
-Sidecar 原来只上报“读取了多少字节”和 SHA-256，结果模型看不到日志正文，无法根据工具回调诊断。`apps/agent/internal/executor/executor.go` 已修改为：
-
-- 优先读取实例根目录的 `logs/latest.log`，面板短输出作为回退。
-- 上报最多 8 KiB 的最近日志摘要，同时保留总字节数和 SHA-256。
-- 清理 ANSI 和控制字符。
-- 对 API key、token、secret 和 password 等敏感字段做脱敏。
-
-#### 4. 日志证据中的字符导致 WebSocket 签名失败
-
-任务曾卡在 `VERIFYING`。Sidecar 审计显示执行已经完成，但 Cloud 没有收到最终证据。根因是 Go `encoding/json` 默认把 `<`、`>` 和 `&` 做 HTML 转义，而 Cloud 使用 JavaScript `JSON.stringify` 计算签名；包含这些字符的真实日志会导致两端签名原文不一致，Cloud 因签名失败关闭 Agent WebSocket。
-
-`apps/agent/internal/protocol/protocol.go` 现在使用 `json.Encoder.SetEscapeHTML(false)` 生成与 JavaScript 一致的签名载荷，并新增 `apps/agent/internal/protocol/protocol_test.go` 回归测试。
-
-#### 5. 子 Agent 可能给出无证据的运维命令和结论
-
-早期复杂诊断曾生成 `jstat`、Profiler 脚本、JVM 参数和没有来源的百分比。`local-cloud/agent.mjs` 的委派提示词现已明确：
-
-- 事实、推断、待验证项必须分开。
-- 禁止输出任意 Shell、SSH、进程注入、Profiler 脚本和直接文件命令。
-- 禁止编造测量值。
-- 没有变更证据时不得建议回滚。
-- 插件数量为 0 本身不是故障。
-
-任务完成阶段的提示词同时补充：Paper 更新检查失败不等于服务端崩溃，控制台命令回显不等于异常，缺少崩溃或退出证据时必须明确说明证据不足。
-
-### 修改文件
-
-- `apps/agent/internal/executor/executor.go`
-- `apps/agent/internal/executor/install_test.go`
-- `apps/agent/internal/protocol/protocol.go`
-- `apps/agent/internal/protocol/protocol_test.go`
-- `apps/cloud/src/chat/chat.service.ts`
-- `apps/cloud/src/chat/chat.service.spec.ts`
-- `apps/cloud/src/model-gateway/model-gateway.service.ts`
-- `apps/cloud/src/tasks/planner.ts`
-- `apps/cloud/src/tasks/planner.spec.ts`
-- `local-cloud/agent.mjs`
-- `local-cloud/agent.test.mjs`
-
-### Linux 部署信息
-
-- Linux 源码：`/opt/mcai-src`
-- 模型云与 Cloud 部署前备份：`/tmp/mcai-realtime-log-routing-backup-20260731114308`
-- Sidecar 源码与二进制部署前备份：`/tmp/mcai-log-evidence-backup-20260731114344`
-- 早期可用备份：`/tmp/mcai-realtime-log-routing-backup-20260731113159`、`/tmp/mcai-log-evidence-backup-20260731113955`
-- 本轮只重启 MCAI 相关服务，没有为了 Cloud 或模型云更新而重启 Minecraft 实例。
-
-### 最终复杂验收
-
-最终脚本：`.deploy/verify-complex-agent.mjs`。2026-07-31 重新上传至 `/tmp/verify-complex-agent.mjs` 并在 Linux 测试端执行，脚本最终返回：
-
-```json
-{"passed": true}
+```bash
+journalctl -u mcai-model-cloud -n 200 --no-pager
+journalctl -u mcai-cloud -n 200 --no-pager
+journalctl -u mcai-agent -n 200 --no-pager
+journalctl -u mcai-web -n 200 --no-pager
 ```
 
-目标实例：
+## 15. 本地开发和验证
 
-```text
-名称：测试
-引用：mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f
+要求：Node.js 22.12+、Go 1.23+、Python 3.11+。
+
+```powershell
+cd E:\aimcs
+npm install
+npm run typecheck
+npm test
+npm run build
 ```
 
-验收覆盖与结果：
+Agent：
 
-1. 复杂离线诊断：`route=delegate`、`delegate=diagnostics`。回答区分已知事实、推断和待验证项；没有输出可执行 Shell 命令；没有复用早期无证据的 `2.4%` 数值。
-2. 复杂三阶段性能治理方案：`route=delegate`，通过 Cloud 流式输出；包含阶段、依赖、风险、量化验收、回滚和停止条件，并遵守 150 人、20 插件、20 分钟维护窗口约束。
-3. 实时日志诊断：`route=tool`、`tool=logs.query`、任务 `state=SUCCEEDED`。本次读取 12,096 字节真实日志，证据包含 Paper Watchdog 和 `Can't keep up`。
-4. 实时日志最终回答识别出服务器主线程长时间卡顿；引用了 Watchdog 10 秒无响应和最高约 58 秒/1160 ticks 落后；明确没有实际崩溃或退出证据；把 `PaperVersionFetcher` 404 识别为无关的版本检查噪声。
-
-真实证据中的关键行包括：
-
-```text
-Paper Watchdog Thread/ERROR
-The server has not responded for 10 seconds
-Can't keep up!
-Running 58011ms behind
+```powershell
+cd E:\aimcs\apps\agent
+go test ./...
+go build ./cmd/mcai-agent
 ```
 
-### 路由与控制台回归
-
-四类路由回归全部通过：
-
-- 简单问题：`direct`
-- 离线复杂规划：`delegate/planner`
-- 实时日志：`tool/logs.query`
-- 已停止实例启动：`tool/instance.start`
-
-四项真实控制台回调全部进入 `SUCCEEDED`，最终回答引用实际控制台证据：
-
-- 在线玩家：`0 / 20`
-- TPS：`20.0, 20.0, 20.0`
-- 服务端版本：Paper `1.21.1-133`
-- 插件：`0`
-
-### 本地验证基线
-
-- 模型云测试：11/11 通过。
-- Cloud 测试：19/19 通过。
-- 全仓 TypeScript 类型检查：通过。
-- Cloud 生产构建：通过。
-- 模型云语法检查：通过。
-- Go `go test ./...`：通过。
-- `git diff --check`：通过。
-
-2026-07-31 提交前已重新执行上述完整本地验证，所有项目均通过。推送后还需核对 Windows `HEAD` 与 GitHub `origin/main` 一致，并确认 Windows 工作区和 Linux `/opt/mcai-src` 的受影响文件 SHA-256 完全一致。
-
-## 2026-08-01 LangGraph 编排、回调续跑与插件闭环
-
-### 迁移原因
-
-旧 `local-cloud/agent.mjs` 只在选择路由时循环。模型一旦调用 `requestOperation`，Cloud 创建任务后该次模型执行就结束；任务完成后的 `/v1/respond` 只能生成文字，不能再请求工具。短回复“需要”“继续”“确认”也只带当前一句话进入路由，上一轮待办会丢失。因此旧实现会出现以下确定性故障：
-
-- 工具提交后直接停住，不根据回调继续验证。
-- 文件落盘证据不足时只能输出文字，不能再调用 `files.list`。
-- 用户回复“需要”后不知道是在确认读取插件目录。
-- `planner.ts` 把所有通用插件安装硬编码成 LuckPerms。
-- Go Executor 对 `plugin.resolve` 和 `plugin.install` 直接返回未启用。
-- `plugin_enabled` 虽出现在计划中，但 Go `verify()` 没有实现该规则，存在空验收风险。
-
-### 当前架构
-
-职责仍严格分离：
-
-1. `langgraph-cloud` 保存会话状态、恢复 pending action、评估回调，并提出下一项受控工具。
-2. NestJS Cloud 绑定租户、会话和页面当前实例，重新生成确定性计划并执行风险策略。
-3. 中风险和高风险 continuation 只会创建 `WAITING_CONFIRMATION` 任务，不会自动批准。
-4. Go Agent 使用本机 MCSManager API Key 执行工具、采集证据、验收和回滚。
-5. 模型云不连接 MCSManager，不持有面板 API Key，不执行 Shell/SSH。
-
-Cloud continuation 链包含 `session_id`、`parent_task_id` 和 `chain_depth`，最大深度为 6。达到上限后停止自动串联。任务提交、面板接受或中间状态不等于完成，只有 Agent 回调证据能形成最终答案。
-
-### Python LangGraph 服务
-
-新增目录 `langgraph-cloud/`：
-
-- `mcai_graph/graph.py`：聊天图、回调评估图、SQLite 检查点、确定性路由和 pending action 恢复。
-- `mcai_graph/app.py`：兼容原 Cloud 的 `/v1/chat`、`/v1/chat/stream`、`/v1/respond` 和 `/health`。
-- `tests/test_graph.py`：短回复续跑、插件验证、缺证据 continuation、禁止伪成功等测试。
-- `tests/test_app.py`：service token、thread ID、健康端点和回调接口测试。
-- `mcai-model-cloud.service`：只监听 `127.0.0.1:4200`，状态库为 `/var/lib/mcai-model-cloud/langgraph.sqlite3`。
-
-SQLite 使用 `AsyncSqliteSaver`。早期版本误用了同步 `SqliteSaver`，首次测试即报 `SqliteSaver does not support async methods`，已改为异步连接并显式执行 `setup()`。状态文件权限强制为 `0600`，状态目录应为 `0700`。
-
-确定性规则包括：
-
-- “你确定 Essentials 安装了吗”使用 `files.list`，不再次触发安装。
-- 助手上一轮询问是否读取 `/plugins` 后，用户回复“需要/继续/确认”恢复该待办。
-- 插件任务只有 state/verification 中间证据时，`/v1/respond` 返回 `files.list` continuation。
-- `files.list` 没有 `kind=files` 证据时明确失败，不交给模型润色成成功。
-- 文件证据没有目标插件时，明确回答“未发现，不能确认已安装”，并引用实际清单。
-
-### Cloud 续跑
-
-主要修改：
-
-- `model-gateway.service.ts` 发送 `threadId/sessionId/taskId/chainDepth`，接收并验证可选 continuation。
-- `tasks.service.ts` 持久化父任务和深度，并缓存 completion continuation，避免进程内重复求值。
-- `chat.service.ts` 在任务终态消息出现后创建下一任务；并发轮询先写入 completion 标记，防止重复创建。
-- `planner.ts` 解析实际插件项目名，携带当前 platform/loader/Minecraft 版本，不再硬编码 LuckPerms。
-- `packages/contracts` 增加任务链元数据和 completion continuation 契约。
-
-Cloud 回归测试新增“回调返回 continuation 时只创建一个下一任务”，并验证下一任务保持相同会话、正确父任务、深度 `1` 和 `files.list` 工具提示。
-
-### 插件执行闭环
-
-Go Agent 新增 `plugins.go`，当前支持 Paper 兼容插件：
-
-1. 使用 Modrinth `/v2/project/{project}/version`，按 Paper loader 和当前 Minecraft 版本过滤。
-2. 选择主 JAR；只信任官方环境中的 `https://cdn.modrinth.com`。
-3. 下载到 Agent 本地隔离区，最大 64 MiB。
-4. 验证 Modrinth 声明的 SHA-512，并计算/记录本地 SHA-256。
-5. 使用 MCSManager `/api/files/upload` 注册一次性 passport。
-6. 向 Daemon `/upload/{password}?overwrite=true` 发送 multipart `file` 字段。
-7. 读取 `/plugins` 文件清单确认 JAR 实际落盘。
-8. 重启后执行 Minecraft 控制台 `plugins`，同时读取面板输出和 `logs/latest.log` 验证插件已启用。
-9. 落盘核验、后续步骤或最终验收失败时，调用 MCSManager 文件删除 API 移除刚上传的 JAR。
-
-存在必需依赖时当前安全行为是停止并报告依赖项目 ID，不能无审批地递归安装。递归依赖计划仍是后续工作。隔离区 JAR 在成功上传后删除，只保留不含密钥的 manifest 和哈希证据。
-
-### 本地和 Linux 验证
-
-Windows 最终结果：
-
-- Python 编译：通过。
-- LangGraph/FastAPI：11 项测试通过。
-- Cloud：22 项测试通过。
-- 全仓 TypeScript 类型检查：通过。
-- Next/Nest/Contracts 生产构建：通过。
-- Go `go test ./...`：通过，包含 Modrinth 哈希不匹配拒绝、上传 passport、multipart、落盘和回滚测试。
-- `git diff --check`：提交前仍需最终重跑。
-
-Linux 迁移最终结果：
-
-- 安装 Debian 官方 `python3-venv`，Python 为 3.11.2。
-- Python 测试通过。
-- Cloud 22/22 通过。
-- Go 全量测试和构建通过。
-- `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web` 均为 active。
-- `/health` 返回 `runtime=python-langgraph`。
-- 当前 release：`/opt/mcai-langgraph-cloud/releases/20260801130804`。
-- 成功部署备份：`/tmp/mcai-langgraph-backup-20260801131037`。
-
-前两次未激活迁移分别暴露：Debian 缺少 `python3-venv`；npm shebang 找不到 Node PATH。第三次远端 Cloud 测试又发现 `/tmp` 清理超时，改用 `/opt/mcai-src/.test-tmp-*` 后 22 项在 1.81 秒内全部通过。每次失败均在 systemd 激活前退出并保持旧服务可用。
-
-### 真实只读对话验收
-
-脚本：`.deploy/verify-langgraph-loop.mjs`。最终输出 `passed=true`，目标为页面当前运行实例，未安装、删除或重启 Minecraft。
-
-验收结果：
-
-- Runtime：`python-langgraph`。
-- “需要”恢复上一轮操作：`files.list`。
-- 插件任务缺落盘证据的 continuation：`files.list`。
-- Cloud 真实任务：`SUCCEEDED`。
-- 工具与路径：`files.list /plugins`。
-- 实际文件证据：`.paper-remapped`、`bStats`、`spark`。
-- 最终答案：未在 `/plugins` 中发现 EssentialsX，因此不能确认该插件已安装，并附实际文件清单。
-
-### 尚未执行和后续限制
-
-- 本轮没有真实安装 EssentialsX，因为插件计划包含高风险重启，必须由用户在 UI 对具体计划确认后才能执行。
-- 尚未实现必需依赖的递归解析/多插件统一审批与回滚。
-- Cloud 任务仍是内存存储；Cloud 重启会清空任务记录。LangGraph 对话检查点不受此限制。
-- 功能提交 `c6e5165 Add LangGraph task orchestration` 已推送到私有仓库 `88766lawrence/mcai-sidecar` 的 `main`。该提交涉及的 25 个文件已逐文件比较 Windows 与 Linux `/opt/mcai-src` SHA-256，差异数为 0；核对时 Windows `HEAD` 与 `origin/main` 均为 `c6e5165c5b8b3ea2f1df6be97aac4f420951df23`。
-
-## 2026-08-01 实例生命周期确定性路由修复
-
-### 故障与根因
-
-用户在页面输入“重启实例”后，MCAI 只显示“暂时没有可用回答。”。Planner、Cloud 工具注册和 Go Agent 均已支持 `instance.restart`，但 Python LangGraph 的确定性路由没有覆盖启动、停止和重启命令。该请求因此被交给模型路由；模型返回空 `answer` 时，`_normalize_decision` 使用了上述兜底文案。
-
-### 修复
-
-- `langgraph-cloud/mcai_graph/graph.py` 新增当前实例生命周期的确定性路由：
-  - 启动实例/服务器：`instance.start`。
-  - 停止实例/服务器：`instance.stop`。
-  - 重启实例/服务器：`instance.restart`。
-- “重启实例”现在固定返回“已生成重启计划，等待确认。”，不再依赖模型是否有容量或能否返回完整结构。
-- 重启和停止仍保持原有高风险审批策略；路由命中不会自动执行或绕过确认。
-- `langgraph-cloud/tests/test_graph.py` 增加直接重启和三类生命周期命令的回归覆盖。
-
-### 验证与部署
-
-- Windows LangGraph/FastAPI：13/13 通过。
-- Windows Cloud 定向回归：20/20 通过。
-- Linux LangGraph/FastAPI：13/13 通过。
-- 仅重启 `mcai-model-cloud`；未重启 `mcai-cloud`、`mcai-agent`、`mcai-web` 或 Minecraft 实例。
-- Linux 回滚备份：`/tmp/mcai-lifecycle-routing-backup-20260801142525`。
-- Runtime 仍为 `/opt/mcai-langgraph-cloud/releases/20260801130804`。
-- 真实 `/v1/chat/stream` 验收结果：`passed=true`、`route=tool`、`preferredTool=instance.restart`、流式和最终回答均为“已生成重启计划，等待确认。”。
-- 验收目标是页面当前实例 `mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f`，验收明确记录 `minecraftRestarted=false`。
-
-## 2026-08-01 生命周期幂等执行、最终回答与折叠思考 UI
-
-### `panel returned HTTP 500` 根因
-
-页面中的失败任务实际为“启动服务器”，任务 `task_e93837e1-2842-4c86-aeb5-7b5da92d3e55` 连续四次调用 `instance.start` 后失败。MCSManager Daemon 原始日志明确返回：`实例未处于关闭状态，无法再进行启动`。实例当时已经运行，Agent 不应重复调用 `/api/protected_instance/open`，更不应把确定性状态冲突当作暂时错误重试四次。
-
-### Agent 修复
-
-- `instance.start` 执行前读取真实实例状态：
-  - `running`：直接成功并输出“实例已在运行，无需重复启动”。
-  - `starting`：不重复调用面板，进入状态验收。
-  - 其他状态：调用面板；若面板响应异常但复查发现已进入 `starting/running`，按真实状态继续验收。
-- `instance.stop` 同样具备幂等行为：实例已停止时直接成功；面板响应异常后复查已停止也视为目标已达成。
-- 新增 Go 回归覆盖：已运行实例重复启动、已停止实例重复停止、面板响应错误但目标状态已达成。
-- 部署回滚点：`/tmp/mcai-lifecycle-execution-backup-20260801144345`。
-
-### LangGraph 最终回答
-
-- 生命周期工具回调不再依赖模型二次生成结果。
-- 成功时直接引用 `instance` 工具证据；失败时直接输出真实 `diagnosis/tool` 原因。
-- 新增成功和失败两条确定性回调测试。
-
-### 真实幂等启动验收
-
-通过 Cloud 会话真实发送“启动服务器”，目标为页面当前实例。结果：
-
-- 任务：`task_9f22de63-bb8c-4d2a-acfc-04e4e5a2ad7e`。
-- 工具：`instance.start`。
-- 状态：`SUCCEEDED`。
-- 工具证据：`实例已在运行，无需重复启动`。
-- 最终回答：`实例已在运行，无需重复启动`。
-- MCSManager “实例未处于关闭状态”冲突日志计数：执行前 16，执行后 16，证明没有重复调用 `/open`。
-- `minecraftRestarted=false`。
-
-### 折叠思考与工具调用 UI
-
-- LangGraph `/v1/chat/stream` 在文本片段前发送 `route` 事件。
-- Cloud 和 Contracts 透传 `direct/clarify/delegate/tool` 路由提示。
-- 直接回答继续流式输出。
-- 工具任务执行时只显示一个“思考中”；中间工具回答不会作为可见聊天文本流出。
-- 工具名称、原始工具 ID、目标实例和状态仅在用户展开“思考中/查看思考过程”后显示。
-- 任务结束后单独显示最终结果卡；工具过程默认保持折叠。
-- 保留米黄色纸张风格，清除负字间距，保留键盘焦点、44px 以上操作目标与 reduced-motion 支持。
-- UI 部署回滚点：`/tmp/mcai-thinking-ui-backup-20260801145342`。
-
-### 最终测试与截图
-
-- Windows LangGraph/FastAPI：16/16 通过。
-- Linux LangGraph/FastAPI：16/16 通过。
-- Cloud：22/22 通过。
-- Go `go test ./...`：通过。
-- 全仓 TypeScript 类型检查：通过。
-- Next/Nest/Contracts 生产构建：通过。
-- 真实流式路由：`route=tool`、`preferredTool=instance.restart`、`passed=true`。
-- Edge/Playwright 视觉验收：1440px、390px、375px 均无横向溢出和浏览器运行错误。
-- 截图目录：`screenshot/`。
-  - `thinking-desktop.png`：仅显示一个“思考中”，工具内容不可见。
-  - `tools-expanded-desktop.png`：展开后显示工具与目标实例。
-  - `result-desktop.png`：默认折叠过程并显示最终结果。
-  - `result-mobile.png`、`result-mobile-375.png`：移动端最终结果。
-- `tools-expanded-mobile-375.png`：375px 展开工具过程。
-
-## 2026-08-01 全命令矩阵验收与回调稳定性修复
-
-### 验收范围与安全边界
-
-针对页面当前实例 `mcs:4419b32bc2c64110823a951d2f175833:8a54968e5a944f40b50b6cbefdec3e4f` 执行全命令矩阵。实例在验收前后均保持 `running`，没有停止或重启 Minecraft，没有修改配置、安装服务端或安装插件。
-
-真实执行 12 项：
-
-- `logs.query`：读取最近日志并获得 `kind=logs` 证据。
-- `files.list /`：读取实例根目录，共 24 项，包含 `server.jar`、`server.properties`、世界目录和插件目录。
-- `files.list /plugins`：读取插件目录，实际清单为 `.paper-remapped`、`bStats`、`spark`。
-- `console.command`：依次执行 `list`、`help`、`version`、`plugins`、`pl`、`tps`、`mspt`、`seed`。
-- `instance.start`：在已运行实例上做幂等启动验证，结果为“实例已在运行，无需重复启动”。
-
-只验证路由、明确没有执行的 7 项：
-
-- `instance.stop`
-- `instance.restart`
-- `config.patch`
-- `server.install`（Paper 任意明确版本）
-- `server.install`（Fabric 任意明确版本）
-- `plugin.resolve`
-- `plugin.install`
-
-另验证简单问题 `1+1` 走 `direct` 并返回 `2`。最终矩阵为 `20/20` 通过，`destructiveCommandsExecuted=false`，完整复测耗时约 51 秒。
-
-### `mspt` 失败根因与修复
-
-第一次真实矩阵中，`mspt` 命令确实被发送到 Paper 控制台，但任务最终失败。Paper 1.21.1 的实际返回格式为：
-
-```text
-Server tick times (avg/min/max) from last 5s, 10s, 1m:
-0.1/0.0/0.2, 0.1/0.0/0.8, 0.1/0.0/3.0
+LangGraph：
+
+```powershell
+$env:PYTHONPATH='E:\aimcs\langgraph-cloud'
+python -m py_compile langgraph-cloud\mcai_graph\graph.py
 ```
 
-输出中不含字面量 `mspt`，而 Agent 的完成条件只接受包含 `mspt` 的文本，因此连续读取到了真实输出仍错误判定超时。现已兼容 Paper 的 `Server tick times (avg/min/max)` 标记，并增加 Go 回归测试。最终真实证据为：
+Windows 环境若缺少 `httpx/langgraph/fastapi`，不要把导入失败算成功能失败；完整 Python 测试应在 Linux release 的 `.venv` 中执行。
 
-```text
-Server tick times (avg/min/max) from last 5s, 10s, 1m:
-0.3/0.1/15.0, 0.2/0.0/15.0, 0.1/0.0/15.0
+提交前检查：
+
+```powershell
+git status --short
+git diff --check
+git diff --stat
 ```
 
-### 工具回调卡住根因与修复
+## 16. 已知限制和技术债
 
-第一次矩阵还发现：控制台或文件任务已经进入 `SUCCEEDED` 后，LangGraph 仍调用外部模型生成最终文字。模型请求的单次超时为 180 秒且可能在结构化/非结构化及备用模型间重试，导致真实工具已完成但对话长时间没有最终回答。
+### P0：必须优先处理
 
-修复后：
+1. GitHub 与本地/测试端未同步，并可能存在远端分叉；先安全 fetch 和合并。
+2. Cloud 任务存储仍以内存为主，Cloud 重启会丢失任务列表和部分会话任务关系；需要 PostgreSQL/Redis 持久化。
+3. 多工具循环目前是“确定性复合计划 + 特定 continuation”组合，不是任意自然语言任务都能自动生成可靠多工具 DAG。
+4. 生命周期否定语义只修复了已发现的停止场景和复合健康检查。后续应实现统一的授权/否定语义解析，并覆盖启动、重启、安装、删除和配置修改。
 
-- `console.command` 成功时直接使用 `kind=console` 的真实证据完成回答。
-- `files.list` 成功时直接使用 `kind=files` 的真实证据完成回答。
-- 工具失败时直接引用失败状态或诊断证据，不把失败润色成成功。
-- 路由、复杂委派和其余需要模型的完成评估增加 30 秒总等待上限，超时后进入已有的证据回退，不再无限拖住会话。
-- Paper/Fabric 明确版本安装、`view-distance` 配置、插件制品解析增加确定性路由，不依赖模型容量。
-- `plugin.resolve` 只创建解析步骤；“解析兼容版本但不要安装”不会误生成插件上传和实例重启计划。
+### P1：重要增强
 
-### 测试、部署与回滚点
+1. 插件必需依赖目前只报告依赖项目，不自动递归安装；需要统一审批、顺序安装和整体回滚。
+2. 完善通用工具回调状态机，让模型能基于每一步结果动态改计划，而不只执行预生成步骤。
+3. 为真实 Agent 循环增加浏览器端 E2E：登录、发送、等待三步工具、展开轨迹、截图。
+4. 增加任务取消后的 Agent 中止传播；当前前端“停止发送”主要中止浏览器等待，不一定取消已创建任务。
+5. 对长日志做结构化去重和事件聚类，避免重复 Watchdog 堆栈占用证据窗口。
 
-Windows：
+### P2：发布前工程化
 
-- Go `go test ./...`：通过。
-- Cloud Planner：12/12 通过。
-- 全仓 TypeScript typecheck：通过。
-- Python 语法检查：通过；Windows 未安装 LangGraph/FastAPI 依赖，完整 Python 测试在 Linux 执行。
+1. Pterodactyl Adapter。
+2. 对象存储、审计导出、签名更新器。
+3. 故障注入、断网恢复、并发任务锁和升级回滚演练。
+4. 更严格的 CSP、反向代理安全头、速率限制和告警。
+5. 自动上下文压缩的可观测指标和人工查看入口。
 
-Linux 部署门禁：
+## 17. 常见故障定位
 
-- Go `go test ./...`：通过。
-- Python LangGraph/FastAPI：21/21 通过。
-- Cloud Planner：12/12 通过。
-- 全仓 TypeScript typecheck：通过。
-- Cloud 生产构建：通过。
-- `mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web`：全部 active。
+### 页面显示 `Failed to fetch`
 
-部署回滚点：
+检查顺序：浏览器 Network → `mcai-web` → `/api` 反代 → `mcai-cloud` → CORS/HTTPS 混合内容。测试域名走 HTTPS 时必须同时支持 API 流和 WebSocket。
 
-```text
-/tmp/mcai-command-matrix-backup-20260801160833
-```
+### MCSManager 显示无法连接 Daemon
 
-部署后最终真实矩阵结果：`passed=true`、`total=20`、`failed=[]`。Minecraft 没有因验收而停止或重启。
+确认 `24444/tcp` 对公网开放，节点地址使用可访问 IP，反向代理启用 WebSocket upgrade。此前 UFW 已为该端口放行，但云厂商安全组也可能单独阻断。
+
+### 模型显示不可用
+
+先看 `/health`，再看 `/ready`。`/health=ok` 不能证明模型可推理。检查模型配置文件、上游 `/models`、认证、容量、超时和响应格式。
+
+### 工具任务成功但没有最终回答
+
+检查任务是否进入终态、是否有 `task_phase=completion` 消息、Cloud 是否调用 `/v1/respond`、LangGraph 是否命中确定性 evidence formatter，最后检查 continuation 是否超过深度 6。
+
+### 插件查询返回根目录
+
+“插件有哪些”应走控制台 `plugins`；“插件目录/插件文件/JAR”才走 `files.list /plugins`。如果 `/` 被误读，completion 应创建 `/plugins` continuation。
+
+### 页面滚动跳动
+
+检查消息轮询是否替换了完全相同的数组、`followLatestRef` 是否在用户上滚后仍为 false、依赖数组是否因 planning/streaming 频繁触发滚底。
+
+### 启动实例返回 HTTP 500
+
+先读取实例真实状态。已运行实例的重复启动必须幂等成功，不能再次调用面板 `/open`。停止同理。
+
+## 18. 接手人的首轮检查清单
+
+1. 阅读本文和根目录技术设计文档。
+2. `git status --short --branch`，确认没有覆盖用户修改。
+3. 安全 fetch GitHub，解决远端分叉，不强推。
+4. 只读检查 Linux 四个服务、Cloud health、模型 ready 和 Web 200。
+5. 比较本地与 Linux 关键文件哈希。
+6. 运行本地 TypeScript 测试、typecheck、build。
+7. 在 Linux 运行 Python 全量测试和涉及服务的测试。
+8. 使用只读真实指令验收，不先执行安装、配置、停止或重启。
+9. UI 改动必须在 1440px 和 375/390px 截图自审；保持米黄色整体风格。
+10. 更新本文的提交、哈希、服务状态、测试数字、回滚点和未同步事项。
+
+## 19. 用户明确偏好
+
+- 执行结果比解释过程重要；不要让用户重复提供实例、版本或库存中已有信息。
+- 每次修复后必须自己发送真实命令测试。
+- 不接受仅靠 mock 或单元测试宣称修复，必须有真实 Linux 端到端证据。
+- 工具调用后必须根据回调继续判断，不能直接结束。
+- 正常只显示最终结果；轨迹可展开。
+- 不要显示冗长“正在做什么”，进行中只需简洁状态。
+- 保留米黄色风格，避免过时大卡片和粗糙聊天气泡。
+- 用户翻看历史时不能被强制滚回底部。
+- 每次发布尽量同步 Windows、Linux 和 GitHub，并诚实说明失败端。
+
+## 20. 近期变更时间线
+
+- `05c8d78`：修复模型兼容、超时、纯文本/嵌套响应和真实 readiness。
+- `da9f953`：Agent 工作台重构。
+- `7609613`：细化工作台层级。
+- `cb9c5f7`：工具过程默认折叠到最终结果。
+- `d78bb2a`：区分插件加载列表与 `/plugins` 文件目录。
+- `757427b`：把原始工具日志转为人类可读结果，并展示真实执行轨迹。
+- `a218544`：修复否定语义误停服，新增 `version → plugins → logs` 多步骤只读健康检查和综合归纳。
+
+---
+
+交接基准：当前 Linux 测试端可用；Windows 与 Linux 最新关键文件一致；GitHub 为本地 ahead 5、behind 1，远端单独的截断 CSS 提交待安全吸收。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

@@ -12,7 +12,16 @@ interface DraftPlanOptions {
 export function draftPlan(instanceRef: string, inventoryRevision: string, intent: string, options: DraftPlanOptions = {}): TaskPlan {
   const id = `task_${randomUUID()}`;
   const normalized = intent.toLowerCase();
-  if (/\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/.test(normalized)) {
+  if (isReadonlyHealthInspection(normalized)) {
+    return plan(id, instanceRef, inventoryRevision, intent, [
+      { id: "s1", tool: "console.command", args: { command: "version" }, risk: "read" },
+      { id: "s2", tool: "console.command", args: { command: "plugins" }, risk: "read" },
+      { id: "s3", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" },
+    ], []);
+  }
+  const stopPattern = /\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/;
+  const negatedStopPattern = /(?:不要|不得|禁止|无需|不应|别|不可|避免)[^\r\n，。；;]{0,10}(?:\b(?:stop|shutdown)\b|停止|关闭|关服)/;
+  if (stopPattern.test(normalized) && !negatedStopPattern.test(normalized)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "instance.stop",
@@ -43,7 +52,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "forbidden.shell", args: {}, risk: "forbidden" }], []);
   }
   if (options.preferredTool === "files.list") {
-    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
+    const path = isPluginDirectoryIntent(intent) ? "/plugins" : "/";
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "files.list", args: { path }, risk: "read" }], []);
   }
   if (options.preferredTool === "logs.query") {
@@ -98,7 +107,8 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     }], []);
   }
   if (pluginProject && (options.preferredTool === "plugin.install" || options.preferredTool === "plugin.resolve" || /安装|部署|更新|升级|install|deploy|update/i.test(intent))) {
-    return plan(id, instanceRef, inventoryRevision, intent, [
+    const skipRestart = /(?:不要|无需|不必|禁止|别|不可|避免)[^\r\n，。；;]{0,12}(?:重启|restart)|(?:without|do\s+not|don't)\s+restart/i.test(intent);
+    const steps: TaskPlan["steps"] = [
       { id: "s1", tool: "plugin.resolve", args: {
         project: pluginProject,
         source: "modrinth",
@@ -107,14 +117,18 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
         loader: options.loader ?? options.platform ?? "unknown",
       }, risk: "low" },
       { id: "s2", tool: "plugin.install", args: { project: pluginProject, artifact_ref: "${s1.artifact}", expected_sha256: "${s1.sha256}" }, risk: "medium", requires_confirmation: true, rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" } },
-      { id: "s3", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true },
-    ], [
+    ];
+    if (skipRestart) {
+      return plan(id, instanceRef, inventoryRevision, intent, steps, []);
+    }
+    steps.push({ id: "s3", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true });
+    return plan(id, instanceRef, inventoryRevision, intent, steps, [
       { type: "instance_state", expected: "running" },
       { type: "plugin_enabled", name: pluginProject },
     ]);
   }
   if (/根目录|目录|文件|文件夹|list.*file|files?.*list|directory/.test(normalized)) {
-    const path = /(?:\/plugins\b|plugins[\\/]|插件目录)/i.test(intent) ? "/plugins" : "/";
+    const path = isPluginDirectoryIntent(intent) ? "/plugins" : "/";
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "files.list",
@@ -139,6 +153,32 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     ]);
   }
   return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" }], []);
+}
+
+const readonlyHealthSkillIntent = [
+  "对当前实例完成一次只读健康检查：",
+  "1. 在 Minecraft 控制台执行 version，确认服务端类型和 Minecraft 版本；",
+  "2. 在 Minecraft 控制台执行 plugins，列出已加载插件；",
+  "3. 读取最近 60 分钟日志，检查 ERROR、WARN、崩溃、Watchdog、Can't keep up 或卡顿证据；",
+  "4. 等待每个工具的真实回调后再继续，最后给出综合健康结论和证据摘要。",
+  "不得修改配置、安装内容、重启或停止服务器。",
+].join("\n");
+
+export function expandOperationalSkill(intent: string) {
+  const message = intent.trim();
+  if (!message || /(?:怎么|如何|原理|教程|一般|是什么|what\s+is|how\s+to)/i.test(message)) return undefined;
+  const explicitHealth = /(?:健康检查|健康巡检|(?:服务器|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)/i.test(message);
+  const shortHealthRequest = /(?:检查|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|正常)|(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗)/i.test(message);
+  return explicitHealth || shortHealthRequest ? readonlyHealthSkillIntent : undefined;
+}
+
+function isReadonlyHealthInspection(intent: string) {
+  if (expandOperationalSkill(intent)) return true;
+  const asksForInspection = /(?:只读|健康检查|健康巡检|综合检查|完整检查|health\s*check|inspection)/i.test(intent);
+  const asksForVersion = /(?:\bversion\b|版本|服务端类型)/i.test(intent);
+  const asksForPlugins = /(?:\bplugins?\b|插件)/i.test(intent);
+  const asksForLogs = /(?:日志|\blogs?\b|error|warn|崩溃|卡顿)/i.test(intent);
+  return asksForInspection && asksForVersion && asksForPlugins && asksForLogs;
 }
 
 function parsePluginProject(intent: string) {
@@ -188,10 +228,21 @@ export function extractConsoleCommandIntent(intent: string) {
   if (/\b(?:server version|minecraft version)\b|\u670d\u52a1\u7aef.{0,4}\u7248\u672c|\u670d\u52a1\u5668.{0,4}\u7248\u672c/i.test(intent)) {
     return "version";
   }
-  if (/\b(?:plugin list|installed plugins?)\b|\u63d2\u4ef6.{0,4}\u5217\u8868|\u5df2\u5b89\u88c5.{0,4}\u63d2\u4ef6/i.test(intent)) {
+  const explicitlyRequestsPluginFiles = isPluginDirectoryIntent(intent);
+  if (!explicitlyRequestsPluginFiles && (/\b(?:plugin list|installed plugins?|what plugins?)\b|插件.{0,8}(?:列表|有哪些|有什么|多少|已安装)|(?:查看|查询|列出|显示).{0,10}(?:服务器|服务端|当前)?\s*插件|已安装.{0,4}插件/i.test(intent))) {
     return "plugins";
   }
   return undefined;
+}
+
+export function extractFilesListIntent(intent: string) {
+  if (!isPluginDirectoryIntent(intent)) return undefined;
+  if (!/(?:查看|读取|列出|显示|检查|打开|里面|内容|文件|目录|我说|show|read|list|inspect)/i.test(intent)) return undefined;
+  return "列出当前实例 /plugins 目录并返回实际插件文件清单";
+}
+
+function isPluginDirectoryIntent(intent: string) {
+  return /(?:\/plugins\b|plugins[\\/]|plugins\s*(?:目录|文件夹|folder|directory)|插件\s*(?:目录|文件夹|文件|jar))/i.test(intent);
 }
 
 export function extractRealtimeLogIntent(intent: string) {

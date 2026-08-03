@@ -44,7 +44,8 @@ class AgentState(TypedDict, total=False):
     request: dict[str, Any]
     decision: dict[str, Any]
     pending_action: dict[str, str] | None
-    next_node: Literal["model", "delegate", "end"]
+    planner_trace: list[dict[str, str]]
+    next_node: Literal["planner", "model", "delegate", "end"]
 
 
 @dataclass(frozen=True)
@@ -385,600 +386,14 @@ def _provider_failure_decision(code: str) -> dict[str, Any]:
 
 
 class McaiGraph:
-    def __init__(self, provider: ModelProvider, checkpoint_path: Path):
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = aiosqlite.connect(checkpoint_path)
-        self._checkpoint_path = checkpoint_path
-        self._checkpointer = AsyncSqliteSaver(self._connection)
-        self._connection_started = False
-        self._connection_lock = asyncio.Lock()
-        self.provider = provider
-        self.chat = self._build_chat_graph()
-        self.completion = self._build_completion_graph()
-
-    def _build_chat_graph(self):
-        graph = StateGraph(AgentState)
-        graph.add_node("prepare", self._prepare)
-        graph.add_node("model", self._model_route)
-        graph.add_node("delegate", self._delegate)
-        graph.add_edge(START, "prepare")
-        graph.add_conditional_edges("prepare", lambda state: state["next_node"], {
-            "model": "model",
-            "delegate": "delegate",
-            "end": END,
-        })
-        graph.add_conditional_edges("model", lambda state: state["next_node"], {
-            "delegate": "delegate",
-            "end": END,
-        })
-        graph.add_edge("delegate", END)
-        return graph.compile(checkpointer=self._checkpointer)
-
-    def _build_completion_graph(self):
-        graph = StateGraph(AgentState)
-        graph.add_node("evaluate", self._evaluate_completion)
-        graph.add_edge(START, "evaluate")
-        graph.add_edge("evaluate", END)
-        return graph.compile(checkpointer=self._checkpointer)
-
-    async def route(self, payload: dict[str, Any]) -> dict[str, Any]:
-        await self._ensure_connection()
-        thread_id = _thread_id(payload)
-        state = await self.chat.ainvoke(
-            {"request": payload},
-            config={"configurable": {"thread_id": thread_id, "checkpoint_ns": "chat"}},
-        )
-        return _normalize_decision(state.get("decision"), _available_tools(payload))
-
-    async def respond(self, payload: dict[str, Any]) -> dict[str, Any]:
-        await self._ensure_connection()
-        thread_id = _thread_id(payload)
-        state = await self.completion.ainvoke(
-            {"request": payload},
-            config={"configurable": {"thread_id": thread_id, "checkpoint_ns": "completion"}},
-        )
-        return state.get("decision") or _response("ä»»åŠ¡ç»“æœä¸å¯ç”¨ã€‚", status="unavailable")
-
-    async def probe(self) -> dict[str, Any]:
-        nonce = f"mcai-ready-{uuid.uuid4().hex[:16]}"
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-        }
-        result = await self.provider.structured(
-            "Return a short readiness answer.",
-            [{"role": "user", "content": f"Reply with exactly: {nonce}"}],
-            schema,
-        )
-        if nonce not in str(result.get("answer", "")):
-            raise ModelProviderError("INVALID_RESPONSE", [])
-        return {"model": str(result.get("providerModel") or self.provider.config.model)}
-
-    async def close(self) -> None:
-        if self._connection_started:
-            await self._connection.close()
-            self._connection_started = False
-
-    async def _ensure_connection(self) -> None:
-        if self._connection_started:
-            return
-        async with self._connection_lock:
-            if not self._connection_started:
-                await self._connection
-                await self._checkpointer.setup()
-                os.chmod(self._checkpoint_path, 0o600)
-                self._connection_started = True
-
-    async def _prepare(self, state: AgentState) -> AgentState:
-        request = state.get("request", {})
-        message = str(request.get("message", "")).strip()
-        history = request.get("history") if isinstance(request.get("history"), list) else []
-        available = _available_tools(request)
-        pending = state.get("pending_action") or _infer_pending_action(history, available)
-
-        if pending and AFFIRMATIVE.fullmatch(message):
-            return {
-                "decision": _tool_decision(pending["intent"], pending["tool"], "ç»§ç»­ä¸Šä¸€è½®å¾…æ‰§è¡Œæ“ä½œ"),
-                "pending_action": None,
-                "next_node": "end",
-            }
-
-        deterministic = _deterministic_decision(message, history, available)
-        if deterministic:
-            return {
-                "decision": deterministic,
-                "pending_action": None,
-                "next_node": "delegate" if deterministic.get("route") == "delegate" else "end",
-            }
-        return {"next_node": "model"}
-
-    async def _model_route(self, state: AgentState) -> AgentState:
-        request = state.get("request", {})
-        history = _history(request)
-        try:
-            async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
-                result = await self.provider.structured(_router_prompt(request), history, _decision_schema())
-        except TimeoutError:
-            return {
-                "decision": _provider_failure_decision("TIMEOUT"),
-                "next_node": "end",
-            }
-        except ModelProviderError as error:
-            return {
-                "decision": _provider_failure_decision(error.code),
-                "next_node": "end",
-            }
-        except Exception:  # noqa: BLE001 - return a stable user-facing failure
-            return {
-                "decision": _provider_failure_decision("INTERNAL_ERROR"),
-                "next_node": "end",
-            }
-        decision = _normalize_decision(result, _available_tools(request))
-        pending = decision.pop("pendingAction", None)
-        return {
-            "decision": decision,
-            "pending_action": pending if isinstance(pending, dict) else None,
-            "next_node": "delegate" if decision.get("route") == "delegate" else "end",
-        }
-
-    async def _delegate(self, state: AgentState) -> AgentState:
-        request = state.get("request", {})
-        decision = state.get("decision", {})
-        kind = decision.get("delegate") if decision.get("delegate") in {"planner", "diagnostics"} else "diagnostics"
-        role = (
-            "ä½ æ˜¯è§„åˆ’å­ Agentã€‚åªè¾“å‡º 6 æ¡ç®€æ´ç»“è®ºï¼Œå¿…é¡»ä¾æ¬¡å¸¦æœ‰â€œé˜¶æ®µã€ä¾èµ–ã€é£é™©ã€éªŒæ”¶ã€å›æ»šã€åœæ­¢æ¡ä»¶â€æ ‡ç­¾ï¼›æ¯æ¡ä¸€å¥ï¼Œæ€»é•¿åº¦æ§åˆ¶åœ¨ 320 ä¸ªä¸­æ–‡å­—ç¬¦ä»¥å†…ã€‚"
-            if kind == "planner"
-            else "ä½ æ˜¯è¯Šæ–­å­ Agentã€‚åªè¾“å‡º 5 æ¡ç®€æ´ç»“è®ºï¼Œå¿…é¡»å¸¦æœ‰â€œå·²çŸ¥äº‹å®ã€æ¨æ–­ã€éªŒè¯ã€é£é™©ã€éªŒæ”¶â€æ ‡ç­¾ï¼›æ¯æ¡ä¸€å¥ï¼Œæ€»é•¿åº¦æ§åˆ¶åœ¨ 320 ä¸ªä¸­æ–‡å­—ç¬¦ä»¥å†…ã€‚"
-        )
-        system = "\n".join((
-            role,
-            "ä¸å¾—å£°ç§°å·²è¯»å–å®æ—¶æ•°æ®ï¼Œä¸å¾—ç¼–é€ æµ‹é‡å€¼ï¼Œä¸å¾—è¾“å‡º Shellã€SSH æˆ– profiler è„šæœ¬ã€‚",
-            "åªæè¿° MCAI å·²æ³¨å†Œçš„å—æ§å·¥å…·ï¼›æ²¡æœ‰å˜æ›´è¯æ®æ—¶ä¸å¾—å»ºè®®å›æ»šã€‚",
-            "ç”¨ç®€æ´ä¸­æ–‡å›ç­”ï¼Œå›ç­”ååœæ­¢ã€‚",
-        ))
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-        }
-        try:
-            async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
-                result = await self.provider.structured(system, _history(request), schema)
-            answer = str(result.get("answer", "")).strip()
-        except TimeoutError:
-            return {"decision": _provider_failure_decision("TIMEOUT"), "next_node": "end"}
-        except ModelProviderError as error:
-            return {"decision": _provider_failure_decision(error.code), "next_node": "end"}
-        except Exception:  # noqa: BLE001
-            return {"decision": _provider_failure_decision("INTERNAL_ERROR"), "next_node": "end"}
-        return {
-            "decision": {
-                "route": "delegate",
-                "delegate": kind,
-                "answer": answer,
-                "requestId": str(uuid.uuid4()),
-                "trace": [{"stage": "delegation", "label": "è°ƒç”¨å­ Agent", "result": kind}],
-            },
-            "next_node": "end",
-        }
-
-    async def _evaluate_completion(self, state: AgentState) -> AgentState:
-        request = state.get("request", {})
-        task_state = str(request.get("taskState", ""))
-        evidence = request.get("evidence") if isinstance(request.get("evidence"), list) else []
-        intent = str(request.get("intent", ""))
-        plan = request.get("plan") if isinstance(request.get("plan"), dict) else {}
-        tools = [str(step.get("tool", "")) for step in plan.get("steps", []) if isinstance(step, dict)]
-        substantive = [item for item in evidence if isinstance(item, dict) and item.get("kind") not in {"state", "verification"}]
-
-        continuation: dict[str, Any] | None = None
-        if task_state == "SUCCEEDED" and any(tool in {"plugin.resolve", "plugin.install"} for tool in tools):
-            has_plugin_evidence = any(item.get("kind") in {"plugin", "files", "console"} for item in substantive)
-            if not has_plugin_evidence:
-                continuation = _tool_decision(
-                    "åˆ—å‡ºå½“å‰å®ä¾‹ /plugins ç›®å½•ï¼Œç¡®è®¤æ’ä»¶ JAR å·²å®é™…è½ç›˜",
-                    "files.list",
-                    "æ’ä»¶ä»»åŠ¡ç¼ºå°‘æ–‡ä»¶çº§è½ç›˜è¯æ®",
-                )
-        if task_state == "SUCCEEDED" and "files.list" in tools and not any(item.get("kind") == "files" for item in substantive):
-            return {
-                "decision": _response("æ–‡ä»¶æ¸…å•å·¥å…·æœªè¿”å›æ–‡ä»¶çº§è¯æ®ï¼Œæ— æ³•ç¡®è®¤æ“ä½œå®Œæˆã€‚", status="answered"),
-                "next_node": "end",
-            }
-
-        plugin_name = _plugin_name_from_intent(intent)
-        files_evidence = next((str(item.get("summary", "")) for item in reversed(substantive) if item.get("kind") == "files"), "")
-        if task_state == "SUCCEEDED" and "files.list" in tools and plugin_name and files_evidence:
-            normalized_evidence = files_evidence.lower()
-            aliases = {plugin_name.lower()}
-            if plugin_name.lower() == "essentialsx":
-                aliases.add("essentials")
-            if any(re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?=[^a-z0-9]|$)", normalized_evidence) for alias in aliases):
-                answer = f"å·²åœ¨ /plugins ä¸­å‘ç° {plugin_name}ï¼Œæ–‡ä»¶æ¸…å•è¯æ®ï¼š{files_evidence}"
-            else:
-                answer = f"æœªåœ¨ /plugins ä¸­å‘ç° {plugin_name}ï¼Œå› æ­¤ä¸èƒ½ç¡®è®¤è¯¥æ’ä»¶å·²å®‰è£…ã€‚å½“å‰æ–‡ä»¶æ¸…å•ï¼š{files_evidence}"
-            return {"decision": _response(answer, status="answered"), "next_node": "end"}
-
-        lifecycle_tool = next((tool for tool in reversed(tools) if tool in {"instance.start", "instance.stop", "instance.restart"}), "")
-        if lifecycle_tool and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
-            lifecycle_names = {
-                "instance.start": "å¯åŠ¨å®ä¾‹",
-                "instance.stop": "åœæ­¢å®ä¾‹",
-                "instance.restart": "é‡å¯å®ä¾‹",
-            }
-            evidence_summary = next((
-                str(item.get("summary", "")).strip()
-                for item in reversed(substantive)
-                if item.get("kind") in {"instance", "diagnosis", "tool"} and str(item.get("summary", "")).strip()
-            ), "")
-            if task_state == "SUCCEEDED":
-                answer = evidence_summary or f"{lifecycle_names[lifecycle_tool]}å·²å®Œæˆã€‚"
-            else:
-                reason = re.sub(r"^å·¥å…·è¿”å›é”™è¯¯[ï¼š:]\s*", "", evidence_summary) or "å·¥å…·æœªè¿”å›å¯éªŒè¯çš„å®Œæˆè¯æ®"
-                answer = f"{lifecycle_names[lifecycle_tool]}å¤±è´¥ï¼š{reason}"
-            return {"decision": _response(answer, status="answered"), "next_node": "end"}
-
-        deterministic_evidence_tools = {
-            "console.command": "console",
-            "files.list": "files",
-        }
-        evidence_tool = next((tool for tool in reversed(tools) if tool in deterministic_evidence_tools), "")
-        if evidence_tool and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
-            expected_kind = deterministic_evidence_tools[evidence_tool]
-            evidence_summary = next((
-                str(item.get("summary", "")).strip()
-                for item in reversed(substantive)
-                if item.get("kind") == expected_kind and str(item.get("summary", "")).strip()
-            ), "")
-            if task_state == "SUCCEEDED" and evidence_summary:
-                return {"decision": _response(evidence_summary, status="answered"), "next_node": "end"}
-            reason = next((
-                str(item.get("summary", "")).strip()
-                for item in reversed(evidence)
-                if isinstance(item, dict)
-                and item.get("kind") in {"diagnosis", "tool", "state"}
-                and ("failed" in str(item.get("summary", "")).lower() or "é”™è¯¯" in str(item.get("summary", "")))
-            ), "å·¥å…·æœªè¿”å›å¯éªŒè¯çš„å®Œæˆè¯æ®")
-            return {"decision": _response(f"æ“ä½œå¤±è´¥ï¼š{reason}", status="answered"), "next_node": "end"}
-
-        if continuation:
-            return {
-                "decision": {
-                    **_response("æ’ä»¶ä»»åŠ¡ç¼ºå°‘å®é™…è½ç›˜è¯æ®ï¼Œæ­£åœ¨ç»§ç»­è¯»å– /plugins ç›®å½•æ ¸éªŒã€‚", status="answered"),
-                    "continuation": continuation,
-                },
-                "next_node": "end",
-            }
-
-        system = "\n".join((
-            "ä½ æ˜¯ MCAI çš„ä»»åŠ¡å›è°ƒè¯„ä¼°èŠ‚ç‚¹ã€‚",
-            "åªä¾æ® task_stateã€plan å’Œ evidenceï¼›å·¥å…·å·²æäº¤æˆ–ä¸­é—´çŠ¶æ€ä¸ç­‰äºå®Œæˆã€‚",
-            "æˆåŠŸæ—¶å¼•ç”¨çœŸå®è¯æ®ï¼Œå¤±è´¥æ—¶è¯´æ˜çœŸå®åŸå› ã€‚ä¸å¾—ç¼–é€ æ–‡ä»¶ã€ç‰ˆæœ¬ã€æ’ä»¶æˆ–æ•°å€¼ã€‚",
-            "è¾“å‡ºç®€æ´ä¸­æ–‡ï¼Œä¸å±•ç¤ºå†…éƒ¨æ¨ç†ï¼Œä¸è¿½åŠ é‚€è¯·ã€‚",
-        ))
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-        }
-        response_status = "answered"
-        provider_error: str | None = None
-        try:
-            async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
-                result = await self.provider.structured(system, [{"role": "user", "content": json.dumps(request, ensure_ascii=False)}], schema)
-            answer = str(result.get("answer", "")).strip()
-        except TimeoutError:
-            answer = _completion_fallback(task_state, substantive, intent)
-            response_status = "unavailable"
-            provider_error = "TIMEOUT"
-        except ModelProviderError as error:
-            answer = _completion_fallback(task_state, substantive, intent)
-            response_status = "unavailable"
-            provider_error = error.code
-        except Exception:  # noqa: BLE001
-            answer = _completion_fallback(task_state, substantive, intent)
-            response_status = "unavailable"
-            provider_error = "INTERNAL_ERROR"
-
-        response = _response(answer, status=response_status)
-        if provider_error:
-            response["providerStatus"] = "unavailable"
-            response["providerError"] = provider_error
-        if continuation:
-            response["continuation"] = continuation
-        return {"decision": response, "next_node": "end"}
-
-
-def _router_prompt(request: dict[str, Any]) -> str:
-    instance = json.dumps(request.get("instance") or {}, ensure_ascii=False)
-    operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
-    session = str(request.get("systemPrompt", ""))
-    return "\n".join((
-        "You are MCAI Sidecar, an execution-oriented Minecraft operations agent.",
-        "ç®€å•çŸ¥è¯†ç›´æ¥å›ç­”ï¼›å®æ—¶æ—¥å¿—ã€æ–‡ä»¶ã€çŠ¶æ€å’Œå˜æ›´å¿…é¡»é€‰æ‹© toolã€‚",
-        "route=direct æ—¶ answer å¿…é¡»ç®€æ´ï¼Œæ§åˆ¶åœ¨ 320 ä¸ªä¸­æ–‡å­—ç¬¦ä»¥å†…ï¼Œé¿å…æˆªæ–­ JSONã€‚",
-        "å¤æ‚ä¸”ä¸éœ€è¦å®æ—¶æ•°æ®çš„è§„åˆ’é€‰æ‹© delegate/plannerï¼Œå¤æ‚è¯Šæ–­é€‰æ‹© delegate/diagnosticsã€‚",
-        "ä¸å¾—ç¼–é€ é¡¹ç›®åã€ç‰ˆæœ¬å·ã€æ€§èƒ½æŒ‡æ ‡æˆ–å·¥å…·èƒ½åŠ›ï¼›äº‹å®ä¸ç¡®å®šæ—¶æ˜ç¡®è¯´æ˜ä¸ç¡®å®šæˆ–çœç•¥å…·ä½“åè¯ã€‚",
-        "å½“å‰å®ä¾‹æ˜¯å”¯ä¸€ç›®æ ‡ï¼Œä¸å¾—é‡å¤è¯¢é—®å®ä¾‹ã€‚æ§åˆ¶å°ä¸æ˜¯ Shellï¼Œç¦æ­¢ç”Ÿæˆ Shell æˆ– SSHã€‚",
-        "ç”¨æˆ·è¦æ±‚å®‰è£…æˆ–éªŒè¯æ’ä»¶æ—¶å¿…é¡»è°ƒç”¨å—æ§å·¥å…·ï¼Œç»ä¸èƒ½åœ¨æ²¡æœ‰å›è°ƒè¯æ®æ—¶å£°ç§°å®‰è£…å®Œæˆã€‚",
-        "è‹¥å¿…é¡»æ¾„æ¸…ï¼ŒpendingAction å¿…é¡»ä¿å­˜ç”¨æˆ·ç¡®è®¤åè¦ç»§ç»­æ‰§è¡Œçš„ intent å’Œ toolã€‚",
-        "åªè¾“å‡ºç¬¦åˆ JSON schema çš„å¯¹è±¡ã€‚",
-        f"<current_instance>{instance}</current_instance>",
-        f"<available_operations>{operations}</available_operations>",
-        f"<session_instructions>{session}</session_instructions>",
-    ))
-
-
-def _decision_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "route": {"type": "string", "enum": ["direct", "clarify", "delegate", "tool"]},
-            "answer": {"type": "string"},
-            "toolIntent": {"type": ["string", "null"]},
-            "preferredTool": {"type": ["string", "null"], "enum": [*SUPPORTED_OPERATIONS, None]},
-            "delegate": {"type": ["string", "null"], "enum": ["planner", "diagnostics", None]},
-            "pendingAction": {
-                "anyOf": [
-                    {"type": "null"},
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "intent": {"type": "string"},
-                            "tool": {"type": "string", "enum": list(SUPPORTED_OPERATIONS)},
-                        },
-                        "required": ["intent", "tool"],
-                    },
-                ]
-            },
-        },
-        "required": ["route", "answer", "toolIntent", "preferredTool", "delegate", "pendingAction"],
-    }
-
-
-def _deterministic_decision(message: str, history: list[Any], available: set[str]) -> dict[str, Any] | None:
-    lower = message.lower()
-    if not message:
-        return _direct("æ¶ˆæ¯ä¸èƒ½ä¸ºç©ºã€‚")
-    if (
-        "server.install" in available
-        and re.search(r"(?:ä¸‹è½½|å®‰è£…|éƒ¨ç½²|æ­å»º|åˆ›å»º|å¼€æœ|download|install|deploy|setup|create)", lower, re.I)
-        and re.search(r"\b(?:paper|fabric)\b", lower, re.I)
-        and re.search(r"\b\d+\.\d+(?:\.\d+)?(?:-[a-z0-9._-]+)?\b", lower, re.I)
-    ):
-        return _tool_decision(message, "server.install", "éœ€è¦æ‰§è¡ŒæŒ‡å®šå¹³å°å’Œç‰ˆæœ¬çš„å—æ§æœåŠ¡ç«¯å®‰è£…")
-    if (
-        "config.patch" in available
-        and re.search(r"(?:ä¿®æ”¹|è®¾ç½®|è°ƒæ•´|æ”¹æˆ|set|change|update).{0,20}(?:è§†è·|view-distance)|(?:è§†è·|view-distance).{0,20}(?:ä¿®æ”¹|è®¾ç½®|è°ƒæ•´|æ”¹æˆ|set|change|update)", lower, re.I)
-    ):
-        return _tool_decision(message, "config.patch", "éœ€è¦å—æ§ä¿®æ”¹å½“å‰å®ä¾‹é…ç½®")
-    if (
-        "plugin.resolve" in available
-        and re.search(r"(?:è§£æ|æŸ¥æ‰¾|æŸ¥è¯¢|åŒ¹é…|å…¼å®¹|åˆ¶å“|resolve|lookup|find).{0,24}(?:æ’ä»¶|plugin|essentials|luckperms)|(?:æ’ä»¶|plugin|essentials|luckperms).{0,24}(?:è§£æ|æŸ¥æ‰¾|æŸ¥è¯¢|åŒ¹é…|å…¼å®¹|åˆ¶å“|resolve|lookup|find)", lower, re.I)
-    ):
-        return _tool_decision(message, "plugin.resolve", "éœ€è¦è§£æå…¼å®¹çš„å®˜æ–¹æ’ä»¶åˆ¶å“")
-    lifecycle_routes = (
-        (
-            "instance.restart",
-            r"(?:é‡å¯|é‡æ–°å¯åŠ¨|restart).{0,10}(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯)|(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯).{0,10}(?:é‡å¯|é‡æ–°å¯åŠ¨|restart)|^\s*(?:è¯·|å¸®æˆ‘|éº»çƒ¦)?\s*(?:é‡å¯|é‡æ–°å¯åŠ¨|restart)(?:ä¸€ä¸‹)?\s*$",
-            "é‡å¯å½“å‰å®ä¾‹å¹¶ç­‰å¾…é‡æ–°è¿›å…¥è¿è¡ŒçŠ¶æ€",
-            "å·²ç”Ÿæˆé‡å¯è®¡åˆ’ï¼Œç­‰å¾…ç¡®è®¤ã€‚",
-        ),
-        (
-            "instance.stop",
-            r"(?:åœæ­¢|å…³é—­|å…³åœ|stop|shutdown).{0,10}(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯)|(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯).{0,10}(?:åœæ­¢|å…³é—­|å…³åœ|stop|shutdown)",
-            "åœæ­¢å½“å‰å®ä¾‹å¹¶ç­‰å¾…è¿›å…¥åœæ­¢çŠ¶æ€",
-            "å·²ç”Ÿæˆåœæ­¢è®¡åˆ’ï¼Œç­‰å¾…ç¡®è®¤ã€‚",
-        ),
-        (
-            "instance.start",
-            r"(?:å¯åŠ¨|å¼€å¯|å¼€æœº|start).{0,10}(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯)|(?:å®ä¾‹|æœåŠ¡å™¨|æœåŠ¡ç«¯).{0,10}(?:å¯åŠ¨|å¼€å¯|å¼€æœº|start)",
-            "å¯åŠ¨å½“å‰å®ä¾‹å¹¶ç­‰å¾…è¿›å…¥è¿è¡ŒçŠ¶æ€",
-            "æ­£åœ¨å¯åŠ¨å½“å‰å®ä¾‹ã€‚",
-        ),
-    )
-    for tool, pattern, intent, answer in lifecycle_routes:
-        if tool in available and re.search(pattern, lower, re.I):
-            return _tool_decision(intent, tool, "éœ€è¦æ‰§è¡Œå®ä¾‹ç”Ÿå‘½å‘¨æœŸæ“ä½œ", answer)
-    delegate = _offline_delegate_kind(message)
-    if delegate:
-        return _delegate_decision(delegate)
-    if "logs.query" in available and re.search(r"(?:è¯»å–|æŸ¥çœ‹|æŸ¥è¯¢|æ£€æŸ¥|åˆ†æ|ä¸ºä»€ä¹ˆ).{0,12}(?:æ—¥å¿—|å´©æœ|æŠ¥é”™|å¡æœ)|(?:æ—¥å¿—|å´©æœ|æŠ¥é”™|å¡æœ).{0,12}(?:åŸå› |åˆ†æ|æ£€æŸ¥)", message, re.I):
-        return _tool_decision(message, "logs.query", "éœ€è¦å½“å‰å®ä¾‹çœŸå®æ—¥å¿—")
-    if "files.list" in available and re.search(r"(?:ç¡®è®¤|æ£€æŸ¥|æŸ¥çœ‹|è¯»å–|åˆ—å‡º).{0,16}(?:plugins/?|æ’ä»¶.{0,6}(?:ç›®å½•|æ–‡ä»¶|jar|è½ç›˜))|(?:plugins/?).{0,16}(?:ç¡®è®¤|æ£€æŸ¥|æŸ¥çœ‹|è¯»å–|åˆ—å‡º)", message, re.I):
-        return _tool_decision("åˆ—å‡ºå½“å‰å®ä¾‹ /plugins ç›®å½•å¹¶è¿”å›å®é™…æ–‡ä»¶æ¸…å•", "files.list", "éœ€è¦æ–‡ä»¶çº§è¯æ®")
-    if "files.list" in available and re.search(r"(?:ç¡®å®š|ç¡®è®¤|æ ¸å®|çœŸçš„).{0,20}(?:essentials|luckperms|æ’ä»¶).{0,12}(?:å®‰è£…|å­˜åœ¨|è½ç›˜)|(?:essentials|luckperms|æ’ä»¶).{0,20}(?:ç¡®å®š|ç¡®è®¤|æ ¸å®|çœŸçš„|å®‰è£…äº†å—|å­˜åœ¨å—)", lower, re.I):
-        return _tool_decision("åˆ—å‡ºå½“å‰å®ä¾‹ /plugins ç›®å½•å¹¶ç¡®è®¤ç›®æ ‡æ’ä»¶ JAR æ˜¯å¦å®é™…è½ç›˜", "files.list", "å®‰è£…å£°æ˜å¿…é¡»ç”±æ–‡ä»¶çº§è¯æ®ç¡®è®¤")
-    if "plugin.install" in available and re.search(r"(?:å®‰è£…|éƒ¨ç½²|æ›´æ–°|å‡çº§|install|update).{0,24}(?:æ’ä»¶|plugin|essentials|luckperms)|(?:essentials|luckperms).{0,12}(?:å®‰è£…|éƒ¨ç½²|æ›´æ–°|å‡çº§)", lower, re.I):
-        return _tool_decision(message, "plugin.install", "éœ€è¦æ‰§è¡Œå—æ§æ’ä»¶å·¥ä½œæµ")
-    if "console.command" in available:
-        if re.search(r"(?:æœåŠ¡å™¨|æœåŠ¡ç«¯).{0,5}(?:ç‰ˆæœ¬|version)|(?:ä»€ä¹ˆ|å“ªç§).{0,4}æœåŠ¡ç«¯", message, re.I):
-            return _tool_decision("åœ¨å½“å‰å®ä¾‹ Minecraft æ§åˆ¶å°æ‰§è¡Œ version", "console.command", "éœ€è¦å®æ—¶æœåŠ¡ç«¯ç‰ˆæœ¬")
-        if re.search(r"(?:å·²å®‰è£…|å½“å‰).{0,4}æ’ä»¶|æ’ä»¶åˆ—è¡¨", message, re.I):
-            return _tool_decision("åœ¨å½“å‰å®ä¾‹ Minecraft æ§åˆ¶å°æ‰§è¡Œ plugins", "console.command", "éœ€è¦å®æ—¶æ’ä»¶åˆ—è¡¨")
-    if "files.list" in available and re.search(r"æ ¹ç›®å½•|æ–‡ä»¶åˆ—è¡¨|ç›®å½•åˆ—è¡¨|åˆ—å‡º.{0,8}(?:æ–‡ä»¶|ç›®å½•)", message, re.I):
-        return _tool_decision(message, "files.list", "éœ€è¦å½“å‰å®ä¾‹æ–‡ä»¶æ¸…å•")
-    return None
-
-
-def _offline_delegate_kind(message: str) -> Literal["planner", "diagnostics"] | None:
-    lower = message.lower()
-    # Only make this routing decision when the user explicitly asks for an
-    # offline analysis. Requests for current logs or state must still use a
-    # controlled evidence-gathering tool.
-    if not any(marker in lower for marker in ("ä¸è¯»å–", "ä¸æŸ¥è¯¢", "ä¸ä½¿ç”¨å®æ—¶", "ä»…æ ¹æ®", "é€šç”¨çŸ¥è¯†", "ç¦»çº¿")):
-        return None
-    if any(marker in lower for marker in ("è¯Šæ–­", "æ ¹å› ", "æ¨æ–­", "å¾…éªŒè¯", "æ•…éšœåˆ†æ")):
-        return "diagnostics"
-    if any(marker in lower for marker in ("è§„åˆ’", "åˆ¶å®š", "æ–¹æ¡ˆ", "é˜¶æ®µ", "æ²»ç†", "å›æ»š", "åœæ­¢æ¡ä»¶")):
-        return "planner"
-    return None
-
-
-def _delegate_decision(kind: Literal["planner", "diagnostics"]) -> dict[str, Any]:
-    label = "è§„åˆ’" if kind == "planner" else "è¯Šæ–­"
-    return {
-        "route": "delegate",
-        "answer": f"æ­£åœ¨ç”Ÿæˆç¦»çº¿{label}ã€‚",
-        "delegate": kind,
-        "requestId": str(uuid.uuid4()),
-        "trace": [{"stage": "delegation", "label": "è°ƒç”¨å­ Agent", "result": kind}],
-    }
-
-
-def _infer_pending_action(history: list[Any], available: set[str]) -> dict[str, str] | None:
-    for item in reversed(history[-6:]):
-        if not isinstance(item, dict) or item.get("role") != "assistant":
-            continue
-        content = str(item.get("content", ""))
-        if "files.list" in available and re.search(r"(?:plugins/?|æ’ä»¶).{0,50}(?:è¯»å–|è¯»ä¸€æ¬¡|æ–‡ä»¶æ¸…å•|ç¡®è®¤)|(?:è¯»å–|è¯»ä¸€æ¬¡|ç¡®è®¤).{0,50}(?:plugins/?|æ’ä»¶)", content, re.I):
-            return {"tool": "files.list", "intent": "åˆ—å‡ºå½“å‰å®ä¾‹ /plugins ç›®å½•å¹¶ç¡®è®¤æ’ä»¶ JAR æ˜¯å¦å®é™…è½ç›˜"}
-        if "instance.restart" in available and re.search(r"(?:æ˜¯å¦|è¦ä¸è¦|éœ€è¦).{0,10}é‡å¯|é‡å¯.{0,10}(?:å—|ï¼Ÿ|\?)", content, re.I):
-            return {"tool": "instance.restart", "intent": "é‡å¯å½“å‰å®ä¾‹å¹¶ç­‰å¾…é‡æ–°è¿›å…¥è¿è¡ŒçŠ¶æ€"}
-        break
-    return None
-
-
-def _history(request: dict[str, Any]) -> list[dict[str, str]]:
-    history = request.get("history") if isinstance(request.get("history"), list) else []
-    messages_reversed: list[dict[str, str]] = []
-    remaining = MODEL_HISTORY_TOTAL_CHARS
-    for item in reversed(history[-16:]):
-        if not isinstance(item, dict) or remaining <= 0:
-            continue
-        content = _compact_history_content(str(item.get("content", "")), min(MODEL_HISTORY_ITEM_MAX_CHARS, remaining))
-        if not content:
-            continue
-        messages_reversed.append({
-            "role": "assistant" if item.get("role") == "assistant" else "user",
-            "content": content,
-        })
-        remaining -= len(content)
-    messages = list(reversed(messages_reversed))
-    message = str(request.get("message", "")).strip()
-    if message:
-        messages.append({"role": "user", "content": message})
-    return messages
-
-
-def _compact_history_content(content: str, limit: int) -> str:
-    text = content.strip()
-    if limit <= 0 or not text:
-        return ""
-    if len(text) <= limit:
-        return text
-    marker = "\nâ€¦[å†å²å†…å®¹å·²å‹ç¼©]â€¦\n"
-    if limit <= len(marker) + 2:
-        return text[:limit]
-    head = max(1, (limit - len(marker)) // 2)
-    return text[:head] + marker + text[-(limit - len(marker) - head):]
-
-
-def _available_tools(request: dict[str, Any]) -> set[str]:
-    raw = request.get("availableTools")
-    if not isinstance(raw, list):
-        return set(SUPPORTED_OPERATIONS)
-    return {str(tool) for tool in raw if str(tool) in SUPPORTED_OPERATIONS}
-
-
-def _normalize_decision(value: Any, allowed_tools: set[str] | None = None) -> dict[str, Any]:
-    decision = value if isinstance(value, dict) else {}
-    allowed = set(SUPPORTED_OPERATIONS) if allowed_tools is None else allowed_tools
-    route = decision.get("route") if decision.get("route") in {"direct", "clarify", "delegate", "tool"} else "direct"
-    answer = str(decision.get("answer", "")).strip() or "æš‚æ—¶æ²¡æœ‰å¯ç”¨å›ç­”ã€‚"
-    normalized: dict[str, Any] = {"route": route, "answer": answer, "requestId": str(decision.get("requestId") or uuid.uuid4())}
-    if decision.get("providerStatus") == "unavailable":
-        normalized["providerStatus"] = "unavailable"
-    if isinstance(decision.get("providerError"), str) and decision["providerError"]:
-        normalized["providerError"] = decision["providerError"]
-    if route == "tool":
-        intent = str(decision.get("toolIntent", "")).strip()
-        tool = str(decision.get("preferredTool", "")).strip()
-        if not intent or tool not in allowed:
-            return _direct("æ¨¡å‹è¯·æ±‚çš„å·¥å…·å½“å‰ä¸å¯ç”¨ï¼Œæœªæ‰§è¡Œä»»ä½•æ“ä½œã€‚")
-        normalized["toolIntent"] = intent
-        normalized["preferredTool"] = tool
-        normalized["trace"] = decision.get("trace") or [{"stage": "tool", "label": "è°ƒç”¨å·¥å…·", "result": tool}]
-    elif route == "delegate":
-        delegate = decision.get("delegate") if decision.get("delegate") in {"planner", "diagnostics"} else "diagnostics"
-        normalized["delegate"] = delegate
-        normalized["trace"] = decision.get("trace") or [{"stage": "delegation", "label": "è°ƒç”¨å­ Agent", "result": delegate}]
-    if isinstance(decision.get("pendingAction"), dict):
-        normalized["pendingAction"] = decision["pendingAction"]
-    return normalized
-
-
-def _tool_decision(intent: str, tool: str, reason: str, answer: str = "æ­£åœ¨è°ƒç”¨å—æ§å·¥å…·ã€‚") -> dict[str, Any]:
-    return {
-        "route": "tool",
-        "answer": answer,
-        "toolIntent": intent,
-        "preferredTool": tool,
-        "requestId": str(uuid.uuid4()),
-        "trace": [{"stage": "tool", "label": "è°ƒç”¨å·¥å…·", "result": tool, "reason": reason}],
-    }
-
-
-def _direct(answer: str) -> dict[str, Any]:
-    return {"route": "direct", "answer": answer, "requestId": str(uuid.uuid4())}
-
-
-def _response(answer: str, status: str) -> dict[str, Any]:
-    return {"status": status, "answer": answer, "requestId": str(uuid.uuid4())}
-
-
-def _completion_fallback(task_state: str, evidence: list[dict[str, Any]], intent: str) -> str:
-    if evidence:
-        summary = str(evidence[-1].get("summary", "")).strip()
-        if summary:
-            return summary
-    if task_state == "SUCCEEDED":
-        return "ä»»åŠ¡å·²å®Œæˆå¹¶é€šè¿‡éªŒæ”¶ã€‚"
-    return f"ä»»åŠ¡æœªå®Œæˆï¼ˆ{task_state or 'UNKNOWN'}ï¼‰ï¼š{intent[:120]}"
-
-
-def _thread_id(payload: dict[str, Any]) -> str:
-    value = str(
-        payload.get("threadId")
-        or payload.get("sessionId")
-        or payload.get("requestId")
-        or payload.get("request_id")
-        or ""
-    ).strip()
-    if value:
-        return value[:160]
-    # A caller that does not provide any session/request identifier must not
-    # share its persistent LangGraph state merely because it targets the same
-    # Minecraft instance.
-    return "anonymous:" + str(uuid.uuid4())
-
-
-def _parse_json(value: str) -> Any:
-    text = value.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I | re.S)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
-        if not match:
-            raise
-        return json.loads(match.group(0))
-
-
-def _capacity_error(error: Exception) -> bool:
-    return bool(re.search(r"429|503|capacity|rate.?limit|overloaded|temporarily unavailable", str(error), re.I))
-
-
-def _plugin_name_from_intent(intent: str) -> str | None:
-    match = re.search(r"\b(essentialsx?|luckperms|viaversion|viabackwards|geyser|floodgate|spark|worldedit|worldguard|placeholderapi|vault)\b", intent, re.I)
-    if not match:
-        return None
-    name = match.group(1).lower()
-    return "EssentialsX" if name in {"essentials", "essentialsx"} else name
+    def __init__(self, provider: ModelProvider, checkpoint_path: Path, planner_provider: ModelProvider | None = None):
+ ×M·îÚ$z{-®éÜj×7B"Â.ZèŠ8^Z;iˆî[ø^š¾yKih~K»n{ª~ŠøhÚîzîŠêB"¢–b'ÇVv–âæ–ç7FÆÂ"–âf–Æ&ÆRæB&Rç6V&6‚‡""ƒó®ZèŠ8WÎ˜:{Û'Îi»NikÎXØ~{ªwÆ–ç7FÆÇÇWFFR’ç³Ã#GÒƒó®hù.K»gÇÇVv–çÆW76VçF–Ç7ÆÇV6·W&×2—Âƒó¦W76VçF–Ç7ÆÇV6·W&×2’ç³Ã'Òƒó®ZèŠ8WÎ˜:{Û'Îi»NikÎXØ~{ªr’"ÂÆ÷vW"Â&Rä’“ ¢&WGW&â÷FööÅöFV6—6–öâ†ÖW76vRÂ'ÇVv–âæ–ç7FÆÂ"Â.™ÈŠhhš~ŠÎXù~hê~hù.K»n[z^KÙÎkX"¢–b&6öç6öÆRæ6öÖÖæB"–âf–Æ&ÆS ¢–b&Rç6V&6‚‡""ƒó®iÈŞXªYš‡ÎiÈŞXªzºò’ç³ÃWÒƒó®x˜iÊÇÇfW'6–öâ—Âƒó®K¸K˜‡ÎY:®zxÒ’ç³ÃGŞiÈŞXªzºò"ÂÖW76vRÂ&Rä’“ ¢&WGW&â÷FööÅöFV6—6–öâ‚.YÊ[Ù>X˜ŞZéîKè²Ö–æV7&gBhê~X‹nXûhš~ŠÂfW'6–öâ"Â&6öç6öÆRæ6öÖÖæB"Â.™ÈŠhZéîi{niÈŞXªzºşx˜iÊÂ"¢–b&Rç6V&6‚‡""ƒó®[{.ZèŠ8WÎ[Ù>X˜Ò’ç³ÃGŞhù.K»gÎhù.K»nX‰~Š‡Îhù.K»bç³ÃgÒƒó®iÈY:®K©·ÎiÈK¸K˜‡ÎZI®[	’"ÂÖW76vRÂ&Rä’“ ¢&WGW&â÷FööÅöFV6—6–öâ‚.YÊ[Ù>X˜ŞZéîKè²Ö–æV7&gBhê~X‹nXûhš~ŠÂÇVv–ç2"Â&6öç6öÆRæ6öÖÖæB"Â.™ÈŠhZéîi{nhù.K»nX‰~Š‚"¢–b&f–ÆW2æÆ—7B"–âf–Æ&ÆRæB&Rç6V&6‚‡".jyºî[ÙWÎih~K»nX‰~Š‡Îyºî[Ù^X‰~Š‡ÎX‰~X{¢ç³Ã‡Òƒó®ih~K»gÎyºî[ÙR’"ÂÖW76vRÂ&Rä’“ ¢&WGW&â÷FööÅöFV6—6–öâ†ÖW76vRÂ&f–ÆW2æÆ—7B"Â.™ÈŠh[Ù>X˜ŞZéîKè¾ih~K»nkˆ^XÙR"¢&WGW&âæöæP  ¦FVb÷&VFöæÇ•ö†VÇF…÷6¶–ÆÅö–çFVçB†ÖW76vS¢7G"’Óâ7G"ÂæöæS ¢–bæ÷BÖW76vR÷"&Rç6V&6‚‡""ƒó®hîK˜‡ÎZh.KÙWÎXéşygÎiYzˆ·ÎKˆˆŠÇÎiŠşK¸K˜‡Çv†EÇ2¶—7Æ†÷uÇ2·Fò’"ÂÖW76vRÂ&Rä’“ ¢&WGW&âæöæP¢W‡Æ–6—BÒ&Rç6V&6‚‡""ƒó®X^[«~j8iúWÎX^[«~[zj8Âƒó®iÈŞXªYš‡ÎZéîKè²’ç³ÃGŞ[zj8ÎXZ™Ú.KÙ>j8ÎXú®Šû¾[zj8Æ†VÇF…Ç2¦6†V6²’"ÂÖW76vRÂ&Rä’¢6†÷'E÷&WVW7BÒ&Rç6V&6‚€¢""ƒó®j8iúWÎyÈ¾yÈ·Îiú^iúWÎŠø®ij×ÎŠøNKË’ç³ÃÒƒó®[Ù>X˜×Î‹ùXûÎ‹ùKŠ¢“òƒó®ZéîKè·ÎiÈŞXªYš‡ÎiÈŞXªzºò’ç³Ã‡Òƒó®X^[«wÎx«nhÎh8^XkWÎ™zîš)‡ÎjÚ>[‹‚—Â ¢""ƒó®[Ù>X˜×Î‹ùXûÎ‹ùKŠ¢“òƒó®ZéîKè·ÎiÈŞXªYš‡ÎiÈŞXªzºò’ç³Ã‡Òƒó®X^[«~Y	wÎjÚ>[‹Y	wÎiÈk*iÈ™zîš)‡ÎiÈ™zîš)Y	r’"À¢ÖW76vRÀ¢&Rä’À¢¢–bæ÷BW‡Æ–6—BæBæ÷B6†÷'E÷&WVW7C ¢&WGW&âæöæP¢&WGW&â%Æâ"æ¦ö–â‚€¢.Zû[Ù>X˜ŞZéîKè¾ZèÎh‰KˆjÊXú®Šû¾X^[«~j8iú^ûÉ¢"À¢#âYÊ‚Ö–æV7&gBhê~X‹nXûhš~ŠÂfW'6–öîûÈÎzîŠêNiÈŞXªzºş{¾Yè¾Y(ÂÖ–æV7&gBx˜iÊÎûÉ²"À¢#"âYÊ‚Ö–æV7&gBhê~X‹nXûhš~ŠÂÇVv–ç>ûÈÎX‰~X{®[{.Xª‹ÛŞhù.K»nûÉ²"À¢#2âŠû¾XùniÈ‹ùcXˆn™)şiz^[ù~ûÈÎj8iúRU%$õ.8t$î8[Jk¨>8vF6†Fö~86âwB¶VWWh‰nXÚšşŠøhÚîûÉ²"À¢#BâzØ[è^jøşKŠ®[z^X[~y¨NyÉşZéîY¹î‹>YîXhŞ{º~{ºŞûÈÎiÈYî{¹X{®{»ÎYX^[«~{¹>Šë®Y(ÎŠøhÚîiŠh8""À¢.KˆŞ[é~KúîiK˜XŞ{Úî8ZèŠ8^Xh^Zë8˜xŞY
+şh‰nXÎjÚ.iÈŞXªYš8""À¢’  ¦FVbööffÆ–æUöFVÆVvFUö¶–æB†ÖW76vS¢7G"’ÓâÆ—FW&Å²'ÆææW""Â&F–væ÷7F–72%ÒÂæöæS ¢Æ÷vW"ÒÖW76vRæÆ÷vW"‚¢2öæÇ’Ö¶RF†—2&÷WF–ærFV6—6–öâv†VâF†RW6W"W‡Æ–6—FÇ’6·2f÷"à¢2öffÆ–æRæÇ—6—2â&WVW7G2f÷"7W'&VçBÆöw2÷"7FFR×W7B7F–ÆÂW6R¢26öçG&öÆÆVBWf–FVæ6RÖvF†W&–ærFööÂà¢–bæ÷Bç’†Ö&¶W"–âÆ÷vW"f÷"Ö&¶W"–â‚.KˆŞŠû¾Xùb"Â.KˆŞiú^Šú""Â.KˆŞKÛşyJZéîi{b"Â.K¸^jhÚâ"Â.˜	®yJyú^Šøb"Â.zk¾{«ò"’“ ¢&WGW&âæöæP¢–bç’†Ö&¶W"–âÆ÷vW"f÷"Ö&¶W"–â‚.Šø®ijÒ"Â.jYº"Â.hêijÒ"Â.[è^š¨ÎŠø"Â.iX^™©ÎXˆnié"’“ ¢&WGW&â&F–væ÷7F–72 ¢–bç’†Ö&¶W"–âÆ÷vW"f÷"Ö&¶W"–â‚.ŠxNX‰""Â.X‹nZé¢"Â.ikj‚"Â.™‹njëR"Â.k+¾yb"Â.Y¹îk¹¢"Â.XÎjÚ.iÚK»b"’“ ¢&WGW&â'ÆææW" ¢&WGW&âæöæP  ¦FVböFVÆVvFUöFV6—6–öâ†¶–æC¢Æ—FW&Å²'ÆææW""Â&F–væ÷7F–72%Ò’ÓâF–7E·7G"Âç•Ó ¢Æ&VÂÒ.ŠxNX‰""–b¶–æBÓÒ'ÆææW""VÇ6R.Šø®ijÒ ¢&WGW&â°¢'&÷WFR#¢&FVÆVvFR"À¢&ç7vW"#¢b.jÚ>YÊyIşh‰zk¾{«÷¶Æ&VÇŞ8""À¢&FVÆVvFR#¢¶–æBÀ¢'&WVW7D–B#¢7G"‡WV–BçWV–CB‚’’À¢'G&6R#¢·²'7FvR#¢&FVÆVvF–öâ"Â&Æ&VÂ#¢.‹>yJZÙvVçB"Â'&W7VÇB#¢¶–æGÕÒÀ¢Ğ  ¦FVbö–æfW%÷VæF–æuö7F–öâ††—7F÷'“¢Æ—7E´ç•ÒÂf–Æ&ÆS¢6WE·7G%Ò’ÓâF–7E·7G"Â7G%ÒÂæöæS ¢f÷"—FVÒ–â&WfW'6VB††—7F÷'•²Óc¥Ò“ ¢–bæ÷B—6–ç7Fæ6R†—FVÒÂF–7B’÷"—FVÒævWB‚'&öÆR"’Ò&76—7FçB# ¢6öçF–çVP¢6öçFVçBÒ7G"†—FVÒævWB‚&6öçFVçB"Â""’¢–b&f–ÆW2æÆ—7B"–âf–Æ&ÆRæB&Rç6V&6‚‡""ƒó§ÇVv–ç2ó÷Îhù.K»b’ç³ÃSÒƒó®Šû¾XùgÎŠû¾KˆjÊÎih~K»nkˆ^XÙWÎzîŠêB—Âƒó®Šû¾XùgÎŠû¾KˆjÊÎzîŠêB’ç³ÃSÒƒó§ÇVv–ç2ó÷Îhù.K»b’"Â6öçFVçBÂ&Rä’“ ¢&WGW&â²'FööÂ#¢&f–ÆW2æÆ—7B"Â&–çFVçB#¢.X‰~X{®[Ù>X˜ŞZéîKè²÷ÇVv–ç2yºî[Ù^[›nzîŠêNhù.K»b¤"iŠşY
+nZéî™˜^‰Şy¹‚'Ğ¢–b&–ç7Fæ6Rç&W7F'B"–âf–Æ&ÆRæB&Rç6V&6‚‡""ƒó®iŠşY
+gÎŠhKˆŞŠhÎ™ÈŠh’ç³ÃŞ˜xŞY
+÷Î˜xŞY
+òç³ÃÒƒó®Y	wÎûÉ÷ÅÃò’"Â6öçFVçBÂ&Rä’“ ¢&WGW&â²'FööÂ#¢&–ç7Fæ6Rç&W7F'B"Â&–çFVçB#¢.˜xŞY
+ş[Ù>X˜ŞZéîKè¾[›nzØ[è^˜xŞik‹ù¾XZ^‹ùŠÎx«nh'Ğ¢'&V°¢&WGW&âæöæP  ¦FVbö†—7F÷'’‡&WVW7C¢F–7E·7G"Âç•Ò’ÓâÆ—7E¶F–7E·7G"Â7G%ÕÓ ¢†—7F÷'’Ò&WVW7BævWB‚&†—7F÷'’"’–b—6–ç7Fæ6R‡&WVW7BævWB‚&†—7F÷'’"’ÂÆ—7B’VÇ6RµĞ¢ÖW76vW5÷&WfW'6VC¢Æ—7E¶F–7E·7G"Â7G%ÕÒÒµĞ¢&VÖ–æ–ærÒÔôDTÅô„•5Dõ%•õDõDÅô4„%0¢f÷"—FVÒ–â&WfW'6VB††—7F÷'•²Óc¥Ò“ ¢–bæ÷B—6–ç7Fæ6R†—FVÒÂF–7B’÷"&VÖ–æ–ærÃÒ ¢6öçF–çVP¢6öçFVçBÒö6ö×7Eö†—7F÷'•ö6öçFVçB‡7G"†—FVÒævWB‚&6öçFVçB"Â""’’ÂÖ–â„ÔôDTÅô„•5Dõ%•ô•DTÕôÔ…ô4„%2Â&VÖ–æ–ær’¢–bæ÷B6öçFVçC ¢6öçF–çVP¢ÖW76vW5÷&WfW'6VBæVæB‡°¢'&öÆR#¢&76—7FçB"–b—FVÒævWB‚'&öÆR"’ÓÒ&76—7FçB"VÇ6R'W6W""À¢&6öçFVçB#¢6öçFVçBÀ¢Ò¢&VÖ–æ–ærÓÒÆVâ†6öçFVçB¢ÖW76vW2ÒÆ—7B‡&WfW'6VB†ÖW76vW5÷&WfW'6VB’¢ÖW76vRÒ7G"‡&WVW7BævWB‚&ÖW76vR"Â""’’ç7G&—‚¢–bÖW76vS ¢ÖW76vW2æVæB‡²'&öÆR#¢'W6W""Â&6öçFVçB#¢ÖW76vWÒ¢&WGW&âÖW76vW0  ¦FVbö6ö×7Eö†—7F÷'•ö6öçFVçB†6öçFVçC¢7G"ÂÆ–Ö—C¢–çB’Óâ7G# ¢FW‡BÒ6öçFVçBç7G&—‚¢–bÆ–Ö—BÃÒ÷"æ÷BFW‡C ¢&WGW&â" ¢–bÆVâ‡FW‡B’ÃÒÆ–Ö—C ¢&WGW&âFW‡@¢Ö&¶W"Ò%Æî(
+e¾XènXû.Xh^Zë[{.Xè¾{Ê•Ş(
+eÆâ ¢–bÆ–Ö—BÃÒÆVâ†Ö&¶W"’²# ¢&WGW&âFW‡E³¦Æ–Ö—EĞ¢†VBÒÖ‚ƒÂ†Æ–Ö—BÒÆVâ†Ö&¶W"’’òò"¢&WGW&âFW‡E³¦†VEÒ²Ö&¶W"²FW‡E²Ò†Æ–Ö—BÒÆVâ†Ö&¶W"’Ò†VB“¥Ğ  ¦FVböf–Æ&ÆU÷FööÇ2‡&WVW7C¢F–7E·7G"Âç•Ò’Óâ6WE·7G%Ó ¢&rÒ&WVW7BævWB‚&f–Æ&ÆUFööÇ2"¢–bæ÷B—6–ç7Fæ6R‡&rÂÆ—7B“ ¢&WGW&â6WB…5Uõ%DTEôõU$D”ôå2¢&WGW&â·7G"‡FööÂ’f÷"FööÂ–â&r–b7G"‡FööÂ’–â5Uõ%DTEôõU$D”ôå7Ğ  ¦FVböæ÷&ÖÆ—¦UöFV6—6–öâ‡fÇVS¢ç’ÂÆÆ÷vVE÷FööÇ3¢6WE·7G%ÒÂæöæRÒæöæR’ÓâF–7E·7G"Âç•Ó ¢FV6—6–öâÒfÇVR–b—6–ç7Fæ6R‡fÇVRÂF–7B’VÇ6R·Ğ¢ÆÆ÷vVBÒ6WB…5Uõ%DTEôõU$D”ôå2’–bÆÆ÷vVE÷FööÇ2—2æöæRVÇ6RÆÆ÷vVE÷FööÇ0¢&÷WFRÒFV6—6–öâævWB‚'&÷WFR"’–bFV6—6–öâævWB‚'&÷WFR"’–â²&F—&V7B"Â&6Æ&–g’"Â&FVÆVvFR"Â'FööÂ'ÒVÇ6R&F—&V7B ¢ç7vW"Ò7G"†FV6—6–öâævWB‚&ç7vW""Â""’’ç7G&—‚’÷".i¨.i{nk*iÈXúşyJY¹îzÙN8" ¢æ÷&ÖÆ—¦VC¢F–7E·7G"Âç•ÒÒ²'&÷WFR#¢&÷WFRÂ&ç7vW"#¢ç7vW"Â'&WVW7D–B#¢7G"†FV6—6–öâævWB‚'&WVW7D–B"’÷"WV–BçWV–CB‚’—Ğ¢–bFV6—6–öâævWB‚'&÷f–FW%7FGW2"’ÓÒ'Væf–Æ&ÆR# ¢æ÷&ÖÆ—¦VE²'&÷f–FW%7FGW2%ÒÒ'Væf–Æ&ÆR ¢–b—6–ç7Fæ6R†FV6—6–öâævWB‚'&÷f–FW$W'&÷""’Â7G"’æBFV6—6–öå²'&÷f–FW$W'&÷"%Ó ¢æ÷&ÖÆ—¦VE²'&÷f–FW$W'&÷"%ÒÒFV6—6–öå²'&÷f–FW$W'&÷"%Ğ¢–b&÷WFRÓÒ'FööÂ# ¢–çFVçBÒ7G"†FV6—6–öâævWB‚'FööÄ–çFVçB"Â""’’ç7G&—‚¢FööÂÒ7G"†FV6—6–öâævWB‚'&VfW'&VEFööÂ"Â""’’ç7G&—‚¢–bæ÷B–çFVçB÷"FööÂæ÷B–âÆÆ÷vVC ¢&WGW&âöF—&V7B‚.jŠYè¾Šû~k.y¨N[z^X[~[Ù>X˜ŞKˆŞXúşyJûÈÎiÊ®hš~ŠÎK»¾KÙ^i8ŞKÙÎ8""¢æ÷&ÖÆ—¦VE²'FööÄ–çFVçB%ÒÒ–çFVç@¢æ÷&ÖÆ—¦VE²'&VfW'&VEFööÂ%ÒÒFööÀ¢æ÷&ÖÆ—¦VE²'G&6R%ÒÒFV6—6–öâævWB‚'G&6R"’÷"·²'7FvR#¢'FööÂ"Â&Æ&VÂ#¢.‹>yJ[z^X[r"Â'&W7VÇB#¢FööÇÕĞ¢VÆ–b&÷WFRÓÒ&FVÆVvFR# ¢FVÆVvFRÒFV6—6–öâævWB‚&FVÆVvFR"’–bFV6—6–öâævWB‚&FVÆVvFR"’–â²'ÆææW""Â&F–væ÷7F–72'ÒVÇ6R&F–væ÷7F–72 ¢æ÷&ÖÆ—¦VE²&FVÆVvFR%ÒÒFVÆVvFP¢æ÷&ÖÆ—¦VE²'G&6R%ÒÒFV6—6–öâævWB‚'G&6R"’÷"·²'7FvR#¢&FVÆVvF–öâ"Â&Æ&VÂ#¢.‹>yJZÙvVçB"Â'&W7VÇB#¢FVÆVvFWÕĞ¢–b—6–ç7Fæ6R†FV6—6–öâævWB‚'VæF–æt7F–öâ"’ÂF–7B“ ¢æ÷&ÖÆ—¦VE²'VæF–æt7F–öâ%ÒÒFV6—6–öå²'VæF–æt7F–öâ%Ğ¢&WGW&âæ÷&ÖÆ—¦V@  ¦FVb÷FööÅöFV6—6–öâ†–çFVçC¢7G"ÂFööÃ¢7G"Â&V6öã¢7G"Âç7vW#¢7G"Ò.jÚ>YÊ‹>yJXù~hê~[z^X[~8""’ÓâF–7E·7G"Âç•Ó ¢&WGW&â°¢'&÷WFR#¢'FööÂ"À¢&ç7vW"#¢ç7vW"À¢'FööÄ–çFVçB#¢–çFVçBÀ¢'&VfW'&VEFööÂ#¢FööÂÀ¢'&WVW7D–B#¢7G"‡WV–BçWV–CB‚’’À¢'G&6R#¢·²'7FvR#¢'FööÂ"Â&Æ&VÂ#¢.‹>yJ[z^X[r"Â'&W7VÇB#¢FööÂÂ'&V6öâ#¢&V6öçÕÒÀ¢Ğ  ¦FVböF—&V7B†ç7vW#¢7G"’ÓâF–7E·7G"Âç•Ó ¢&WGW&â²'&÷WFR#¢&F—&V7B"Â&ç7vW"#¢ç7vW"Â'&WVW7D–B#¢7G"‡WV–BçWV–CB‚’—Ğ  ¦FVb÷&W7öç6R†ç7vW#¢7G"Â7FGW3¢7G"’ÓâF–7E·7G"Âç•Ó ¢&WGW&â²'7FGW2#¢7FGW2Â&ç7vW"#¢ç7vW"Â'&WVW7D–B#¢7G"‡WV–BçWV–CB‚’—Ğ  ¦FVbö6ö×ÆWF–öåöfÆÆ&6²‡F6µ÷7FFS¢7G"ÂWf–FVæ6S¢Æ—7E¶F–7E·7G"Âç•ÕÒÂ–çFVçC¢7G"’Óâ7G# ¢–bWf–FVæ6S ¢7VÖÖ'’Ò7G"†Wf–FVæ6U²ÓÒævWB‚'7VÖÖ'’"Â""’’ç7G&—‚¢–b7VÖÖ'“ ¢&WGW&â7VÖÖ'¢–bF6µ÷7FFRÓÒ%5T44TTDTB# ¢&WGW&â.K»¾Xª[{.ZèÎh‰[›n˜	®‹ø~š¨ÎiKn8" ¢&WGW&âb.K»¾XªiÊ®ZèÎh‰ûÈ‡·F6µ÷7FFR÷"uTä´äõtâwŞûÈûÉ§¶–çFVçE³£#×Ò   ¦FVböf÷&ÖE÷ÇVv–åö–çfVçF÷'•öç7vW"†–çFVçC¢7G"ÂWf–FVæ6U÷FööÃ¢7G"ÂWf–FVæ6U÷7VÖÖ'“¢7G"’Óâ7G"ÂæöæS ¢""%GW&âF†RW"ô'V¶¶—BÇVv–ç6&V6V—B–çFòW6W"Öf6–ær6öæ6ÇW6–öâà ¢F†RVæÖöF–f–VB&V6V—B&VÖ–ç2–âF6²Wf–FVæ6Rf÷"F†RW‡æF&ÆRW†V7WF–öà¢G&6RâF†—2f÷&ÖGFW"—2FVÆ–&W&FVÇ’æ'&÷r6òVç&VÆFVB6öç6öÆR6öÖÖæG0¢6öçF–çVRFò&WGW&âF†V—"W†7BWf–FVæ6Rà¢"" ¢–bWf–FVæ6U÷FööÂÒ&6öç6öÆRæ6öÖÖæB# ¢&WGW&âæöæP¢–bæ÷B&Rç6V&6‚‡""ƒó®hù.K»gÇÇVv–ç3ò’ç³Ã'Òƒó®X‰~Š‡ÎiÈY:®K©·ÎiÈK¸K˜‡ÎZI®[	Î[{.ZèŠ8WÎiú^yÈ·Îiú^Šú"—Âƒó®iú^yÈ·Îiú^Šú'ÎX‰~X{§Îi‹îzK¢’ç³Ã'Òƒó®hù.K»gÇÇVv–ç3ò’"Â–çFVçBÂ&Rä’“ ¢&WGW&âæöæP ¢6ÆVâÒ&Rç7V"‡",*u³Ó–Öf²Ö÷%Ò"Â""ÂWf–FVæ6U÷7VÖÖ'’ÂfÆw3×&Rä’¢ÖF6‚Ò&Rç6V&6‚‡""ƒó¥6W'fW%Ç2²“õÇVv–ç5Ç2¥Â‚…ÆB²•Â•Ç2£¥Ç2¢…µåÇ%ÆåÒ¢’"Â6ÆVâÂ&Rä’¢–bæ÷BÖF6ƒ ¢&WGW&âæöæP ¢6÷VçBÒ–çB†ÖF6‚æw&÷Wƒ’¢æÖW2Ò&Rç7V"‡"%Ç2²"Â""ÂÖF6‚æw&÷Wƒ"’’ç7G&—‚"ÎûÈÂ"¢–b6÷VçBÓÒ ¢&WGW&â.[Ù>X˜ŞiÈŞXªYšk*iÈ[{.Xª‹ÛŞy¨Nhù.K»nûÈÎhù.K»ni[˜xşK‹¢8" ¢–bæÖW3 ¢&WGW&âb.[Ù>X˜ŞiÈŞXªYš[{.Xª‹ÛÒ¶6÷VçGÒKŠ®hù.K»nûÉ§¶æÖW7Ş8" ¢&WGW&âb.[Ù>X˜ŞiÈŞXªYš[{.Xª‹ÛÒ¶6÷VçGÒKŠ®hù.K»nûÉ¾hê~X‹nXûk*iÈ‹ùNY¹îhù.K»nYŞz{8"   ¦FVböf÷&ÖE÷&VFöæÇ•ö†VÇF…öç7vW"†–çFVçC¢7G"ÂWf–FVæ6S¢Æ—7E¶F–7E·7G"Âç•ÕÒÂFööÇ3¢Æ—7E·7G%Ò’Óâ7G"ÂæöæS ¢&WV—&VE÷FööÇ2Ò²&6öç6öÆRæ6öÖÖæB"Â&6öç6öÆRæ6öÖÖæB"Â&Æöw2çVW'’%Ğ¢2F†RW†7B6öçG&öÆÆVBFööÂ6WVVæ6R—2F†R7F&ÆR6¶–ÆÂ–FVçF—G’âÆææW ¢2ÖöFVÂÖ’‡&6RF†RVç&–6†VBvöÂF–ffW&VçFÇ’Â6ò6ö×ÆWF–öâ×W7Bæ÷@¢2FWVæBöâÖv–2¶W—v÷&B7V6‚2(	ÎX^[«~j8iú^(	Òà¢–bFööÇ2Ò&WV—&VE÷FööÇ3 ¢&WGW&âæöæP ¢6öç6öÆU÷&V6V—G2Ò·7G"†—FVÒævWB‚'7VÖÖ'’"Â""’’ç7G&—‚’f÷"—FVÒ–âWf–FVæ6R–b—FVÒævWB‚&¶–æB"’ÓÒ&6öç6öÆR%Ğ¢Æöu÷&V6V—BÒæW‡B‚‡7G"†—FVÒævWB‚'7VÖÖ'’"Â""’’ç7G&—‚’f÷"—FVÒ–â&WfW'6VB†Wf–FVæ6R’–b—FVÒævWB‚&¶–æB"’ÓÒ&Æöw2"’Â""¢fW'6–öå÷&V6V—BÒæW‡B‚†—FVÒf÷"—FVÒ–â6öç6öÆU÷&V6V—G2–b&Rç6V&6‚‡""ƒó¥F†—26W'fW"—2'Vææ–æwÅW'Å7–v÷GÄ'V¶¶—GÄÖ–æV7&gB’â¢ƒó§fW'6–öçÃÂåÆB²’"Â—FVÒÂ&Rä’’’Â""¢ÇVv–å÷&V6V—BÒæW‡B‚†—FVÒf÷"—FVÒ–â6öç6öÆU÷&V6V—G2–b&Rç6V&6‚‡""ƒó¥6W'fW%Ç2²“õÇVv–ç5Ç2¥Â…ÆBµÂ’"Â—FVÒÂ&Rä’’’Â"" ¢fW'6–öåöÖF6‚Ò&Rç6V&6‚‡"%F†—26W'fW"—2'Vææ–æuµåÇ%ÆåÒ¢"ÂfW'6–öå÷&V6V—BÂ&Rä’¢–bæ÷BfW'6–öåöÖF6ƒ ¢fW'6–öåöÖF6‚Ò&Rç6V&6‚‡""ƒó¥W'Å7–v÷GÄ'V¶¶—B•µåÇ%ÆåÒ¢ƒó£ÂåÆB²ƒó¥ÂåÆB²“ò•µåÇ%ÆåÒ¢"ÂfW'6–öå÷&V6V—BÂ&Rä’¢fW'6–öå÷FW‡BÒ&Rç7V"‡"%Ç2²"Â""ÂfW'6–öåöÖF6‚æw&÷Wƒ’’ç7G&—‚’–bfW'6–öåöÖF6‚VÇ6R'fW'6–öâYŞKºN[{.h‰X©ş‹ùNY¹îûÈÎXéşZx¾{¹>iéÎŠxhš~ŠÎ‹Ú‹û’ ¢ÇVv–åöç7vW"Òöf÷&ÖE÷ÇVv–åö–çfVçF÷'•öç7vW"‚.iú^yÈ¾iÈŞXªYšhù.K»nX‰~Š‚"Â&6öç6öÆRæ6öÖÖæB"ÂÇVv–å÷&V6V—B¢ÇVv–å÷FW‡BÒÇVv–åöç7vW"ç'7G&—‚.8""’–bÇVv–åöç7vW"VÇ6R'ÇVv–ç2YŞKºN[{.h‰X©ş‹ùNY¹îûÈÎXéşZx¾{¹>iéÎŠxhš~ŠÎ‹Ú‹û’  ¢6–væÇ3¢Æ—7E·7G%ÒÒµĞ¢–b&Rç6V&6‚‡"%W"vF6†FöwÆ†2æ÷B&W7öæFVBf÷%Ç2µÆBµÇ2·6V6öæG2"ÂÆöu÷&V6V—BÂ&Rä’“ ¢6V6öæG2Ò&Rç6V&6‚‡"&†2æ÷B&W7öæFVBf÷%Ç2²…ÆB²•Ç2·6V6öæG2"ÂÆöu÷&V6V—BÂ&Rä’¢6–væÇ2æVæB†b%W"vF6†Förj8kX¾X‹K‹¾{«şzˆ¾‹h^‹ør·6V6öæG2æw&÷Wƒ—Òzy.iÊ®Y8Ş[©B"–b6V6öæG2VÇ6R%W"vF6†Förj8kX¾X‹K‹¾{«şzˆ¾izY8Ş[©B"¢–b&Rç6V&6‚‡"$6âwB¶VWW"ÂÆöu÷&V6V—BÂ&Rä’“ ¢ÆrÒ&Rç6V&6‚‡"%'Vææ–æuÇ2²…ÆB²–×5Ç2¶÷%Ç2²…ÆB²•Ç2·F–6·2&V†–æB"ÂÆöu÷&V6V—BÂ&Rä’¢6–væÇ2æVæB†b.iÈŞXªYši»î‰ŞYâ¶Æræw&÷Wƒ—Ö×>ûÈ‡¶Æræw&÷Wƒ"—ÒF–6·>ûÈ’"–bÆrVÇ6R.iz^[ù~X{®xë6âwB¶VWWXÚšşY®ŠÚb"¢–b&Rç6V&6‚‡"%W%fW'6–öäfWF6†W'ÄW'&÷"v†–ÆR'6–ærfW'6–öâ"ÂÆöu÷&V6V—BÂ&Rä’“ ¢6–væÇ2æVæB‚%W"x˜iÊÎj8iú^Šëş™zî‹ùÎzºò’ZK‹JR"¢–bæ÷B6–væÇ2æB&Rç6V&6‚‡""ƒó¥Æ$U%$õ%Æ'ÅÆ%t$âƒó¤”är“õÆ'ÄW†6WF–öâ’"ÂÆöu÷&V6V—BÂ&Rä’“ ¢6–væÇ2æVæB‚.iz^[ù~XÈ^Y
+²U%$õ"õt$âh‰n[È.[‹Znj‚"¢–bæ÷BÆöu÷&V6V—C ¢Æöu÷FW‡BÒ.iz^[ù~[z^X[~iÊ®‹ùNY¹îXúşXˆniéXh^Zë’ ¢6öæ6ÇW6–öâÒ.j8iú^iÊ®ZèÎi[N˜	®‹ø~ûÉ®{Ë®[	iz^[ù~ŠøhÚî8" ¢VÆ–b6–væÇ3 ¢Æöu÷FW‡BÒ.ûÉ²"æ¦ö–â‡6–væÇ2¢6öæ6ÇW6–öâÒ.iÈŞXªYš[Ù>X˜ŞXúşY8Ş[©NûÈÎKØnZÙYÊyÉşZéîXÚšşh‰nZIn˜:x˜iÊÎj8iú^[È.[‹ûÈÎKˆŞˆ;ŞXŠNZé®K‹®ZèÎXZX^[«~8" ¢VÇ6S ¢Æöu÷FW‡BÒ.iÈ‹ùiz^[ù~KŠŞiÊ®XË˜XŞX‹U%$õ.8t$î8[Jk¨>h‰nXÚšşX[>™JîŠøÒ ¢6öæ6ÇW6–öâÒ.KˆšXú®Šû¾j8iú^YØ~[{.ZèÎh‰ûÈÎi¨.iÊ®Xùxëiˆîi‹î[È.[‹KúXû~8"  ¢&WGW&â%Æâ"æ¦ö–â‚€¢.Xú®Šû¾X^[«~j8iú^[{.ZèÎh‰8""À¢b"ÒiÈŞXªzºşûÉ§·fW'6–öå÷FW‡GÒ"À¢b"Òhù.K»nûÉ§·ÇVv–å÷FW‡GÒ"À¢b"Òiz^[ù~ûÉ§¶Æöu÷FW‡GŞ8""À¢b"Ò{¹>Šë®ûÉ§¶6öæ6ÇW6–öçÒ"À¢’  ¦FVb÷F‡&VEö–B‡–ÆöC¢F–7E·7G"Âç•Ò’Óâ7G# ¢fÇVRÒ7G"€¢–ÆöBævWB‚'F‡&VD–B"¢÷"–ÆöBævWB‚'6W76–öä–B"¢÷"–ÆöBævWB‚'&WVW7D–B"¢÷"–ÆöBævWB‚'&WVW7Eö–B"¢÷"" ¢’ç7G&—‚¢–bfÇVS ¢&WGW&âfÇVU³£cĞ¢26ÆÆW"F†BFöW2æ÷B&÷f–FRç’6W76–öâ÷&WVW7B–FVçF–f–W"×W7Bæ÷@¢26†&R—G2W'6—7FVçBÆætw&‚7FFRÖW&VÇ’&V6W6R—BF&vWG2F†R6ÖP¢2Ö–æV7&gB–ç7Fæ6Rà¢&WGW&â&æöç–Ö÷W3¢"²7G"‡WV–BçWV–CB‚’  ¦FVb÷'6Uö§6öâ‡fÇVS¢7G"’Óâç“ ¢FW‡BÒfÇVRç7G&—‚¢–bFW‡Bç7F'G7v—F‚‚&"“ ¢FW‡BÒ&Rç7V"‡"%æƒó¦§6öâ“õÇ2§ÅÇ2¦B"Â""ÂFW‡BÂfÆw3×&Rä’Â&Rå2¢G'“ ¢&WGW&â§6öâæÆöG2‡FW‡B¢W†6WB§6öâä¥4ôäFV6öFTW'&÷# ¢ÖF6‚Ò&Rç6V&6‚‡"%Ç²â¥ÇÒ"ÂFW‡BÂ&Rå2¢–bæ÷BÖF6ƒ ¢&—6P¢&WGW&â§6öâæÆöG2†ÖF6‚æw&÷Wƒ’  ¦FVbö66—G•öW'&÷"†W'&÷#¢W†6WF–öâ’Óâ&ööÃ ¢&WGW&â&ööÂ‡&Rç6V&6‚‡"#C#—ÃS7Æ66—G—Ç&FRãöÆ–Ö—GÆ÷fW&ÆöFVGÇFV×÷&&–Ç’Væf–Æ&ÆR"Â7G"†W'&÷"’Â&Rä’’  ¦FVb÷ÇVv–åöæÖUög&öÕö–çFVçB†–çFVçC¢7G"’Óâ7G"ÂæöæS ¢ÖF6‚Ò&Rç6V&6‚‡"%Æ"†W76VçF–Ç7ƒ÷ÆÇV6·W&×7Çf–fW'6–öçÇf–&6·v&G7ÆvW—6W'ÆfÆööFvFWÇ7&·Çv÷&ÆFVF—GÇv÷&ÆFwV&GÇÆ6V†öÆFW&—ÇfVÇB•Æ""Â–çFVçBÂ&Rä’¢–bæ÷BÖF6ƒ ¢&WGW&âæöæP¢æÖRÒÖF6‚æw&÷Wƒ’æÆ÷vW"‚¢&WGW&â$W76VçF–Ç5‚"–bæÖR–â²&W76VçF–Ç2"Â&W76VçF–Ç7‚'ÒVÇ6RæÖP

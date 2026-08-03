@@ -6,7 +6,7 @@ import type { ConversationMessage, ConversationSession } from "@mcai/contracts";
 import { CloudStore } from "../store/cloud.store";
 import { ModelGatewayService, type ChatDecision, type ChatStreamProgress } from "../model-gateway/model-gateway.service";
 import { TasksService } from "../tasks/tasks.service";
-import { extractConsoleCommandIntent, extractRealtimeLogIntent } from "../tasks/planner";
+import { extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "../tasks/planner";
 
 const defaultSystemPrompt = [
   "你是 MCAI Sidecar 的 Minecraft 运维助手。",
@@ -16,6 +16,7 @@ const defaultSystemPrompt = [
   "简单知识问题直接回答；仅当缺少继续所必需且无法从当前实例获得的信息时才追问。",
   "请求中的当前实例就是页面已选定的执行目标，只要实例存在，不得重复询问要操作哪个实例。",
   "明确的实例操作或控制台命令优先调用受控工具，不能要求用户重复提供库存中已有的平台、版本或状态。",
+  "用户只需描述目标。将“检查服务器健康”“看看服务器有没有问题”等短指令自动展开为只读健康检查技能：读取版本、插件和近期日志，等待每一步真实回调后形成综合结论。",
   "工具已接受、命令已提交或任务正在运行不代表完成；必须等待回调并依据真实证据回答。",
   "复杂分析可委派诊断或规划子 Agent。",
   "只有需要读取服务器状态或执行操作时才请求受控工具。",
@@ -254,9 +255,12 @@ export class ChatService implements OnModuleInit {
       instance,
     };
     const consoleCommand = extractConsoleCommandIntent(content);
+    const filesListIntent = extractFilesListIntent(content);
     const realtimeLogIntent = extractRealtimeLogIntent(content);
     const deterministicDecision: ChatDecision | undefined = consoleCommand
       ? { route: "tool", answer: "控制台命令已提交。", toolIntent: content }
+      : filesListIntent
+        ? { route: "tool", answer: "正在读取插件目录。", toolIntent: filesListIntent, preferredTool: "files.list" }
       : realtimeLogIntent
         ? { route: "tool", answer: "将读取当前实例日志并依据实际证据分析。", toolIntent: realtimeLogIntent }
         : undefined;

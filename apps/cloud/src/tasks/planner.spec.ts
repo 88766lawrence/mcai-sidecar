@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftPlan, extractRealtimeLogIntent } from "./planner";
+import { draftPlan, expandOperationalSkill, extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "./planner";
 
 describe("draftPlan", () => {
   it("creates a controlled Paper installation plan for any supported release", () => {
@@ -48,6 +48,39 @@ describe("draftPlan", () => {
       requires_confirmation: true,
     }]);
     expect(plan.acceptance).toEqual([{ type: "instance_state", expected: "stopped" }]);
+  });
+
+  it("builds a multi-step read-only health inspection without obeying negated stop text", () => {
+    const plan = draftPlan(
+      "mcs:daemon:instance",
+      "revision-1",
+      "对当前实例完成只读健康检查：执行 version、plugins 并读取最近日志；不要重启或停止服务器。",
+      { preferredTool: "logs.query" },
+    );
+
+    expect(plan.steps).toEqual([
+      { id: "s1", tool: "console.command", args: { command: "version" }, risk: "read" },
+      { id: "s2", tool: "console.command", args: { command: "plugins" }, risk: "read" },
+      { id: "s3", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" },
+    ]);
+  });
+
+  it.each(["检查服务器健康", "看看这台服务器有没有问题", "服务器正常吗", "给当前实例做个巡检"])(
+    "expands the short health request %s into the complete read-only skill",
+    (intent) => {
+      expect(expandOperationalSkill(intent)).toContain("执行 version");
+      expect(draftPlan("mcs:daemon:instance", "revision-1", intent).steps.map((step) => step.tool))
+        .toEqual(["console.command", "console.command", "logs.query"]);
+    },
+  );
+
+  it("does not turn a general health-check tutorial question into a live server task", () => {
+    expect(expandOperationalSkill("Minecraft 服务器健康检查一般怎么做？")).toBeUndefined();
+  });
+
+  it("does not treat a negated stop instruction as authorization to stop", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "检查日志，但不要停止服务器", { preferredTool: "logs.query" });
+    expect(plan.steps[0]?.tool).toBe("logs.query");
   });
 
   it("creates a read-only console plan for list", () => {
@@ -119,6 +152,19 @@ describe("draftPlan", () => {
     expect(plan.acceptance).toContainEqual({ type: "plugin_enabled", name: "essentialsx" });
   });
 
+  it("installs a plugin without restarting when the user explicitly forbids restart", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "下载并安装 EssentialsX 插件，但不要重启服务器", {
+      preferredTool: "plugin.install",
+      platform: "paper",
+      minecraftVersion: "1.21.1",
+      loader: "paper",
+    });
+
+    expect(plan.steps.map((step) => step.tool)).toEqual(["plugin.resolve", "plugin.install"]);
+    expect(plan.steps.some((step) => step.tool === "instance.restart")).toBe(false);
+    expect(plan.acceptance).toEqual([]);
+  });
+
   it("resolves plugin metadata without creating an installation plan", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "解析 EssentialsX 兼容版本和制品，但不要安装", {
       preferredTool: "plugin.resolve",
@@ -148,5 +194,19 @@ describe("draftPlan", () => {
     });
 
     expect(plan.steps).toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
+  });
+
+  it("uses the read-only plugins console command for a natural-language plugin inventory query", () => {
+    expect(extractConsoleCommandIntent("查看服务器插件有哪些")).toBe("plugins");
+    expect(draftPlan("mcs:daemon:instance", "revision-1", "查看服务器插件有哪些").steps).toEqual([{
+      id: "s1", tool: "console.command", args: { command: "plugins" }, risk: "read",
+    }]);
+  });
+
+  it("treats an explicit plugin-directory correction as a files tool request", () => {
+    expect(extractConsoleCommandIntent("我说插件目录")).toBeUndefined();
+    expect(extractFilesListIntent("我说插件目录")).toContain("/plugins");
+    expect(draftPlan("mcs:daemon:instance", "revision-1", "我说插件目录", { preferredTool: "files.list" }).steps)
+      .toEqual([{ id: "s1", tool: "files.list", args: { path: "/plugins" }, risk: "read" }]);
   });
 });

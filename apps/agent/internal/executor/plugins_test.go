@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -64,30 +65,51 @@ func (r staticPluginResolver) Resolve(context.Context, string, string, string) (
 	return r.artifact, nil
 }
 
+type recordingPluginResolver struct {
+	loader  string
+	version string
+}
+
+func (r *recordingPluginResolver) Resolve(_ context.Context, _ string, loader string, version string) (resolvedPlugin, error) {
+	r.loader, r.version = loader, version
+	return resolvedPlugin{}, errors.New("recorded")
+}
+
 type pluginProvider struct {
 	uploadDir  string
 	uploadName string
 	uploaded   []byte
 	deleted    []string
+	output     string
+	listing    string
+	latestLog  []byte
 }
 
 func (p *pluginProvider) ListInstances(context.Context) ([]provider.Instance, error) { return nil, nil }
 func (p *pluginProvider) ReadOutput(context.Context, string, int) (string, error) {
+	if p.output != "" {
+		return p.output, nil
+	}
 	return "Server Plugins (1): Essentials", nil
 }
 func (p *pluginProvider) ListFiles(context.Context, string, string) (string, error) {
+	if p.listing != "" {
+		return p.listing, nil
+	}
 	return "共 1 项：" + p.uploadName, nil
 }
 func (p *pluginProvider) DownloadFromURL(context.Context, string, string, string) error { return nil }
 func (p *pluginProvider) UpdateStartConfig(context.Context, string, provider.StartConfig) error {
 	return nil
 }
-func (p *pluginProvider) ReadFile(context.Context, string, string) ([]byte, error) { return nil, nil }
-func (p *pluginProvider) WriteFile(context.Context, string, string, []byte) error  { return nil }
-func (p *pluginProvider) SendCommand(context.Context, string, string) error        { return nil }
-func (p *pluginProvider) Start(context.Context, string) error                      { return nil }
-func (p *pluginProvider) Stop(context.Context, string) error                       { return nil }
-func (p *pluginProvider) Restart(context.Context, string) error                    { return nil }
+func (p *pluginProvider) ReadFile(context.Context, string, string) ([]byte, error) {
+	return p.latestLog, nil
+}
+func (p *pluginProvider) WriteFile(context.Context, string, string, []byte) error { return nil }
+func (p *pluginProvider) SendCommand(context.Context, string, string) error       { return nil }
+func (p *pluginProvider) Start(context.Context, string) error                     { return nil }
+func (p *pluginProvider) Stop(context.Context, string) error                      { return nil }
+func (p *pluginProvider) Restart(context.Context, string) error                   { return nil }
 func (p *pluginProvider) GetInstance(context.Context, string) (provider.Instance, error) {
 	return provider.Instance{State: "running"}, nil
 }
@@ -128,6 +150,27 @@ func TestPluginResolveInstallAndRollback(t *testing.T) {
 	executor.rollbackPlugin(context.Background(), provider, plan, func(string, string, string) {})
 	if len(provider.deleted) != 1 || provider.deleted[0] != "plugins/EssentialsX-2.21.0.jar" {
 		t.Fatalf("unexpected rollback targets: %#v", provider.deleted)
+	}
+}
+
+func TestPluginResolveDetectsMissingServerMetadata(t *testing.T) {
+	resolver := &recordingPluginResolver{}
+	executor := New(t.TempDir(), nil)
+	executor.pluginResolver = resolver
+	provider := &pluginProvider{
+		output:  "This server is running Paper version 1.21.1-133 (MC: 1.21.1)",
+		listing: "共 4 项：plugins、config、bukkit.yml、spigot.yml",
+	}
+	err := executor.executeStep(context.Background(), provider, protocol.TaskPlan{
+		TaskID: "task-detect-plugin", InstanceRef: "mcs:daemon:instance",
+	}, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
+		"project": "essentialsx", "loader": "unknown", "minecraft_version": "",
+	}}, func(string, string, string) {})
+	if err == nil || err.Error() != "recorded" {
+		t.Fatalf("expected recording resolver sentinel, got %v", err)
+	}
+	if resolver.loader != "paper" || resolver.version != "1.21.1" {
+		t.Fatalf("detected target = %s %s, want paper 1.21.1", resolver.loader, resolver.version)
 	}
 }
 

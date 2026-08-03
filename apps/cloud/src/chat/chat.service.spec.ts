@@ -52,6 +52,67 @@ describe("ChatService", () => {
     expect(await readFile(join(directory, "conversations.json"), "utf8")).toContain("回答要简洁");
   });
 
+  it("routes plugin inventory and plugin-directory corrections without trusting the model", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.1",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = { route: vi.fn() } as unknown as ModelGatewayService;
+    const consoleTask = { id: "task-console", state: "SNAPSHOTTING" };
+    const filesTask = { id: "task-files", state: "SNAPSHOTTING" };
+    const tasks = {
+      create: vi.fn().mockResolvedValueOnce(consoleTask).mockResolvedValueOnce(filesTask),
+      get: vi.fn().mockImplementation((id: string) => id === consoleTask.id ? consoleTask : filesTask),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const inventory = await service.send(session.id, "tenant-1", "查看服务器插件有哪些");
+    const directoryResult = await service.send(session.id, "tenant-1", "我说插件目录");
+
+    expect(inventory.message).toMatchObject({ route: "tool", task_id: "task-console" });
+    expect(directoryResult.message).toMatchObject({ route: "tool", task_id: "task-files" });
+    expect(tasks.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ intent: "查看服务器插件有哪些" }));
+    expect(tasks.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      intent: expect.stringContaining("/plugins"),
+      preferredTool: "files.list",
+    }));
+    expect(model.route).not.toHaveBeenCalled();
+  });
+
+  it("passes a short health request through the model planning pipeline", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.1",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1",
+    });
+    const model = { route: vi.fn().mockResolvedValue({
+      route: "tool",
+      answer: "正在执行只读健康检查。",
+      toolIntent: "对当前实例完成一次只读健康检查：执行 version、plugins 并读取最近日志，等待真实回调后总结。",
+      preferredTool: "logs.query",
+    }) } as unknown as ModelGatewayService;
+    const task = { id: "task-health", state: "SNAPSHOTTING" };
+    const tasks = {
+      create: vi.fn().mockResolvedValue(task),
+      get: vi.fn().mockReturnValue(task),
+    } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const result = await service.send(session.id, "tenant-1", "看看服务器有没有问题");
+
+    expect(result.message).toMatchObject({ route: "tool", task_id: "task-health" });
+    expect(tasks.create).toHaveBeenCalledWith(expect.objectContaining({
+      intent: expect.stringContaining("执行 version"),
+      preferredTool: "logs.query",
+    }));
+    expect(model.route).toHaveBeenCalledOnce();
+  });
+
   it("appends one final answer when message polls overlap after a terminal tool callback", async () => {
     const store = new CloudStore();
     store.instances.set("instance-1", {
@@ -151,7 +212,7 @@ describe("ChatService", () => {
     const session = await service.create("tenant-1", "instance-1");
     const progress: Array<{ type: string; text?: string }> = [];
 
-    const result = await service.sendStream(session.id, "tenant-1", "服务器运行正常吗？", undefined, (event) => progress.push(event));
+    const result = await service.sendStream(session.id, "tenant-1", "Paper 和 Fabric 有什么区别？", undefined, (event) => progress.push(event));
     const messages = await service.messages(session.id, "tenant-1");
 
     expect(progress).toEqual([
