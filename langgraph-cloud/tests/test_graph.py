@@ -15,6 +15,7 @@ from mcai_graph.graph import (
     _decision_schema,
     _deterministic_decision,
     _history,
+    _has_invalid_tps_claim,
     _infer_pending_action,
     _max_tokens_for_schema,
     _normalize_decision,
@@ -48,7 +49,10 @@ class FailingProvider(FakeProvider):
 
 class GraphTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        # Windows can release SQLite sidecar files a few milliseconds after
+        # the async connection closes. Test assertions must not become flaky
+        # because rmtree races that delayed handle release.
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.graph = McaiGraph(FakeProvider(), Path(self.temp.name) / "state.sqlite3")
 
     async def asyncTearDown(self):
@@ -347,6 +351,53 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await graph.close()
 
+    async def test_log_diagnosis_distinguishes_version_404_from_network_failure(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "log-version-404.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-log-version-404",
+                "intent": "读取最近一小时日志并诊断异常原因",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "logs.query"}]},
+                "evidence": [{
+                    "kind": "logs",
+                    "summary": (
+                        "[Thread-8/ERROR]: [PaperVersionFetcher] Error while parsing version\n"
+                        "java.io.FileNotFoundException: https://api.papermc.io/v2/projects/paper/versions/1.21.1\n"
+                        "Error obtaining version information\n"
+                        "TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0"
+                    ),
+                }],
+            })
+            self.assertIn("HTTP 404", response["answer"])
+            self.assertIn("未发现崩溃", response["answer"])
+            self.assertIn("不足以支持 DNS", response["answer"])
+            self.assertNotIn("最可能的故障原因是网络", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_log_diagnosis_prioritizes_real_watchdog_and_lag_evidence(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "log-watchdog.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-log-watchdog",
+                "intent": "检查日志并诊断卡服原因",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "logs.query"}]},
+                "evidence": [{
+                    "kind": "logs",
+                    "summary": (
+                        "[Paper Watchdog Thread/ERROR]: The server has not responded for 10 seconds\n"
+                        "Can't keep up! Is the server overloaded? Running 8014ms or 160 ticks behind"
+                    ),
+                }],
+            })
+            self.assertIn("超过 10 秒未响应", response["answer"])
+            self.assertIn("落后 8014ms（160 ticks）", response["answer"])
+            self.assertIn("不能判定为完全健康", response["answer"])
+        finally:
+            await graph.close()
+
     async def test_readonly_health_inspection_prefers_real_version_line_and_named_log_signals(self):
         graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-signals.sqlite3")
         try:
@@ -411,7 +462,7 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         try:
             planner = await graph.route({
                 "threadId": "session-template-plan",
-                "message": "不读取实时数据，为大型 Paper 服务器制定三阶段性能治理方案，包含风险、回滚和停止条件。",
+                "message": "不读取实时数据，为大型 Paper 服务器制定容量治理方案，包含风险、回滚和停止条件。",
                 "availableTools": ["logs.query"],
             })
             diagnostics = await graph.route({
@@ -423,6 +474,89 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(diagnostics["route"], "delegate")
             self.assertIn("阶段、依赖、风险、验收、回滚、停止条件", provider.systems[0])
             self.assertIn("已知事实、推断、验证、风险、验收", provider.systems[1])
+            self.assertIn("正常满速是 20 TPS", provider.systems[1])
+            self.assertIn("不得写 TPS≥30", provider.systems[1])
+            self.assertIn("禁止假设 spark、timings、JFR", provider.systems[1])
+            self.assertIn('["logs.query"]', provider.systems[1])
+        finally:
+            await graph.close()
+
+    async def test_invalid_minecraft_tps_diagnosis_is_replaced_with_a_safe_answer(self):
+        class InvalidTpsProvider(FakeProvider):
+            async def structured(self, _system, _messages, schema):
+                if set(schema.get("properties", {})) == {"answer"}:
+                    return {"answer": "已知事实：TPS=20 偏低。验证：运行 spark profiler。验收：TPS≥30。"}
+                return await super().structured(_system, _messages, schema)
+
+        graph = McaiGraph(InvalidTpsProvider(), Path(self.temp.name) / "invalid-tps.sqlite3")
+        try:
+            decision = await graph.route({
+                "threadId": "session-invalid-tps",
+                "message": (
+                    "不读取任何真实服务器数据。这是虚构案例：TPS 近 15 分钟稳定为 20，MSPT p95 为 48ms，"
+                    "内存每 40 秒出现一次 180ms GC，只有探索新区域时出现卡顿。"
+                    "请诊断根因，区分事实、推断、验证、风险和验收。"
+                ),
+                "availableTools": ["logs.query", "console.command"],
+            })
+            self.assertEqual(decision["route"], "delegate")
+            self.assertIn("属于正常满速而非低 TPS", decision["answer"])
+            self.assertIn("MSPT 48ms", decision["answer"])
+            self.assertIn("区块生成", decision["answer"])
+            self.assertNotIn("TPS≥30", decision["answer"])
+            self.assertNotIn("spark", decision["answer"].lower())
+        finally:
+            await graph.close()
+
+    async def test_structured_performance_plan_keeps_all_user_constraints_when_model_is_truncated(self):
+        class TruncatedPlannerProvider(FakeProvider):
+            async def structured(self, _system, _messages, schema):
+                if set(schema.get("properties", {})) == {"answer"}:
+                    return {"answer": "阶段1：先优化配置；阶段2：再精简插件；阶段3："}
+                return await super().structured(_system, _messages, schema)
+
+        graph = McaiGraph(TruncatedPlannerProvider(), Path(self.temp.name) / "truncated-plan.sqlite3")
+        try:
+            decision = await graph.route({
+                "threadId": "session-truncated-plan",
+                "message": (
+                    "不读取实时数据，为一个 150 人在线、20 个插件的大型 Paper 生存服制定三阶段性能治理方案。"
+                    "约束：维护窗口每周只有 20 分钟，不能丢失玩家数据，必须支持回滚；给出依赖、风险、量化验收和停止条件。"
+                ),
+                "availableTools": ["logs.query", "console.command", "config.patch"],
+            })
+            self.assertEqual(decision["route"], "delegate")
+            for expected in ("150 人负载", "20 个插件", "不超过 20 分钟", "依赖：", "风险：", "验收：", "回滚：", "停止条件："):
+                self.assertIn(expected, decision["answer"])
+            self.assertIn("TPS 接近 20", decision["answer"])
+            self.assertIn("MSPT 低于 50ms", decision["answer"])
+        finally:
+            await graph.close()
+
+    async def test_constrained_complex_answers_survive_provider_timeout(self):
+        class TimeoutDelegateProvider(FakeProvider):
+            async def structured(self, *_args, **_kwargs):
+                raise TimeoutError()
+
+        graph = McaiGraph(TimeoutDelegateProvider(), Path(self.temp.name) / "constrained-timeout.sqlite3")
+        try:
+            diagnosis = await graph.route({
+                "threadId": "session-diagnosis-timeout",
+                "message": "不读取实时数据：TPS 20，MSPT 48ms，每 40 秒有 180ms GC，探索新区块时卡顿；请诊断并给出验证和验收。",
+                "availableTools": ["logs.query", "console.command"],
+            })
+            planning = await graph.route({
+                "threadId": "session-plan-timeout",
+                "message": "不读取实时数据，为 150 人、20 个插件的 Paper 服制定三阶段性能治理方案，维护窗口 20 分钟，必须回滚并给出停止条件。",
+                "availableTools": ["logs.query", "console.command", "config.patch"],
+            })
+            self.assertEqual(diagnosis["route"], "delegate")
+            self.assertIn("TPS 20", diagnosis["answer"])
+            self.assertNotIn("模型服务", diagnosis["answer"])
+            self.assertEqual(planning["route"], "delegate")
+            self.assertIn("回滚：", planning["answer"])
+            self.assertIn("停止条件：", planning["answer"])
+            self.assertNotIn("模型服务", planning["answer"])
         finally:
             await graph.close()
 
@@ -458,6 +592,10 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RoutingTests(unittest.TestCase):
+    def test_tps_validator_distinguishes_correction_from_an_invalid_claim(self):
+        self.assertFalse(_has_invalid_tps_claim("TPS 20，属于正常满速而非低 TPS；验收保持接近 20。"))
+        self.assertTrue(_has_invalid_tps_claim("TPS=20 偏低，验收要求 TPS≥30。"))
+
     def test_router_prompt_requires_uncertain_facts_to_remain_explicit(self):
         prompt = _router_prompt({"instance": {}, "availableTools": []})
         self.assertIn("不得编造项目名、版本号、性能指标或工具能力", prompt)
@@ -549,6 +687,13 @@ class RoutingTests(unittest.TestCase):
         self.assertIsNone(_deterministic_decision("看看服务器有没有问题", [], available))
         self.assertTrue(_should_plan_request("看看服务器有没有问题", available))
 
+    def test_general_knowledge_comparison_skips_the_goal_planner(self):
+        available = {"logs.query", "console.command"}
+        self.assertFalse(_should_plan_request(
+            "概念问题：Paper 与 Fabric 的适用场景有什么不同？只基于通用知识回答，不读取实例数据。",
+            available,
+        ))
+
     def test_health_tutorial_question_is_not_expanded_to_a_live_skill(self):
         decision = _deterministic_decision(
             "Minecraft 服务器健康检查一般怎么做？",
@@ -570,7 +715,7 @@ class RoutingTests(unittest.TestCase):
 class ModelAdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_output_budgets_keep_routing_and_answers_concise(self):
         answer_schema = {"required": ["answer"]}
-        self.assertEqual(_max_tokens_for_schema(answer_schema), 256)
+        self.assertEqual(_max_tokens_for_schema(answer_schema), 512)
         self.assertEqual(_max_tokens_for_schema(_decision_schema()), 384)
         self.assertGreater(MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS, MODEL_REQUEST_TIMEOUT_SECONDS)
 

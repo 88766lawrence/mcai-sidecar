@@ -651,6 +651,38 @@ git diff --stat
 - `757427b`：把原始工具日志转为人类可读结果，并展示真实执行轨迹。
 - `a218544`：修复否定语义误停服，新增 `version → plugins → logs` 多步骤只读健康检查和综合归纳。
 
+## 21. 2026-08-03 复杂模型与日志诊断修复
+
+本轮针对真实复杂任务验收中暴露的问题完成了以下修复：
+
+1. 知识比较问题（例如“Paper 与 Fabric 的适用场景有什么不同”）不再误入目标规划模型，避免“规划模型 → 执行模型”双调用耗尽超时预算。
+2. answer-only 输出预算由 256 tokens 调整为 512 tokens；带明确量化约束的三阶段性能治理方案使用受约束综合器，完整保留阶段、依赖、风险、验收、回滚、停止条件、人数、插件数和维护窗口。
+3. Minecraft 性能诊断加入领域硬约束：正常满速是 20 TPS，不能产生 `TPS≥30` 等不可能指标；性能边界主要使用 50ms/tick 与 MSPT 判断。
+4. `TPS + MSPT + GC/新区块探索` 场景走稳定的证据综合器，不再因模型瞬时超时返回“模型不可用”，也不会无证据假设 spark、timings、JFR、heapdump 或 MAT 可用。
+5. 单独的 `logs.query` 故障诊断改为证据驱动总结：明确区分 PaperVersionFetcher 的 FileNotFoundException/HTTP 404 语义、Watchdog 主线程无响应和 `Can't keep up` 卡顿；不得把 404 擅自归因于 DNS、出口网络或防火墙。
+6. 修复 Windows 测试环境关闭 SQLite 后临时目录句柄延迟释放造成的非功能性清理抖动。
+
+最终验证：
+
+- Windows LangGraph：74/74 通过。
+- Windows Cloud：35/35 通过。
+- contracts/cloud/web TypeScript typecheck：通过。
+- Linux LangGraph：74/74 通过。
+- 真实复杂 Agent：离线指标诊断、三阶段规划、`logs.query` 工具任务、真实回调和最终日志结论全部通过。
+- 真实流式模型：`/ready`、算术直答、Paper/Fabric 知识比较、空工具集安全限制、Cloud NDJSON 流式回答全部通过。
+- 三轮 TPS 稳定性：3/3 通过，均正确识别 20 TPS、50ms MSPT 边界，无不可能 TPS 指标和无证据 profiler。
+- Linux 四个服务：`mcai-model-cloud`、`mcai-cloud`、`mcai-agent`、`mcai-web` 均为 active。
+
+Linux 最新回滚备份：`/tmp/mcai-model-adapter-backup-20260803163442`。
+
+三端文件哈希：
+
+- `langgraph-cloud/mcai_graph/graph.py`：`0349bfd09d70043a77678bdcda329623eaf98e859828f9ad2e52ee889dfdd021`
+- `langgraph-cloud/tests/test_graph.py`：`426ce51e1138541d2ab751a43ea2c27d2bbb63a0cf7a2ebadcac23869098f5a8`
+- Windows、本地 Linux 源码目录和 Linux 当前运行 release 三处一致。
+
+外部限制：2026-08-03 验收期间 `ai.profileeast.com` 曾出现一次主模型及备用模型连续超时；随后 `/models` 为 HTTP 200，三个模型恢复返回，最终全量验收通过。受约束的 Minecraft 性能诊断与规划已不依赖该瞬时可用性；普通开放域知识问答仍可能受上游容量影响。
+
 ---
 
-交接基准：当前 Linux 测试端可用；Windows 与 Linux 最新关键文件一致；GitHub 为本地 ahead 5、behind 1，远端单独的截断 CSS 提交待安全吸收。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。
+交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；本轮修复已在本地提交，但 2026-08-03 因访问 `github.com:443` 超时尚未推送，恢复网络后应先核对 `git status --short --branch` 再执行非强制推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

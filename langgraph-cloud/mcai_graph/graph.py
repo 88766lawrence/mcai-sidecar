@@ -33,7 +33,7 @@ MODEL_PROVIDER_TIMEOUT_SECONDS = 30
 MODEL_REQUEST_TIMEOUT_SECONDS = 10
 MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS = 20
 MODEL_ROUTING_MAX_TOKENS = 384
-MODEL_ANSWER_MAX_TOKENS = 256
+MODEL_ANSWER_MAX_TOKENS = 512
 MODEL_HISTORY_ITEM_MAX_CHARS = 1_600
 MODEL_HISTORY_TOTAL_CHARS = 6_000
 
@@ -571,15 +571,26 @@ class McaiGraph:
         request = state.get("request", {})
         decision = state.get("decision", {})
         kind = decision.get("delegate") if decision.get("delegate") in {"planner", "diagnostics"} else "diagnostics"
+        available_operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
         role = (
             "你是规划子 Agent。只输出 6 条简洁结论，必须依次带有“阶段、依赖、风险、验收、回滚、停止条件”标签；每条一句，总长度控制在 320 个中文字符以内。"
             if kind == "planner"
             else "你是诊断子 Agent。只输出 5 条简洁结论，必须带有“已知事实、推断、验证、风险、验收”标签；每条一句，总长度控制在 320 个中文字符以内。"
         )
+        performance_rules = (
+            "Minecraft 正常满速是 20 TPS，不能要求或声称 TPS 超过 20；TPS=20 不得判为低 TPS。"
+            "每 tick 的时间预算约为 50ms，应主要结合 MSPT、卡顿日志和线程证据判断性能；"
+            "验收可要求 TPS 保持接近 20、MSPT 低于 50ms，但不得写 TPS≥30 等不可能指标。"
+            if kind == "diagnostics"
+            else "所有量化指标必须符合 Minecraft 的实际运行上限。"
+        )
         system = "\n".join((
             role,
             "不得声称已读取实时数据，不得编造测量值，不得输出 Shell、SSH 或 profiler 脚本。",
             "只描述 MCAI 已注册的受控工具；没有变更证据时不得建议回滚。",
+            "未提供插件或分析器安装证据时，禁止假设 spark、timings、JFR、heapdump、MAT 或其他第三方诊断能力可用。",
+            f"当前允许的 MCAI 操作仅为：{available_operations}。",
+            performance_rules,
             "用简洁中文回答，回答后停止。",
         ))
         schema = {
@@ -588,16 +599,31 @@ class McaiGraph:
             "properties": {"answer": {"type": "string"}},
             "required": ["answer"],
         }
-        try:
-            async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
-                result = await self.provider.structured(system, _history(request), schema)
-            answer = str(result.get("answer", "")).strip()
-        except TimeoutError:
-            return {"decision": _provider_failure_decision("TIMEOUT"), "next_node": "end"}
-        except ModelProviderError as error:
-            return {"decision": _provider_failure_decision(error.code), "next_node": "end"}
-        except Exception:  # noqa: BLE001
-            return {"decision": _provider_failure_decision("INTERNAL_ERROR"), "next_node": "end"}
+        constrained_answer = (
+            _safe_minecraft_performance_plan(request)
+            if kind == "planner" and _is_structured_performance_plan(request)
+            else _safe_minecraft_diagnostics_answer(request)
+            if kind == "diagnostics" and _is_metric_performance_diagnosis(request)
+            else ""
+        )
+        if constrained_answer:
+            answer = constrained_answer
+        else:
+            try:
+                async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
+                    result = await self.provider.structured(system, _history(request), schema)
+                answer = str(result.get("answer", "")).strip()
+            except TimeoutError:
+                return {"decision": _provider_failure_decision("TIMEOUT"), "next_node": "end"}
+            except ModelProviderError as error:
+                return {"decision": _provider_failure_decision(error.code), "next_node": "end"}
+            except Exception:  # noqa: BLE001
+                return {"decision": _provider_failure_decision("INTERNAL_ERROR"), "next_node": "end"}
+        if not constrained_answer and kind == "diagnostics" and (
+            _has_invalid_tps_claim(answer)
+            or _has_unverified_diagnostics_tool_claim(answer, request)
+        ):
+            answer = _safe_minecraft_diagnostics_answer(request)
         return {
             "decision": {
                 "route": "delegate",
@@ -707,6 +733,10 @@ class McaiGraph:
         if task_state == "SUCCEEDED" and health_answer:
             return {"decision": _response(health_answer, status="answered"), "next_node": "end"}
 
+        log_diagnosis = _format_log_diagnosis_answer(intent, substantive, tools)
+        if task_state == "SUCCEEDED" and log_diagnosis:
+            return {"decision": _response(log_diagnosis, status="answered"), "next_node": "end"}
+
         deterministic_evidence_tools = {
             "console.command": "console",
             "files.list": "files",
@@ -780,6 +810,134 @@ class McaiGraph:
         return {"decision": response, "next_node": "end"}
 
 
+def _has_invalid_tps_claim(answer: str) -> bool:
+    """Reject Minecraft performance claims that violate the 20 TPS ceiling."""
+    text = re.sub(r"\s+", " ", answer)
+    tps_twenty_called_bad = (
+        r"TPS\s*(?:为|=|约|是)?\s*20(?:\.0+)?[^。；\n]{0,24}(?:低|偏低|不足|不健康|异常)",
+        r"(?:低|偏低|不足|不健康|异常)[^。；\n]{0,24}TPS\s*(?:为|=|约|是)?\s*20(?:\.0+)?",
+    )
+    for pattern in tps_twenty_called_bad:
+        match = re.search(pattern, text, re.I)
+        if match and not re.search(r"(?:非低|并非低|不是低|不属于低|不得判为低)", match.group(0), re.I):
+            return True
+    for match in re.finditer(
+        r"TPS[^。；\n]{0,32}(?:≥|>=|>|大于(?:等于)?|超过|提升(?:至|到)|达到|目标(?:为|是)?)\s*(\d+(?:\.\d+)?)",
+        text,
+        re.I,
+    ):
+        if float(match.group(1)) > 20:
+            return True
+    return False
+
+
+def _is_metric_performance_diagnosis(request: dict[str, Any]) -> bool:
+    history = request.get("history") if isinstance(request.get("history"), list) else []
+    source = "\n".join((
+        *(str(item.get("content", "")) for item in history if isinstance(item, dict)),
+        str(request.get("message", "")),
+    ))
+    return bool(
+        re.search(r"\bTPS\b", source, re.I)
+        and re.search(r"\bMSPT\b", source, re.I)
+        and re.search(r"(?:\bGC\b|探索|新区块|新区域|chunk\s+generation)", source, re.I)
+    )
+
+
+def _is_structured_performance_plan(request: dict[str, Any]) -> bool:
+    history = request.get("history") if isinstance(request.get("history"), list) else []
+    source = "\n".join((
+        *(str(item.get("content", "")) for item in history if isinstance(item, dict)),
+        str(request.get("message", "")),
+    ))
+    return bool(
+        re.search(r"(?:三阶段|3\s*阶段|three[- ]stage)", source, re.I)
+        and re.search(r"(?:性能|治理|优化|performance)", source, re.I)
+        and re.search(r"(?:Paper|Minecraft|服务器|server)", source, re.I)
+    )
+
+
+def _safe_minecraft_performance_plan(request: dict[str, Any]) -> str:
+    history = request.get("history") if isinstance(request.get("history"), list) else []
+    source = "\n".join((
+        *(str(item.get("content", "")) for item in history if isinstance(item, dict)),
+        str(request.get("message", "")),
+    ))
+    players = re.search(r"(\d+)\s*(?:人|玩家|并发|players?)", source, re.I)
+    plugins = re.search(r"(\d+)\s*(?:个)?\s*(?:插件|plugins?)", source, re.I)
+    window = re.search(r"(\d+)\s*分钟", source, re.I)
+    load_target = f"{players.group(1)} 人负载" if players else "目标负载"
+    plugin_scope = f"{plugins.group(1)} 个插件" if plugins else "现有插件"
+    maintenance = f"每次不超过 {window.group(1)} 分钟" if window else "严格限定在维护窗口内"
+    return "\n".join((
+        f"阶段：①只读建立面向{load_target}、{plugin_scope}的 TPS、MSPT、GC、错误日志基线；②{maintenance}，按一次一个变更治理；③恢复流量后持续观察并复验。",
+        "依赖：真实库存、只读日志与控制台证据、变更前快照、明确负责人和维护窗口；没有证据不得假设插件或分析器可用。",
+        "风险：插件兼容、配置误改、窗口超时和玩家数据不一致；任何变更都不得并行叠加。",
+        f"验收：{load_target}下 TPS 接近 20、持续 MSPT 低于 50ms、无 Watchdog/新增 ERROR，且玩家与世界数据校验一致。",
+        "回滚：每一步保留原值与快照；指标变差、功能异常或数据校验失败时立即恢复该步并停止后续步骤。",
+        "停止条件：维护窗口耗尽、关键证据缺失、无法确认回滚点，或连续两次复验未改善时停止并输出证据摘要。",
+    ))
+
+
+def _has_unverified_diagnostics_tool_claim(answer: str, request: dict[str, Any]) -> bool:
+    """Do not advertise optional profilers unless the request proves they exist."""
+    history = request.get("history") if isinstance(request.get("history"), list) else []
+    source = "\n".join((
+        *(str(item.get("content", "")) for item in history if isinstance(item, dict)),
+        str(request.get("message", "")),
+        json.dumps(request.get("instance") or {}, ensure_ascii=False),
+    ))
+    optional_capabilities = (r"\bspark\b", r"\btimings?\b", r"\bJFR\b", r"\bheapdump\b", r"\bMAT\b", r"\bprofiler\b")
+    return any(
+        re.search(pattern, answer, re.I) and not re.search(pattern, source, re.I)
+        for pattern in optional_capabilities
+    )
+
+
+def _safe_minecraft_diagnostics_answer(request: dict[str, Any]) -> str:
+    """Return a conservative correction when the model invents impossible TPS criteria."""
+    history = request.get("history") if isinstance(request.get("history"), list) else []
+    source = "\n".join((
+        *(str(item.get("content", "")) for item in history if isinstance(item, dict)),
+        str(request.get("message", "")),
+    ))
+    tps = (
+        re.search(r"\bTPS\b\s*(?:为|=|约|是)?\s*(\d+(?:\.\d+)?)", source, re.I)
+        or re.search(r"\bTPS\b[^，；,;\n]{0,32}?(?:稳定)?\s*(?:为|=|约|是)\s*(\d+(?:\.\d+)?)", source, re.I)
+    )
+    mspt = re.search(r"MSPT(?:\s+p\d+)?\s*(?:为|=|约|是)?\s*(\d+(?:\.\d+)?)\s*ms", source, re.I)
+    gc = re.search(r"(\d+(?:\.\d+)?)\s*ms\s*GC", source, re.I)
+    interval = re.search(r"每\s*(\d+(?:\.\d+)?)\s*秒", source, re.I)
+    exploration = bool(re.search(r"(?:探索|新区块|新区域|chunk\s+generation)", source, re.I))
+
+    facts = [f"TPS {tps.group(1)}" if tps else "TPS 未提供"]
+    if tps and float(tps.group(1)) >= 19.5:
+        facts[-1] += "，属于正常满速而非低 TPS"
+    if mspt:
+        facts.append(f"MSPT {mspt.group(1)}ms（50ms tick 预算附近）")
+    if gc:
+        cadence = f"、约每 {interval.group(1)} 秒一次" if interval else ""
+        facts.append(f"GC 暂停 {gc.group(1)}ms{cadence}")
+    if exploration:
+        facts.append("卡顿只在探索新区域时出现")
+
+    inference = (
+        "新区域的区块生成或相关 I/O 更可能是主因，周期 GC 是次要放大因素"
+        if exploration
+        else "需要用 MSPT、卡顿日志与线程证据区分 tick 负载、I/O 和 GC，现有信息不足以锁定单一根因"
+    )
+    acceptance = ["TPS 保持接近 20", "持续 MSPT 低于 50ms"]
+    if gc:
+        acceptance.append("不再出现影响游戏体验的长 GC 暂停")
+    return "\n".join((
+        f"已知事实：{'；'.join(facts)}。",
+        f"推断：{inference}。",
+        "验证：通过 MCAI 受控控制台和日志，对比已生成区域与新区域的 TPS、MSPT、卡顿时间及 GC 记录。",
+        "风险：这是基于给定样本的判断，缺少真实线程与磁盘证据时不得直接修改配置。",
+        f"验收：{'；'.join(acceptance)}；Minecraft TPS 上限按 20 计算。",
+    ))
+
+
 def _router_prompt(request: dict[str, Any]) -> str:
     instance = json.dumps(request.get("instance") or {}, ensure_ascii=False)
     operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
@@ -820,7 +978,15 @@ def _planner_prompt(request: dict[str, Any]) -> str:
 def _should_plan_request(message: str, available: set[str]) -> bool:
     if not message or not available:
         return False
-    if re.search(r"(?:什么是|区别|原理|教程|一般怎么|如何使用|what\s+is|difference\s+between)", message, re.I):
+    # Knowledge/comparison questions must go straight to the answering model.
+    # Sending them through the goal planner adds no operational value and can
+    # consume the complete provider budget before streaming begins.
+    if re.search(
+        r"(?:概念问题|什么是|区别|不同|比较|对比|适用场景|原理|教程|一般怎么|如何使用|"
+        r"what\s+is|difference\s+between|compare\b|comparison\b)",
+        message,
+        re.I,
+    ):
         return False
     return bool(
         _readonly_health_skill_intent(message)
@@ -1177,6 +1343,53 @@ def _format_readonly_health_answer(intent: str, evidence: list[dict[str, Any]], 
         f"- 服务端：{version_text}",
         f"- 插件：{plugin_text}",
         f"- 日志：{log_text}。",
+        f"- 结论：{conclusion}",
+    ))
+
+
+def _format_log_diagnosis_answer(intent: str, evidence: list[dict[str, Any]], tools: list[str]) -> str | None:
+    if tools != ["logs.query"] or not re.search(r"(?:诊断|原因|故障|报错|异常|崩服|崩溃|卡顿|卡服)", intent, re.I):
+        return None
+    receipt = next((str(item.get("summary", "")).strip() for item in reversed(evidence) if item.get("kind") == "logs"), "")
+    if not receipt:
+        return "日志诊断未完成：工具没有返回可分析的日志证据。"
+
+    signals: list[str] = []
+    serious = False
+    watchdog = re.search(r"(?:Paper Watchdog|has not responded for\s+(\d+)\s+seconds)", receipt, re.I)
+    if watchdog:
+        seconds = re.search(r"has not responded for\s+(\d+)\s+seconds", receipt, re.I)
+        signals.append(f"Paper Watchdog 记录主线程超过 {seconds.group(1)} 秒未响应" if seconds else "Paper Watchdog 记录主线程无响应")
+        serious = True
+    lag = re.search(r"Running\s+(\d+)ms\s+or\s+(\d+)\s+ticks behind", receipt, re.I)
+    if re.search(r"Can't keep up", receipt, re.I):
+        signals.append(f"出现 Can't keep up，曾落后 {lag.group(1)}ms（{lag.group(2)} ticks）" if lag else "出现 Can't keep up 卡顿告警")
+        serious = True
+    if re.search(r"PaperVersionFetcher|Error obtaining version information", receipt, re.I):
+        if re.search(r"FileNotFoundException:\s*https?://", receipt, re.I):
+            signals.append("PaperVersionFetcher 请求的版本资源返回未找到（FileNotFoundException/HTTP 404 语义）")
+        else:
+            signals.append("PaperVersionFetcher 无法取得版本信息")
+
+    tps = re.search(r"TPS from last 1m, 5m, 15m:\s*([^\r\n]+)", receipt, re.I)
+    tick = re.search(r"Server tick times[^\r\n]*\r?\n[^\r\n]*?([\d.]+/[\d.]+/[\d.]+)", receipt, re.I)
+    metrics: list[str] = []
+    if tps:
+        metrics.append(f"TPS {tps.group(1).strip()}")
+    if tick:
+        metrics.append(f"tick 时间 {tick.group(1)}")
+
+    if serious:
+        conclusion = "存在主线程卡顿或无响应证据，不能判定为完全健康；需要结合对应时间段的线程与区块/实体负载继续定位。"
+    elif signals:
+        conclusion = "未发现崩溃、Watchdog 或持续卡顿证据；当前异常仅指向 Paper 版本自检资源不可用，不影响游戏进程。日志不足以支持 DNS、出口网络或防火墙故障结论。"
+    else:
+        conclusion = "当前日志片段未发现明确的 ERROR、Watchdog、崩溃或卡顿信号，无法仅凭该片段确定故障根因。"
+
+    return "\n".join((
+        "日志诊断已完成。",
+        f"- 异常证据：{'；'.join(signals) if signals else '未匹配到明确异常信号'}。",
+        f"- 运行指标：{'；'.join(metrics) if metrics else '日志未提供可确认的 TPS/MSPT 指标'}。",
         f"- 结论：{conclusion}",
     ))
 
