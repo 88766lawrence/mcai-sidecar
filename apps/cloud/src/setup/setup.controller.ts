@@ -19,4 +19,9 @@ export class SetupController {
   login(@Body() body: { username?: string; password?: string }) {
     return this.setup.login(body.username ?? "", body.password ?? "");
   }
+
+  @Post("admin/accounts")
+  createAdmin(@Body() body: { username?: string; password?: string }) {
+    return this.setup.createAdmin(body);
+  }
 }

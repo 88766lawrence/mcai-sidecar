@@ -724,6 +724,17 @@ Linux 回滚备份：
 - `langgraph-cloud/mcai_graph/graph.py`：`5c1ee00e4b1d78abb5461237164eef67c41e61354f996439033bfad0edfa2679`
 - `langgraph-cloud/tests/test_graph.py`：`4c6758a0b970ef8ea4dab8b3a96a5a3514ccefe97b327e03aadf185599a48e6f`
 
+## 23. 2026-08-03 多管理员支持
+
+初始化账号仍作为主管理员保留；`SetupRecord.admins` 可以保存额外管理员。登录和 JWT 校验会在主管理员与附加管理员中查找账号，旧版只有单管理员字段的 `setup.json` 无需迁移即可继续使用。
+
+- 新增受认证保护的 `POST /api/admin/accounts`，只有已登录用户才能创建附加管理员。
+- 新账号继续使用独立随机 salt 和 scrypt 哈希，明文密码不写入 `setup.json`、源码、日志或本文。
+- 重复用户名会被拒绝；新增账号不会替换或禁用原管理员。
+- Windows 与 Linux Cloud 测试均为 37/37，通过类型检查和构建。
+- Linux 部署回滚点：`/tmp/mcai-multi-admin-backup-20260803185155`。
+- 已创建一个额外测试管理员并通过真实 `/api/auth/login` 验证；账号密码只在创建该账号的用户会话中交付，不记录在交接文档。
+
 ---
 
 交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；本轮修复已在本地提交，但 2026-08-03 因访问 `github.com:443` 超时尚未推送，恢复网络后应先核对 `git status --short --branch` 再执行非强制推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

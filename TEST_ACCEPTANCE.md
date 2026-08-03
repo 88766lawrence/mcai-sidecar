@@ -386,7 +386,7 @@ python -m unittest discover -s langgraph-cloud/tests -v
 必须执行当前运行 release 的 Python 测试，并执行 Cloud 测试和类型检查。测试数字可能随新增用例增加，但不得少于当前基线：
 
 - LangGraph：80 项。
-- Cloud：36 项。
+- Cloud：37 项。
 
 ### 10.3 真实运行验收
 

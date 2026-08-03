@@ -14,9 +14,17 @@ interface SetupRecord {
   username: string;
   passwordSalt: string;
   passwordHash: string;
+  admins?: AdminAccount[];
   authSecret: string;
   tenantId: string;
   configuredAt: string;
+}
+
+interface AdminAccount {
+  username: string;
+  passwordSalt: string;
+  passwordHash: string;
+  createdAt: string;
 }
 
 interface SessionPayload {
@@ -43,6 +51,7 @@ export class SetupService {
     return {
       configured: Boolean(record),
       username: record?.username,
+      adminCount: record ? this.accounts(record).length : 0,
       configuredAt: record?.configuredAt,
     };
   }
@@ -93,15 +102,32 @@ export class SetupService {
     const record = await this.readRecord();
     if (!record) throw new BadRequestException("系统尚未初始化");
     const username = usernameInput.trim();
-    const actual = scryptSync(password, Buffer.from(record.passwordSalt, "base64"), 64);
-    const expected = Buffer.from(record.passwordHash, "base64");
-    if (username !== record.username || actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    const account = this.accounts(record).find((candidate) => candidate.username === username);
+    if (!account) throw new UnauthorizedException("账号或密码错误");
+    const actual = scryptSync(password, Buffer.from(account.passwordSalt, "base64"), 64);
+    const expected = Buffer.from(account.passwordHash, "base64");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
       throw new UnauthorizedException("账号或密码错误");
     }
-    const payload: SessionPayload = { sub: record.username, tenantId: record.tenantId, exp: Date.now() + 12 * 60 * 60_000 };
+    const payload: SessionPayload = { sub: account.username, tenantId: record.tenantId, exp: Date.now() + 12 * 60 * 60_000 };
     const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
     const signature = this.sign(encoded, record.authSecret);
-    return { token: `${encoded}.${signature}`, expiresAt: new Date(payload.exp).toISOString(), username: record.username };
+    return { token: `${encoded}.${signature}`, expiresAt: new Date(payload.exp).toISOString(), username: account.username };
+  }
+
+  async createAdmin(input: { username?: string; password?: string }) {
+    const record = await this.readRecord();
+    if (!record) throw new BadRequestException("系统尚未初始化");
+    const username = input.username?.trim() ?? "";
+    const password = input.password ?? "";
+    this.validateAccount(username, password);
+    if (this.accounts(record).some((account) => account.username === username)) {
+      throw new BadRequestException("管理员账号已经存在");
+    }
+    const account = this.createAccount(username, password);
+    record.admins = [...(record.admins ?? []), account];
+    await this.writePrivate(this.recordPath, JSON.stringify(record, null, 2));
+    return { username: account.username, createdAt: account.createdAt, adminCount: this.accounts(record).length };
   }
 
   async verify(token: string): Promise<SessionPayload> {
@@ -121,7 +147,8 @@ export class SetupService {
     } catch {
       throw new UnauthorizedException("登录已失效");
     }
-    if (payload.exp <= Date.now() || payload.sub !== record.username || payload.tenantId !== record.tenantId) {
+    const accountExists = this.accounts(record).some((account) => account.username === payload.sub);
+    if (payload.exp <= Date.now() || !accountExists || payload.tenantId !== record.tenantId) {
       throw new UnauthorizedException("登录已过期");
     }
     return payload;
@@ -206,6 +233,31 @@ ${daemonYaml}
   private async writePrivate(path: string, contents: string) {
     await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
     await chmod(path, 0o600);
+  }
+
+  private validateAccount(username: string, password: string) {
+    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) throw new BadRequestException("管理员账号需为 3-32 位字母、数字或 ._-");
+    if (password.length < 10) throw new BadRequestException("管理员密码至少需要 10 位");
+  }
+
+  private createAccount(username: string, password: string): AdminAccount {
+    const salt = randomBytes(16);
+    return {
+      username,
+      passwordSalt: salt.toString("base64"),
+      passwordHash: scryptSync(password, salt, 64).toString("base64"),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private accounts(record: SetupRecord): AdminAccount[] {
+    const primary: AdminAccount = {
+      username: record.username,
+      passwordSalt: record.passwordSalt,
+      passwordHash: record.passwordHash,
+      createdAt: record.configuredAt,
+    };
+    return [primary, ...(record.admins ?? []).filter((account) => account.username !== record.username)];
   }
 
   private sign(encoded: string, secret: string) {

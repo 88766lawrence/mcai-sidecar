@@ -45,4 +45,25 @@ describe("SetupService", () => {
     const session = await service.login("admin", "correct-horse-battery");
     await expect(service.verify(session.token)).resolves.toMatchObject({ sub: "admin", tenantId: "tenant_local" });
   });
+
+  it("adds another administrator without replacing the initialized account", async () => {
+    const service = new SetupService();
+    await service.configure({
+      username: "admin",
+      password: "correct-horse-battery",
+      endpoint: "http://127.0.0.1:23333",
+      apiKey: "test-api-key-123456789",
+    });
+
+    await expect(service.createAdmin({ username: "acceptance", password: "temporary-test-password" }))
+      .resolves.toMatchObject({ username: "acceptance", adminCount: 2 });
+    await expect(service.createAdmin({ username: "acceptance", password: "another-test-password" }))
+      .rejects.toThrow("管理员账号已经存在");
+
+    const original = await service.login("admin", "correct-horse-battery");
+    const additional = await service.login("acceptance", "temporary-test-password");
+    await expect(service.verify(original.token)).resolves.toMatchObject({ sub: "admin" });
+    await expect(service.verify(additional.token)).resolves.toMatchObject({ sub: "acceptance" });
+    expect(await service.status()).toMatchObject({ configured: true, username: "admin", adminCount: 2 });
+  });
 });
