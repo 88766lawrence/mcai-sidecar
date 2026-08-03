@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -56,6 +57,92 @@ func TestOfficialPluginResolverRejectsHashMismatch(t *testing.T) {
 	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL}
 	if _, err := resolver.Resolve(context.Background(), "example", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "SHA-512") {
 		t.Fatalf("expected SHA-512 mismatch, got %v", err)
+	}
+}
+
+func TestOfficialPluginResolverFallsBackToVerifiedGitHubRelease(t *testing.T) {
+	contents := []byte("official-essentialsx-release")
+	digest := sha256.Sum256(contents)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/essentialsx/version":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/repos/EssentialsX/Essentials/releases":
+			_, _ = fmt.Fprintf(writer, `[{"id":2200,"tag_name":"2.22.0","body":"## Supported server versions\n- ✅ \u00601.21.11\u0060 - supported\n","draft":false,"prerelease":false,"assets":[{"name":"EssentialsX-2.22.0.jar","browser_download_url":%q,"digest":"sha256:%s"}]}]`, server.URL+"/EssentialsX-2.22.0.jar", hex.EncodeToString(digest[:]))
+		case "/EssentialsX-2.22.0.jar":
+			_, _ = writer.Write(contents)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
+	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Source != "github-official" || artifact.VersionNumber != "2.22.0" || artifact.Compatibility != "official-release-train:1.21" {
+		t.Fatalf("unexpected official fallback artifact: %#v", artifact)
+	}
+	if artifact.LocalSHA256 != hex.EncodeToString(digest[:]) || string(artifact.Contents) != string(contents) {
+		t.Fatalf("official fallback did not preserve verified contents: %#v", artifact)
+	}
+}
+
+func TestOfficialPluginResolverRejectsGitHubReleaseWithoutMatchingMinecraftTrain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/essentialsx/version":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/repos/EssentialsX/Essentials/releases":
+			_, _ = writer.Write([]byte(`[{"id":2100,"tag_name":"2.21.0","body":"## Supported server versions\n- ✅ \u00601.20.6\u0060 - supported\n","draft":false,"prerelease":false,"assets":[]}]`))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
+	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "do not declare support") {
+		t.Fatalf("expected release-train compatibility failure, got %v", err)
+	}
+}
+
+func TestOfficialPluginResolverRejectsGitHubDigestMismatch(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/essentialsx/version":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/repos/EssentialsX/Essentials/releases":
+			_, _ = fmt.Fprintf(writer, `[{"id":2200,"tag_name":"2.22.0","body":"## Supported server versions\n- ✅ \u00601.21.11\u0060 - supported\n","draft":false,"prerelease":false,"assets":[{"name":"EssentialsX-2.22.0.jar","browser_download_url":%q,"digest":"sha256:%s"}]}]`, server.URL+"/EssentialsX-2.22.0.jar", strings.Repeat("0", 64))
+		case "/EssentialsX-2.22.0.jar":
+			_, _ = writer.Write([]byte("tampered"))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
+	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("expected GitHub SHA-256 mismatch, got %v", err)
+	}
+}
+
+func TestLiveOfficialEssentialsXFallback(t *testing.T) {
+	if os.Getenv("MCAI_LIVE_PLUGIN_RESOLVE") != "1" {
+		t.Skip("set MCAI_LIVE_PLUGIN_RESOLVE=1 to query official plugin sources")
+	}
+	artifact, err := newOfficialPluginResolver().Resolve(context.Background(), "essentialsx", "paper", "1.21.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Source != "github-official" || artifact.Project != "essentialsx" || !strings.HasSuffix(artifact.FileName, ".jar") {
+		t.Fatalf("unexpected live official artifact: %#v", artifact)
+	}
+	if len(artifact.Contents) == 0 || len(artifact.LocalSHA256) != 64 || !strings.HasPrefix(artifact.Compatibility, "official-") {
+		t.Fatalf("live official artifact was not verified: %#v", artifact)
 	}
 }
 

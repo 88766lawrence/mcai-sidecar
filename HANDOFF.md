@@ -735,6 +735,26 @@ Linux 回滚备份：
 - Linux 部署回滚点：`/tmp/mcai-multi-admin-backup-20260803185155`。
 - 已创建一个额外测试管理员并通过真实 `/api/auth/login` 验证；账号密码只在创建该账号的用户会话中交付，不记录在交接文档。
 
+## 24. 2026-08-03 插件官方源自动下载回退
+
+`apps/agent/internal/executor/plugins.go` 的插件解析链已从单一 Modrinth 扩展为受控多源解析：
+
+1. 仍优先使用 Modrinth 的精确 loader + Minecraft 版本结果，并验证 Modrinth SHA-512。
+2. 只有 Modrinth 明确返回“无兼容版本”时才允许回退；网络、HTTP、格式和哈希错误不会触发回退。
+3. 官方回退采用插件白名单注册表。当前 EssentialsX 映射到官方 `EssentialsX/Essentials` GitHub Releases；其他插件仍使用 Modrinth，后续可按同一接口增加官方适配器。
+4. GitHub 回退拒绝 draft/prerelease，要求发布说明的 Supported server versions 中出现同一 Minecraft release train，资产名必须为预期核心 JAR。
+5. GitHub Release 资产必须提供官方 `sha256:` digest；下载后再次计算并逐字节比较。可信地址、64 MiB 上限、隔离目录、安装审批、落盘验证和回滚机制保持不变。
+6. manifest 和 evidence 新增来源与兼容性等级，避免把“官方同版本线”误写成“精确版本匹配”。
+
+验证结果：
+
+- Windows Agent 全量 Go 测试通过。
+- Linux Agent 全量 Go 测试通过。
+- Linux 真实外网解析通过：当前实例自动识别为 Paper 1.21.1，Modrinth 返回空后解析 EssentialsX 官方 GitHub Release 2.22.0，官方 SHA-256 `bda4685105977fca2e209820a9f0ad24275bd103390a03236f38e59bfdac58e6` 校验通过。
+- 真实 MCAI 任务 `task_d2e8a05d-724e-4739-a857-1d30f26e1431` 为 `SUCCEEDED`，计划仅含 `plugin.resolve`；未调用 `plugin.install` 或 `instance.restart`，Minecraft 文件和运行状态未修改。
+- Linux 四个服务保持 active。
+- Linux 回滚点：`/tmp/mcai-plugin-official-fallback-backup-20260803201829`。
+
 ---
 
 交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；本轮修复已在本地提交，但 2026-08-03 因访问 `github.com:443` 超时尚未推送，恢复网络后应先核对 `git status --short --branch` 再执行非强制推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

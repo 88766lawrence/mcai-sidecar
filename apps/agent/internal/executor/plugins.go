@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,9 +22,24 @@ import (
 	"github.com/mcai/sidecar-agent/internal/provider"
 )
 
-const modrinthAPI = "https://api.modrinth.com/v2"
+const (
+	modrinthAPI = "https://api.modrinth.com/v2"
+	githubAPI   = "https://api.github.com"
+)
 
 var pluginProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+var minecraftReleasePattern = regexp.MustCompile(`(?m)(?:^|[^0-9])(1\.\d+(?:\.\d+)?)(?:[^0-9]|$)`)
+var errNoCompatiblePluginVersion = errors.New("no compatible plugin version")
+
+type githubPluginSource struct {
+	Owner       string
+	Repository  string
+	AssetPrefix string
+}
+
+var githubPluginSources = map[string]githubPluginSource{
+	"essentialsx": {Owner: "EssentialsX", Repository: "Essentials", AssetPrefix: "EssentialsX-"},
+}
 
 type resolvedPlugin struct {
 	Project       string
@@ -33,6 +49,8 @@ type resolvedPlugin struct {
 	SourceURL     string
 	SourceSHA512  string
 	LocalSHA256   string
+	Source        string
+	Compatibility string
 	Contents      []byte
 }
 
@@ -43,13 +61,34 @@ type pluginResolver interface {
 type officialPluginResolver struct {
 	httpClient *http.Client
 	apiBase    string
+	githubBase string
 }
 
 func newOfficialPluginResolver() *officialPluginResolver {
-	return &officialPluginResolver{httpClient: &http.Client{Timeout: 45 * time.Second}, apiBase: modrinthAPI}
+	return &officialPluginResolver{httpClient: &http.Client{Timeout: 45 * time.Second}, apiBase: modrinthAPI, githubBase: githubAPI}
 }
 
 func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
+	artifact, err := r.resolveModrinth(ctx, project, loader, minecraftVersion)
+	if err == nil {
+		return artifact, nil
+	}
+	project = strings.ToLower(strings.TrimSpace(project))
+	if !errors.Is(err, errNoCompatiblePluginVersion) {
+		return resolvedPlugin{}, err
+	}
+	source, supported := githubPluginSources[project]
+	if !supported {
+		return resolvedPlugin{}, err
+	}
+	official, officialErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source)
+	if officialErr != nil {
+		return resolvedPlugin{}, fmt.Errorf("Modrinth has no compatible version and official source fallback failed: %w", officialErr)
+	}
+	return official, nil
+}
+
+func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
 	project = strings.ToLower(strings.TrimSpace(project))
 	loader = strings.ToLower(strings.TrimSpace(loader))
 	if !pluginProjectPattern.MatchString(project) {
@@ -87,7 +126,7 @@ func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, m
 		return resolvedPlugin{}, fmt.Errorf("resolve Modrinth project %s: %w", project, err)
 	}
 	if len(versions) == 0 {
-		return resolvedPlugin{}, fmt.Errorf("Modrinth has no %s version compatible with %s", project, minecraftVersion)
+		return resolvedPlugin{}, fmt.Errorf("%w: Modrinth has no %s version compatible with %s", errNoCompatiblePluginVersion, project, minecraftVersion)
 	}
 	version := versions[0]
 	for _, dependency := range version.Dependencies {
@@ -153,8 +192,164 @@ func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, m
 	return resolvedPlugin{
 		Project: project, VersionID: version.ID, VersionNumber: version.VersionNumber,
 		FileName: selected.Filename, SourceURL: selected.URL, SourceSHA512: declared,
-		LocalSHA256: hex.EncodeToString(actual256[:]), Contents: contents,
+		LocalSHA256: hex.EncodeToString(actual256[:]), Source: "modrinth",
+		Compatibility: "exact-game-version", Contents: contents,
 	}, nil
+}
+
+func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, project, loader, minecraftVersion string, source githubPluginSource) (resolvedPlugin, error) {
+	loader = strings.ToLower(strings.TrimSpace(loader))
+	if loader == "purpur" || loader == "spigot" || loader == "bukkit" {
+		loader = "paper"
+	}
+	if loader != "paper" {
+		return resolvedPlugin{}, fmt.Errorf("official plugin source supports Paper-compatible servers; got %q", loader)
+	}
+	if !minecraftVersionPattern.MatchString(minecraftVersion) {
+		return resolvedPlugin{}, errors.New("official plugin resolution requires a valid Minecraft version")
+	}
+	endpoint := strings.TrimRight(r.githubBase, "/") + "/repos/" + url.PathEscape(source.Owner) + "/" + url.PathEscape(source.Repository) + "/releases?per_page=20"
+	var releases []struct {
+		ID         int64  `json:"id"`
+		TagName    string `json:"tag_name"`
+		Body       string `json:"body"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+		Assets     []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+			Digest             string `json:"digest"`
+		} `json:"assets"`
+	}
+	if err := r.getGitHubJSON(ctx, endpoint, &releases); err != nil {
+		return resolvedPlugin{}, err
+	}
+	for _, release := range releases {
+		if release.Draft || release.Prerelease || release.ID <= 0 || release.TagName == "" {
+			continue
+		}
+		compatibility, ok := officialReleaseCompatibility(release.Body, minecraftVersion)
+		if !ok {
+			continue
+		}
+		version := strings.TrimPrefix(release.TagName, "v")
+		expectedName := source.AssetPrefix + version + ".jar"
+		for _, asset := range release.Assets {
+			if asset.Name != expectedName || filepath.Base(asset.Name) != asset.Name {
+				continue
+			}
+			declared256 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.Digest)), "sha256:")
+			if len(declared256) != 64 {
+				return resolvedPlugin{}, errors.New("official GitHub release asset has no SHA-256 digest")
+			}
+			if _, err := hex.DecodeString(declared256); err != nil {
+				return resolvedPlugin{}, errors.New("official GitHub release asset has an invalid SHA-256 digest")
+			}
+			artifactURL, err := url.Parse(asset.BrowserDownloadURL)
+			trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "github.com"
+			trustedTest := r.githubBase != githubAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
+			if !trustedOfficial && !trustedTest {
+				return resolvedPlugin{}, errors.New("official GitHub release returned an untrusted artifact URL")
+			}
+			contents, err := r.downloadPluginArtifact(ctx, artifactURL.String())
+			if err != nil {
+				return resolvedPlugin{}, err
+			}
+			actual256 := sha256.Sum256(contents)
+			if hex.EncodeToString(actual256[:]) != declared256 {
+				return resolvedPlugin{}, errors.New("official GitHub release artifact SHA-256 does not match metadata")
+			}
+			actual512 := sha512.Sum512(contents)
+			return resolvedPlugin{
+				Project: project, VersionID: strconv.FormatInt(release.ID, 10), VersionNumber: version,
+				FileName: asset.Name, SourceURL: asset.BrowserDownloadURL,
+				SourceSHA512: hex.EncodeToString(actual512[:]), LocalSHA256: declared256,
+				Source: "github-official", Compatibility: compatibility, Contents: contents,
+			}, nil
+		}
+		return resolvedPlugin{}, fmt.Errorf("official GitHub release %s has no expected core JAR", release.TagName)
+	}
+	return resolvedPlugin{}, fmt.Errorf("official GitHub releases do not declare support for Minecraft %s", minecraftVersion)
+}
+
+func officialReleaseCompatibility(body, minecraftVersion string) (string, bool) {
+	target := strings.Split(minecraftVersion, ".")
+	if len(target) < 2 {
+		return "", false
+	}
+	train := target[0] + "." + target[1]
+	inSupportedSection := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			inSupportedSection = strings.Contains(strings.ToLower(trimmed), "supported server versions")
+			continue
+		}
+		if !inSupportedSection || (!strings.Contains(trimmed, "✅") && !strings.Contains(trimmed, "⚠")) {
+			continue
+		}
+		for _, match := range minecraftReleasePattern.FindAllStringSubmatch(trimmed, -1) {
+			candidate := strings.Split(match[1], ".")
+			if len(candidate) >= 2 && candidate[0]+"."+candidate[1] == train {
+				if match[1] == minecraftVersion {
+					return "official-exact:" + match[1], true
+				}
+				return "official-release-train:" + train, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (r *officialPluginResolver) downloadPluginArtifact(ctx context.Context, endpoint string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/octet-stream")
+	request.Header.Set("User-Agent", "MCAI-Sidecar/0.1 (controlled-plugin-resolver)")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("official plugin download returned HTTP %d", response.StatusCode)
+	}
+	contents, err := io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(contents) == 0 || len(contents) > 64<<20 {
+		return nil, errors.New("plugin artifact size is outside the 1 byte to 64 MiB limit")
+	}
+	return contents, nil
+}
+
+func (r *officialPluginResolver) getGitHubJSON(ctx context.Context, endpoint string, output any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	request.Header.Set("User-Agent", "MCAI-Sidecar/0.1 (controlled-plugin-resolver)")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("official GitHub API returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, output); err != nil {
+		return errors.New("official GitHub API returned an unexpected response")
+	}
+	return nil
 }
 
 func (r *officialPluginResolver) getJSON(ctx context.Context, endpoint string, output any) error {
@@ -190,6 +385,8 @@ type pluginManifest struct {
 	SourceURL     string `json:"source_url"`
 	SourceSHA512  string `json:"source_sha512"`
 	LocalSHA256   string `json:"local_sha256"`
+	Source        string `json:"source"`
+	Compatibility string `json:"compatibility"`
 	InstalledPath string `json:"installed_path,omitempty"`
 }
 
@@ -227,13 +424,13 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 	manifest := pluginManifest{
 		Project: artifact.Project, VersionID: artifact.VersionID, VersionNumber: artifact.VersionNumber,
 		FileName: artifact.FileName, SourceURL: artifact.SourceURL, SourceSHA512: artifact.SourceSHA512,
-		LocalSHA256: artifact.LocalSHA256,
+		LocalSHA256: artifact.LocalSHA256, Source: artifact.Source, Compatibility: artifact.Compatibility,
 	}
 	encoded, _ := json.MarshalIndent(manifest, "", "  ")
 	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), encoded, 0o600); err != nil {
 		return err
 	}
-	emit("", "plugin", fmt.Sprintf("已解析 Modrinth 插件 %s %s；来源 SHA-512 已验证，本地 SHA-256：%s", artifact.Project, artifact.VersionNumber, artifact.LocalSHA256))
+	emit("", "plugin", fmt.Sprintf("已从 %s 解析插件 %s %s；兼容性：%s；制品哈希已验证（SHA-256：%s）", artifact.Source, artifact.Project, artifact.VersionNumber, artifact.Compatibility, artifact.LocalSHA256))
 	return nil
 }
 
