@@ -20,6 +20,7 @@ from mcai_graph.graph import (
     _normalize_decision,
     _provider_content,
     _router_prompt,
+    _should_plan_request,
     _thread_id,
 )
 
@@ -78,6 +79,53 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(decision["route"], "tool")
         self.assertEqual(decision["trace"][0]["result"], "files.list")
+
+    async def test_short_health_goal_uses_planner_model_before_executor_model(self):
+        class PlannerProvider(FakeProvider):
+            def __init__(self):
+                self.calls = 0
+
+            async def structured(self, system, messages, schema):
+                self.calls += 1
+                self.assertions = (system, messages, schema)
+                return {
+                    "plannedMessage": "对当前实例完成只读健康检查：执行 version、plugins，读取最近日志并等待真实回调后总结。",
+                    "summary": "补全版本、插件和日志三项只读检查",
+                }
+
+        class ExecutorProvider(FakeProvider):
+            def __init__(self):
+                self.calls = 0
+
+            async def structured(self, system, messages, schema):
+                self.calls += 1
+                return {
+                    "route": "tool",
+                    "answer": "正在执行只读健康检查。",
+                    "toolIntent": messages[-1]["content"],
+                    "preferredTool": "logs.query",
+                    "delegate": None,
+                    "pendingAction": None,
+                }
+
+        planner = PlannerProvider()
+        executor = ExecutorProvider()
+        graph = McaiGraph(executor, Path(self.temp.name) / "two-model.sqlite3", planner)
+        try:
+            decision = await graph.route({
+                "threadId": "session-two-model-health",
+                "message": "看看服务器有没有问题",
+                "history": [],
+                "availableTools": ["console.command", "logs.query"],
+            })
+            self.assertEqual(planner.calls, 1)
+            self.assertEqual(executor.calls, 1)
+            self.assertEqual(decision["route"], "tool")
+            self.assertIn("version", decision["toolIntent"])
+            self.assertEqual(decision["trace"][0]["stage"], "planning")
+            self.assertEqual(decision["trace"][1]["result"], "logs.query")
+        finally:
+            await graph.close()
 
     async def test_natural_plugin_inventory_query_uses_console(self):
         decision = await self.graph.route({
@@ -240,6 +288,27 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("插件数量为 0", response["answer"])
             self.assertIn("未匹配到 ERROR、WARN", response["answer"])
             self.assertIn("暂未发现明显异常", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_health_completion_uses_the_tool_sequence_even_when_the_planner_rephrases_the_goal(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-rephrased.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-health-rephrased",
+                "intent": "依次确认运行版本、已加载扩展和近期异常，等待每一步返回后综合判断",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [
+                    {"tool": "console.command"}, {"tool": "console.command"}, {"tool": "logs.query"},
+                ]},
+                "evidence": [
+                    {"kind": "console", "summary": "This server is running Paper version 1.21.1-133"},
+                    {"kind": "console", "summary": "Server Plugins (0):"},
+                    {"kind": "logs", "summary": "Done (2.1s)!"},
+                ],
+            })
+            self.assertIn("只读健康检查已完成", response["answer"])
+            self.assertIn("Paper version 1.21.1-133", response["answer"])
         finally:
             await graph.close()
 
@@ -439,6 +508,19 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(decision["route"], "tool")
         self.assertEqual(decision["preferredTool"], "logs.query")
+
+    def test_short_health_request_is_sent_to_the_planner_model(self):
+        available = {"logs.query", "console.command"}
+        self.assertIsNone(_deterministic_decision("看看服务器有没有问题", [], available))
+        self.assertTrue(_should_plan_request("看看服务器有没有问题", available))
+
+    def test_health_tutorial_question_is_not_expanded_to_a_live_skill(self):
+        decision = _deterministic_decision(
+            "Minecraft 服务器健康检查一般怎么做？",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertIsNone(decision)
 
     def test_explicit_operation_is_not_swallowed_by_offline_delegate_keywords(self):
         decision = _deterministic_decision(

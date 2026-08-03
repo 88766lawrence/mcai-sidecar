@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftPlan, extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "./planner";
+import { draftPlan, expandOperationalSkill, extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "./planner";
 
 describe("draftPlan", () => {
   it("creates a controlled Paper installation plan for any supported release", () => {
@@ -63,6 +63,19 @@ describe("draftPlan", () => {
       { id: "s2", tool: "console.command", args: { command: "plugins" }, risk: "read" },
       { id: "s3", tool: "logs.query", args: { window_minutes: 60, max_lines: 500 }, risk: "read" },
     ]);
+  });
+
+  it.each(["检查服务器健康", "看看这台服务器有没有问题", "服务器正常吗", "给当前实例做个巡检"])(
+    "expands the short health request %s into the complete read-only skill",
+    (intent) => {
+      expect(expandOperationalSkill(intent)).toContain("执行 version");
+      expect(draftPlan("mcs:daemon:instance", "revision-1", intent).steps.map((step) => step.tool))
+        .toEqual(["console.command", "console.command", "logs.query"]);
+    },
+  );
+
+  it("does not turn a general health-check tutorial question into a live server task", () => {
+    expect(expandOperationalSkill("Minecraft 服务器健康检查一般怎么做？")).toBeUndefined();
   });
 
   it("does not treat a negated stop instruction as authorization to stop", () => {

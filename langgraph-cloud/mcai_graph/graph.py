@@ -44,7 +44,8 @@ class AgentState(TypedDict, total=False):
     request: dict[str, Any]
     decision: dict[str, Any]
     pending_action: dict[str, str] | None
-    next_node: Literal["model", "delegate", "end"]
+    planner_trace: list[dict[str, str]]
+    next_node: Literal["planner", "model", "delegate", "end"]
 
 
 @dataclass(frozen=True)
@@ -385,7 +386,7 @@ def _provider_failure_decision(code: str) -> dict[str, Any]:
 
 
 class McaiGraph:
-    def __init__(self, provider: ModelProvider, checkpoint_path: Path):
+    def __init__(self, provider: ModelProvider, checkpoint_path: Path, planner_provider: ModelProvider | None = None):
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = aiosqlite.connect(checkpoint_path)
         self._checkpoint_path = checkpoint_path
@@ -393,18 +394,25 @@ class McaiGraph:
         self._connection_started = False
         self._connection_lock = asyncio.Lock()
         self.provider = provider
+        self.planner_provider = planner_provider or provider
         self.chat = self._build_chat_graph()
         self.completion = self._build_completion_graph()
 
     def _build_chat_graph(self):
         graph = StateGraph(AgentState)
         graph.add_node("prepare", self._prepare)
+        graph.add_node("planner", self._plan_request)
         graph.add_node("model", self._model_route)
         graph.add_node("delegate", self._delegate)
         graph.add_edge(START, "prepare")
         graph.add_conditional_edges("prepare", lambda state: state["next_node"], {
+            "planner": "planner",
             "model": "model",
             "delegate": "delegate",
+            "end": END,
+        })
+        graph.add_conditional_edges("planner", lambda state: state["next_node"], {
+            "model": "model",
             "end": END,
         })
         graph.add_conditional_edges("model", lambda state: state["next_node"], {
@@ -492,7 +500,40 @@ class McaiGraph:
                 "pending_action": None,
                 "next_node": "delegate" if deterministic.get("route") == "delegate" else "end",
             }
+        if _should_plan_request(message, available):
+            return {"next_node": "planner"}
         return {"next_node": "model"}
+
+    async def _plan_request(self, state: AgentState) -> AgentState:
+        request = state.get("request", {})
+        original = str(request.get("message", "")).strip()
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "plannedMessage": {"type": "string"},
+                "summary": {"type": "string"},
+            },
+            "required": ["plannedMessage", "summary"],
+        }
+        system = _planner_prompt(request)
+        try:
+            async with asyncio.timeout(MODEL_CALL_TIMEOUT_SECONDS):
+                result = await self.planner_provider.structured(system, _history(request), schema)
+            planned = str(result.get("plannedMessage", "")).strip()
+            summary = str(result.get("summary", "")).strip()
+            if not planned or len(planned) > 1_600 or _introduces_unrequested_action(original, planned):
+                raise ValueError("unsafe or empty planned message")
+        except Exception:  # noqa: BLE001 - deterministic skill expansion is the safe fallback
+            planned = _readonly_health_skill_intent(original) or original
+            summary = "已按原始授权范围补全执行目标"
+
+        enriched_request = {**request, "message": planned, "originalMessage": original}
+        return {
+            "request": enriched_request,
+            "planner_trace": [{"stage": "planning", "label": "目标已细化", "result": summary[:240]}],
+            "next_node": "model",
+        }
 
     async def _model_route(self, state: AgentState) -> AgentState:
         request = state.get("request", {})
@@ -516,6 +557,9 @@ class McaiGraph:
                 "next_node": "end",
             }
         decision = _normalize_decision(result, _available_tools(request))
+        planner_trace = state.get("planner_trace") or []
+        if planner_trace:
+            decision["trace"] = [*planner_trace, *(decision.get("trace") or [])]
         pending = decision.pop("pendingAction", None)
         return {
             "decision": decision,
@@ -716,6 +760,7 @@ def _router_prompt(request: dict[str, Any]) -> str:
     instance = json.dumps(request.get("instance") or {}, ensure_ascii=False)
     operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
     session = str(request.get("systemPrompt", ""))
+    original = str(request.get("originalMessage", request.get("message", "")))
     return "\n".join((
         "You are MCAI Sidecar, an execution-oriented Minecraft operations agent.",
         "简单知识直接回答；实时日志、文件、状态和变更必须选择 tool。",
@@ -723,13 +768,61 @@ def _router_prompt(request: dict[str, Any]) -> str:
         "复杂且不需要实时数据的规划选择 delegate/planner，复杂诊断选择 delegate/diagnostics。",
         "不得编造项目名、版本号、性能指标或工具能力；事实不确定时明确说明不确定或省略具体名词。",
         "当前实例是唯一目标，不得重复询问实例。控制台不是 Shell，禁止生成 Shell 或 SSH。",
+        "用户只需描述目标；“检查服务器健康”“看看服务器有没有问题”等短指令必须自动展开为版本、插件、近期日志三步只读检查，并等待真实回调后总结。",
         "用户要求安装或验证插件时必须调用受控工具，绝不能在没有回调证据时声称安装完成。",
         "若必须澄清，pendingAction 必须保存用户确认后要继续执行的 intent 和 tool。",
         "只输出符合 JSON schema 的对象。",
+        f"<original_user_goal>{original}</original_user_goal>",
         f"<current_instance>{instance}</current_instance>",
         f"<available_operations>{operations}</available_operations>",
         f"<session_instructions>{session}</session_instructions>",
     ))
+
+
+def _planner_prompt(request: dict[str, Any]) -> str:
+    instance = json.dumps(request.get("instance") or {}, ensure_ascii=False)
+    operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
+    return "\n".join((
+        "你是 MCAI 的目标规划模型。把用户的简短 Minecraft 运维目标补全为可执行、可验证的详细说明，再交给执行模型。",
+        "只补充完成原目标必需的检查步骤、工具范围、成功条件和只读约束；不得替用户扩大授权。",
+        "原文没有明确要求时，禁止新增安装、删除、配置修改、控制台写命令、重启、停止、OP 或任何破坏性动作。",
+        "健康或故障检查默认只读：确认服务端版本、插件列表、近期错误/告警/卡顿日志，并等待每一步真实回调后总结。",
+        "plannedMessage 必须是给执行模型的完整中文任务说明；summary 是一句安全的规划摘要，不得输出私有思维链。",
+        f"<current_instance>{instance}</current_instance>",
+        f"<available_operations>{operations}</available_operations>",
+    ))
+
+
+def _should_plan_request(message: str, available: set[str]) -> bool:
+    if not message or not available:
+        return False
+    if re.search(r"(?:什么是|区别|原理|教程|一般怎么|如何使用|what\s+is|difference\s+between)", message, re.I):
+        return False
+    return bool(
+        _readonly_health_skill_intent(message)
+        or re.search(
+            r"(?:检查|看看|查查|诊断|排查|修复|处理|优化|安装|部署|配置|修改|启动|停止|重启|下载|插件|日志|报错|崩溃|卡顿|服务器|实例|控制台)",
+            message,
+            re.I,
+        )
+    )
+
+
+def _introduces_unrequested_action(original: str, planned: str) -> bool:
+    def positive_actions(text: str) -> str:
+        return re.sub(r"(?:不要|不得|禁止|无需|不应|别|不可|避免)[^。；\n]{0,60}", "", text, flags=re.I)
+
+    original_positive = positive_actions(original)
+    planned_positive = positive_actions(planned)
+    action_patterns = (
+        r"(?:重启|restart)",
+        r"(?:停止|关闭|关服|stop|shutdown)",
+        r"(?:安装|部署|下载|install|deploy|download)",
+        r"(?:修改|写入|配置|change|update|patch)",
+        r"(?:删除|移除|delete|remove)",
+        r"(?:\bop\b|管理员权限)",
+    )
+    return any(re.search(pattern, planned_positive, re.I) and not re.search(pattern, original_positive, re.I) for pattern in action_patterns)
 
 
 def _decision_schema() -> dict[str, Any]:
@@ -828,6 +921,28 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     if "files.list" in available and re.search(r"根目录|文件列表|目录列表|列出.{0,8}(?:文件|目录)", message, re.I):
         return _tool_decision(message, "files.list", "需要当前实例文件清单")
     return None
+
+
+def _readonly_health_skill_intent(message: str) -> str | None:
+    if not message or re.search(r"(?:怎么|如何|原理|教程|一般|是什么|what\s+is|how\s+to)", message, re.I):
+        return None
+    explicit = re.search(r"(?:健康检查|健康巡检|(?:服务器|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)", message, re.I)
+    short_request = re.search(
+        r"(?:检查|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|正常)|"
+        r"(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗)",
+        message,
+        re.I,
+    )
+    if not explicit and not short_request:
+        return None
+    return "\n".join((
+        "对当前实例完成一次只读健康检查：",
+        "1. 在 Minecraft 控制台执行 version，确认服务端类型和 Minecraft 版本；",
+        "2. 在 Minecraft 控制台执行 plugins，列出已加载插件；",
+        "3. 读取最近 60 分钟日志，检查 ERROR、WARN、崩溃、Watchdog、Can't keep up 或卡顿证据；",
+        "4. 等待每个工具的真实回调后再继续，最后给出综合健康结论和证据摘要。",
+        "不得修改配置、安装内容、重启或停止服务器。",
+    ))
 
 
 def _offline_delegate_kind(message: str) -> Literal["planner", "diagnostics"] | None:
@@ -994,7 +1109,10 @@ def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_su
 
 def _format_readonly_health_answer(intent: str, evidence: list[dict[str, Any]], tools: list[str]) -> str | None:
     required_tools = ["console.command", "console.command", "logs.query"]
-    if tools != required_tools or not re.search(r"(?:只读|健康检查|健康巡检|综合检查|完整检查)", intent):
+    # The exact controlled tool sequence is the stable skill identity. A planner
+    # model may phrase the enriched goal differently, so completion must not
+    # depend on a magic keyword such as “健康检查”.
+    if tools != required_tools:
         return None
 
     console_receipts = [str(item.get("summary", "")).strip() for item in evidence if item.get("kind") == "console"]

@@ -25,10 +25,12 @@ def load_config() -> dict[str, Any]:
 
 
 @lru_cache(maxsize=4)
-def graph_for(provider_key: str, base_url: str, model: str, fallback_json: str) -> McaiGraph:
+def graph_for(provider_key: str, base_url: str, model: str, planner_model: str, fallback_json: str) -> McaiGraph:
+    fallback_models = tuple(json.loads(fallback_json))
     return McaiGraph(
-        ModelProvider(ProviderConfig(provider_key, base_url, model, tuple(json.loads(fallback_json)))),
+        ModelProvider(ProviderConfig(provider_key, base_url, model, fallback_models)),
         STATE_PATH,
+        ModelProvider(ProviderConfig(provider_key, base_url, planner_model, tuple(value for value in (model, *fallback_models) if value != planner_model))),
     )
 
 
@@ -38,9 +40,10 @@ def current_graph(config: dict[str, Any]) -> McaiGraph:
     base_url = str(provider.get("baseUrl") or "")
     model = str(provider.get("model") or "")
     fallback = tuple(value for value in provider.get("fallbackModels") or [] if isinstance(value, str) and value)
+    planner_model = str(provider.get("plannerModel") or (fallback[0] if fallback else model))
     if not api_key or not base_url or not model:
         raise HTTPException(status_code=503, detail="MODEL_PROVIDER_UNCONFIGURED")
-    return graph_for(api_key, base_url, model, json.dumps(fallback))
+    return graph_for(api_key, base_url, model, planner_model, json.dumps(fallback))
 
 
 def authorize(config: dict[str, Any], authorization: str | None) -> None:
