@@ -806,3 +806,34 @@ Linux 回滚备份：
 ---
 
 交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；GitHub 是否完成同步以本轮最终 push 结果为准。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。
+
+## 26. 2026-08-03 ProtocolLib 真实安装闭环验收
+
+本轮不再以解析制品或模拟回调代替安装验收，而是在用户明确授权后，对运行中的测试实例执行了一次真实、受审批保护、禁止重启的插件安装。
+
+真实测试首先发现了通用路由缺陷：输入“下载并安装 ProtocolLib 插件，不要重启服务器；安装后必须确认插件 JAR 已经真实落盘”被降级为仅 `plugin.resolve`。根因有两层：
+
+1. 安装否定词正则跨越分号，把“不要重启服务器；安装后确认”错误理解为“不要安装”。
+2. 修正否定范围后，生命周期路由和“确认是否安装”的只读路由又会抢占复合安装目标。
+
+最终修复采用通用语义优先级，而不是写死 ProtocolLib：
+
+- 否定词只能在同一分句内作用于安装动作，不可跨越 `，。；;`。
+- “安装/部署”先于“确认/核实”时解释为“执行后验证”；核实词先于安装词时解释为只读落盘核实。
+- 复合插件安装目标先进入 `plugin.install` 工作流；是否重启由任务规划器根据原始约束决定，生命周期关键词不能抢占主目标。
+- 保留“你确定 Essentials 安装了吗”走 `files.list /plugins` 的既有行为。
+
+部署前共进行了三轮失败回归，三轮均由部署脚本自动回滚，没有将失败版本留在运行环境。第四版通过 Linux LangGraph 88/88、真实模型 `/ready` 和四服务存活检查后才部署。成功备份点为 `/tmp/mcai-model-adapter-backup-20260803222900`。
+
+真实安装证据：
+
+- 实例：`测试`，Paper 1.21.1，执行前后均为 running。
+- 安装前 `/plugins`：5 项，不含 ProtocolLib。
+- 精确计划：`plugin.resolve → plugin.install`；审批门签发并确认；不含 `instance.restart`。
+- 来源链：Modrinth 无可用制品后自动切换 PaperMC Hangar，再验证 Hangar 审核的 GitHub Release 资产。
+- 制品：ProtocolLib 5.4.0，兼容等级 `exact-game-version`。
+- SHA-256：`ee2e7ab9b5386f2d103081c4d108e61b1035df2ca692b53d6e2409fb1f5caccf`。
+- 落盘：`/plugins/ProtocolLib.jar`。
+- 安装后独立只读任务重新列出 `/plugins`，由 5 项变为 6 项并包含 `ProtocolLib.jar`。
+- 验收脚本 12/12 检查通过，任务终态 `SUCCEEDED`；Minecraft 未重启，因此插件要到下次服务器重启后才会加载。
+- 部署网页真实截图：`output/protocollib-real-install-20260803.png`。截图中的执行轨迹已展开；1600px 无横向溢出、无 page error、无失败网络请求。

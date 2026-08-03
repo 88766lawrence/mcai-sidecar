@@ -1102,11 +1102,18 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
         return _direct("消息不能为空。")
     plugin_install_pattern = r"(?:安装|部署|更新|升级|install|update).{0,24}(?:插件|plugin|essentials|luckperms)|(?:essentials|luckperms).{0,12}(?:安装|部署|更新|升级)|(?:安装|部署|更新|升级|install|update)\s+(?:插件\s*)?[a-z0-9][a-z0-9_-]{1,63}\b"
     plugin_install_negated = bool(re.search(
-        r"(?:不要|无需|不必|禁止|别|不可|避免|仅|只).{0,12}(?:安装|部署|更新|升级|install|update)|(?:without|do\s+not|don't)\s+(?:install|deploy|update)",
+        r"(?:不要|无需|不必|禁止|别|不可|避免|仅|只)[^，。；;\r\n]{0,12}(?:安装|部署|更新|升级|install|update)|(?:without|do\s+not|don't)\s+(?:install|deploy|update)",
         lower,
         re.I,
     ))
     plugin_install_request = bool(re.search(plugin_install_pattern, lower, re.I)) and not plugin_install_negated
+    plugin_install_verb = re.search(r"(?:安装|部署|更新|升级|install|deploy|update)", lower, re.I)
+    plugin_verification_verb = re.search(r"(?:确定|确认|核实|真的|是否|有没有)", lower, re.I)
+    plugin_verification_precedes_install = bool(
+        plugin_verification_verb
+        and plugin_install_verb
+        and plugin_verification_verb.start() < plugin_install_verb.start()
+    )
     if (
         "server.install" in available
         and re.search(r"(?:下载|安装|部署|搭建|创建|开服|download|install|deploy|setup|create)", lower, re.I)
@@ -1147,6 +1154,13 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
         and (plugin_resolve_request or plugin_probe_without_install)
     ):
         return _tool_decision(message, "plugin.resolve", "需要解析兼容的官方插件制品")
+    if "files.list" in available and plugin_verification_precedes_install and re.search(r"(?:确定|确认|核实|真的|是否|有没有).{0,20}(?:essentials|luckperms|插件).{0,12}(?:安装|存在|落盘)|(?:essentials|luckperms|插件).{0,20}(?:确定|确认|核实|真的|是否|有没有|安装了吗|存在吗)", lower, re.I):
+        return _tool_decision("列出当前实例 /plugins 目录并确认目标插件 JAR 是否实际落盘", "files.list", "安装声明必须由文件级证据确认")
+    # A plugin workflow may legitimately mention a lifecycle action as a
+    # constraint (for example, "install it, but do not restart"). Route the
+    # primary install goal first; the task planner owns the restart decision.
+    if "plugin.install" in available and plugin_install_request:
+        return _tool_decision(message, "plugin.install", "需要执行受控插件工作流")
     lifecycle_routes = (
         (
             "instance.restart",
@@ -1181,10 +1195,6 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
         return _tool_decision("在当前实例 Minecraft 控制台执行 plugins", "console.command", "需要实时插件列表")
     if "files.list" in available and (plugin_directory_request or re.search(r"(?:确认|检查|查看|读取|列出).{0,16}(?:plugins/?|插件.{0,6}(?:目录|文件|jar|落盘))|(?:plugins/?).{0,16}(?:确认|检查|查看|读取|列出)", message, re.I)):
         return _tool_decision("列出当前实例 /plugins 目录并返回实际文件清单", "files.list", "需要文件级证据")
-    if "files.list" in available and re.search(r"(?:确定|确认|核实|真的).{0,20}(?:essentials|luckperms|插件).{0,12}(?:安装|存在|落盘)|(?:essentials|luckperms|插件).{0,20}(?:确定|确认|核实|真的|安装了吗|存在吗)", lower, re.I):
-        return _tool_decision("列出当前实例 /plugins 目录并确认目标插件 JAR 是否实际落盘", "files.list", "安装声明必须由文件级证据确认")
-    if "plugin.install" in available and plugin_install_request:
-        return _tool_decision(message, "plugin.install", "需要执行受控插件工作流")
     if "console.command" in available:
         if re.search(r"(?:服务器|服务端).{0,5}(?:版本|version)|(?:什么|哪种).{0,4}服务端", message, re.I):
             return _tool_decision("在当前实例 Minecraft 控制台执行 version", "console.command", "需要实时服务端版本")

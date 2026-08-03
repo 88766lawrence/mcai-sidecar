@@ -758,6 +758,14 @@ class RoutingTests(unittest.TestCase):
         )
         self.assertEqual(decision["preferredTool"], "plugin.install")
 
+    def test_restart_negation_does_not_negate_later_install_verification_clause(self):
+        decision = _deterministic_decision(
+            "下载并安装 ProtocolLib 插件，不要重启服务器；安装后必须确认插件 JAR 已经真实落盘。",
+            [],
+            {"plugin.resolve", "plugin.install", "instance.restart", "files.list"},
+        )
+        self.assertEqual(decision["preferredTool"], "plugin.install")
+
     def test_explicit_no_install_stays_resolve_only(self):
         decision = _deterministic_decision(
             "查询 EssentialsX 官方制品，只解析和校验下载，不要安装，不要重启。",
