@@ -3,7 +3,7 @@
 > 最后核对时间：2026-08-03 11:59（Asia/Hong_Kong）
 > Windows 工作区：`E:\aimcs`
 > Linux 测试端：`191.40.37.148`
-> 当前本地提交：`a218544 Run multi-step read-only health checks`
+> 当前功能基线：`a218544 Run multi-step read-only health checks`（文档提交以本地 `HEAD` 为准）
 
 ## 1. 当前结论
 
@@ -18,7 +18,7 @@ MCAI Sidecar 是位于 Web 用户和 MCSManager 之间的安全 Minecraft AI 运
 - 页面保留米黄色运维工作台风格；结果优先展示，规划、工具调用、回调和验证轨迹默认折叠。
 - Agent 已能完成一个任务内的多步骤只读检查，例如依次执行 `version → plugins → logs.query`，等待真实回调后汇总结果。
 - 最新真实检查确认测试实例运行 Paper 1.21.1，已加载插件数为 0；日志存在 Paper Watchdog 主线程无响应和 `Can't keep up` 卡顿证据。
-- GitHub 尚未同步最新 4 个本地提交。不要声称三端已经完全一致，也不要强推覆盖远端。
+- GitHub 当前为本地 `ahead 5, behind 1`。不要声称三端已经完全一致，也不要强推覆盖远端。
 
 ## 2. 产品目标和硬性原则
 
@@ -411,18 +411,22 @@ d12148a Fix instance lifecycle routing
 
 ### 13.3 GitHub 未同步风险
 
-本地 `main` 相对本地跟踪的 `origin/main` 显示 `ahead 4`，跟踪点为 `7609613`。HTTPS 访问 GitHub 多次出现连接超时或 reset，因此最新 4 个提交未通过正常 Git push。
+2026-08-03 已成功 fetch。当前本地 `main` 相对 `origin/main` 为 `ahead 5, behind 1`：
 
-另外，早期 GitHub 连接器曾报告在远端创建提交 `2dbfc5659abf694ccb024419affeecfa13f4f3dd`，只更新了 `apps/web/app/globals.css`；随后对 `agent-workspace.tsx` 的写入因审批被拒绝。由于当前无法成功 fetch，远端真实拓扑可能与本地 `origin/main` 缓存不同。
+- 本地 `HEAD`：文档提交 `8cee6fd`，其下包含 4 个尚未推送的功能/UI 提交。
+- 远端 `origin/main`：`2dbfc56 Collapse agent process into results (styles)`。
+- 共同祖先：`7609613 Refine agent workbench hierarchy`。
+
+远端 `2dbfc56` 是早期 GitHub 连接器创建的单文件提交，只写入 `apps/web/app/globals.css`。与共同祖先比较，它表现为约 20 行新增、2114 行删除，说明连接器提交的是截断样式文件，不应直接合并覆盖本地完整 CSS。随后对 `agent-workspace.tsx` 的配套写入当时被审批拒绝，因此该远端提交本身不构成完整 UI 功能。
 
 恢复网络后的正确步骤：
 
-1. `git fetch origin main`
-2. 查看 `git log --graph --oneline --all`
-3. 确认远端是否存在 `2dbfc5...`
-4. 将远端内容合并或 cherry-pick 到本地，保留双方修改
-5. 运行完整测试和 `git diff --check`
-6. 普通 `git push origin main`
+1. 从当前本地 `main` 创建临时安全分支。
+2. `git show 2dbfc56:apps/web/app/globals.css`，确认远端 20 行样式是否已由本地 `cb9c5f7` 等提交完整实现。
+3. 合并 `origin/main` 时明确保留本地完整 `apps/web/app/globals.css`；不要接受远端截断文件。
+4. 检查 `git diff 7609613..HEAD -- apps/web/app/globals.css apps/web/components/agent-workspace.tsx`，确认 CSS 和组件成对存在。
+5. 运行 Web typecheck、生产构建、桌面/移动截图和 `git diff --check`。
+6. 以普通非强制 push 更新 `main`。
 
 禁止使用 `git push --force`、`git reset --hard` 或覆盖远端 connector 提交。
 
@@ -608,4 +612,4 @@ git diff --stat
 
 ---
 
-交接基准：当前 Linux 测试端可用；Windows 与 Linux 最新关键文件一致；GitHub 最新 4 个提交待安全合并和推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。
+交接基准：当前 Linux 测试端可用；Windows 与 Linux 最新关键文件一致；GitHub 为本地 ahead 5、behind 1，远端单独的截断 CSS 提交待安全吸收。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。
