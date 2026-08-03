@@ -683,6 +683,47 @@ Linux 最新回滚备份：`/tmp/mcai-model-adapter-backup-20260803163442`。
 
 外部限制：2026-08-03 验收期间 `ai.profileeast.com` 曾出现一次主模型及备用模型连续超时；随后 `/models` 为 HTTP 200，三个模型恢复返回，最终全量验收通过。受约束的 Minecraft 性能诊断与规划已不依赖该瞬时可用性；普通开放域知识问答仍可能受上游容量影响。
 
+## 22. 2026-08-03 任务润色 Agent 指令集与统一入口
+
+本轮增加了正式的任务润色 Agent 指令集，并把它接入真实 LangGraph 路由，而不是只写一份未使用的提示词。完整可维护版本见根目录 `AGENT_REFINER_INSTRUCTIONS.md`，运行时等价规则位于 `langgraph-cloud/mcai_graph/graph.py` 的 planner prompt。
+
+路由标准：
+
+1. 默认所有非简单任务先进入独立润色模型，由它输出结构化 `plannedMessage + summary`，再交给执行模型或已锁定的受控工具。
+2. 只豁免寒暄/感谢/告别、可确定的简单算术，以及参数完整的一步低风险只读操作（如 `version`、`plugins`、明确 `/plugins` 文件读取、单纯日志读取）。
+3. 对安装、插件解析、配置修改、停止和重启等已经能确定工具的请求，仍先润色，但保留原先确定的工具，不允许润色模型把操作改成其他工具或扩大授权。
+4. 当前会话绑定实例后，“服务、服务端、服务器、实例”均指当前实例，不得再次询问实例 ID。
+5. “查看服务是否有异常”“看看服务器有没有问题”等短指令必须自动扩展为 `console version → console plugins → logs.query` 三步只读健康检查，逐一等待真实回调后给综合结论。
+6. 任务下发不等于完成；安装必须验证落盘或加载，失败必须根据真实回调决定安全的下一步，禁止伪造成功和无限循环。
+7. 润色 Agent 只输出用户可见的规划摘要，不展示私有思维链；UI 展开的“思考过程”是可审计的规划、工具调用与证据轨迹。
+
+同时修复了 Cloud 入口的优先级错误：此前 `extractRealtimeLogIntent()` 会把“查看服务是否有异常”提前截断为单独 `logs.query`，导致绕过润色和三步健康检查。现在 Cloud 会先识别完整操作技能，复杂健康请求不再被日志快捷路由覆盖。
+
+本轮验证：
+
+- Windows LangGraph：80/80 通过。
+- Linux LangGraph：80/80 通过。
+- Windows 与 Linux Cloud：36/36 通过。
+- contracts/cloud/web TypeScript typecheck：通过。
+- 真实模型 readiness：通过。
+- 真实端到端路由：简单算术跳过润色；插件列表一步直达；Paper/Fabric 知识问答先润色；插件安装和重启均先润色且保持原受控工具和审批路径。
+- 真实 Cloud 只读任务：“查看服务是否有异常”成功执行 `console.command(version)`、`console.command(plugins)`、`logs.query`，任务为 `SUCCEEDED`，最终答案包含服务端、插件、日志与综合结论。
+- 安装和重启仅验证路由，没有实际安装插件，也没有重启 Minecraft。
+
+Linux 回滚备份：
+
+- LangGraph：`/tmp/mcai-model-adapter-backup-20260803181355`
+- Cloud：`/tmp/mcai-refiner-cloud-backup-20260803181824`
+
+关键文件 SHA-256（Windows 与 Linux 源码一致；LangGraph 两个文件同时与当前运行 release 一致）：
+
+- `AGENT_REFINER_INSTRUCTIONS.md`：`c48f042f6384c03350d1562c4a68fea45ecc7e08d801b00a152f4f52960746ad`
+- `apps/cloud/src/chat/chat.service.ts`：`59f657fa08c0fcf1aaad29147080f320b1940280500e99133d76f1848d1e8e2e`
+- `apps/cloud/src/chat/chat.service.spec.ts`：`dc6d74aa3c865bc44c61c64499cb4fb5e8eab1dda0e9a5e6d2f556954575b761`
+- `apps/cloud/src/tasks/planner.ts`：`54e7b295a4d569b8ab61f9caeb821d208921f71eaacc3acdcc31bb552e6d239c`
+- `langgraph-cloud/mcai_graph/graph.py`：`5c1ee00e4b1d78abb5461237164eef67c41e61354f996439033bfad0edfa2679`
+- `langgraph-cloud/tests/test_graph.py`：`4c6758a0b970ef8ea4dab8b3a96a5a3514ccefe97b327e03aadf185599a48e6f`
+
 ---
 
 交接基准：当前 Linux 测试端可用，Windows 与 Linux 最新关键文件一致；本轮修复已在本地提交，但 2026-08-03 因访问 `github.com:443` 超时尚未推送，恢复网络后应先核对 `git status --short --branch` 再执行非强制推送。任何后续人员若未重新验证，不应把“服务 active”当作模型、Agent 循环或 Minecraft 实例完全健康的充分证据。

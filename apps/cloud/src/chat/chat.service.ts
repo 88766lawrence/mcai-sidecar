@@ -6,7 +6,12 @@ import type { ConversationMessage, ConversationSession } from "@mcai/contracts";
 import { CloudStore } from "../store/cloud.store";
 import { ModelGatewayService, type ChatDecision, type ChatStreamProgress } from "../model-gateway/model-gateway.service";
 import { TasksService } from "../tasks/tasks.service";
-import { extractConsoleCommandIntent, extractFilesListIntent, extractRealtimeLogIntent } from "../tasks/planner";
+import {
+  expandOperationalSkill,
+  extractConsoleCommandIntent,
+  extractFilesListIntent,
+  extractRealtimeLogIntent,
+} from "../tasks/planner";
 
 const defaultSystemPrompt = [
   "你是 MCAI Sidecar 的 Minecraft 运维助手。",
@@ -257,11 +262,12 @@ export class ChatService implements OnModuleInit {
     const consoleCommand = extractConsoleCommandIntent(content);
     const filesListIntent = extractFilesListIntent(content);
     const realtimeLogIntent = extractRealtimeLogIntent(content);
+    const operationalSkill = expandOperationalSkill(content);
     const deterministicDecision: ChatDecision | undefined = consoleCommand
       ? { route: "tool", answer: "控制台命令已提交。", toolIntent: content }
       : filesListIntent
         ? { route: "tool", answer: "正在读取插件目录。", toolIntent: filesListIntent, preferredTool: "files.list" }
-      : realtimeLogIntent
+      : realtimeLogIntent && !operationalSkill
         ? { route: "tool", answer: "将读取当前实例日志并依据实际证据分析。", toolIntent: realtimeLogIntent }
         : undefined;
     if (deterministicDecision && onProgress) {

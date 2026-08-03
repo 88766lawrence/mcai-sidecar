@@ -20,6 +20,8 @@ from mcai_graph.graph import (
     _max_tokens_for_schema,
     _normalize_decision,
     _provider_content,
+    _planner_prompt,
+    _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
     _thread_id,
@@ -128,6 +130,82 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("version", decision["toolIntent"])
             self.assertEqual(decision["trace"][0]["stage"], "planning")
             self.assertEqual(decision["trace"][1]["result"], "logs.query")
+        finally:
+            await graph.close()
+
+    async def test_complex_deterministic_install_is_refined_without_losing_its_tool(self):
+        class RefinerProvider(FakeProvider):
+            def __init__(self):
+                self.calls = 0
+
+            async def structured(self, _system, _messages, _schema):
+                self.calls += 1
+                return {
+                    "plannedMessage": (
+                        "在当前实例安装 EssentialsX：先根据 Paper 与 Minecraft 版本解析兼容制品，"
+                        "执行受控安装，等待真实回调，再读取 /plugins 验证 JAR；未经批准不得重启。"
+                    ),
+                    "summary": "已补全兼容解析、安装验证和禁止自动重启边界",
+                }
+
+        refiner = RefinerProvider()
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "refined-install.sqlite3", refiner)
+        try:
+            decision = await graph.route({
+                "threadId": "session-refined-install",
+                "message": "帮我安装 EssentialsX",
+                "history": [],
+                "availableTools": ["plugin.install", "files.list", "instance.restart"],
+            })
+            self.assertEqual(refiner.calls, 1)
+            self.assertEqual(decision["route"], "tool")
+            self.assertEqual(decision["preferredTool"], "plugin.install")
+            self.assertIn("/plugins", decision["toolIntent"])
+            self.assertIn("未经批准不得重启", decision["toolIntent"])
+            self.assertEqual(decision["trace"][0]["stage"], "planning")
+        finally:
+            await graph.close()
+
+    async def test_simple_plugin_inventory_bypasses_the_refiner(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "simple-tool.sqlite3", FailingProvider())
+        try:
+            decision = await graph.route({
+                "threadId": "session-simple-plugin-list",
+                "message": "查看服务器插件有哪些",
+                "history": [],
+                "availableTools": ["console.command", "files.list"],
+            })
+            self.assertEqual(decision["route"], "tool")
+            self.assertEqual(decision["preferredTool"], "console.command")
+            self.assertEqual(decision["trace"][0]["result"], "console.command")
+            self.assertFalse(any(item.get("stage") == "planning" for item in decision["trace"]))
+        finally:
+            await graph.close()
+
+    async def test_nontrivial_knowledge_answer_is_refined_before_execution(self):
+        class RefinerProvider(FakeProvider):
+            def __init__(self):
+                self.calls = 0
+
+            async def structured(self, _system, _messages, _schema):
+                self.calls += 1
+                return {
+                    "plannedMessage": "比较 Paper 与 Fabric 的定位、生态和适用场景；只用通用知识，不读取实例数据。",
+                    "summary": "已补全比较维度和只使用通用知识的边界",
+                }
+
+        refiner = RefinerProvider()
+        graph = McaiGraph(FakeProvider(), Path(self.temp.name) / "refined-knowledge.sqlite3", refiner)
+        try:
+            decision = await graph.route({
+                "threadId": "session-refined-knowledge",
+                "message": "Paper 和 Fabric 有什么区别？",
+                "history": [],
+                "availableTools": ["console.command", "logs.query"],
+            })
+            self.assertEqual(refiner.calls, 1)
+            self.assertEqual(decision["route"], "direct")
+            self.assertEqual(decision["trace"][0]["stage"], "planning")
         finally:
             await graph.close()
 
@@ -472,12 +550,14 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
             })
             self.assertEqual(planner["route"], "delegate")
             self.assertEqual(diagnostics["route"], "delegate")
-            self.assertIn("阶段、依赖、风险、验收、回滚、停止条件", provider.systems[0])
-            self.assertIn("已知事实、推断、验证、风险、验收", provider.systems[1])
-            self.assertIn("正常满速是 20 TPS", provider.systems[1])
-            self.assertIn("不得写 TPS≥30", provider.systems[1])
-            self.assertIn("禁止假设 spark、timings、JFR", provider.systems[1])
-            self.assertIn('["logs.query"]', provider.systems[1])
+            self.assertIn("任务润色 Agent", provider.systems[0])
+            self.assertIn("阶段、依赖、风险、验收、回滚、停止条件", provider.systems[1])
+            self.assertIn("任务润色 Agent", provider.systems[2])
+            self.assertIn("已知事实、推断、验证、风险、验收", provider.systems[3])
+            self.assertIn("正常满速是 20 TPS", provider.systems[3])
+            self.assertIn("不得写 TPS≥30", provider.systems[3])
+            self.assertIn("禁止假设 spark、timings、JFR", provider.systems[3])
+            self.assertIn('["logs.query"]', provider.systems[3])
         finally:
             await graph.close()
 
@@ -687,12 +767,42 @@ class RoutingTests(unittest.TestCase):
         self.assertIsNone(_deterministic_decision("看看服务器有没有问题", [], available))
         self.assertTrue(_should_plan_request("看看服务器有没有问题", available))
 
-    def test_general_knowledge_comparison_skips_the_goal_planner(self):
+    def test_short_service_abnormal_phrase_expands_to_the_readonly_health_skill(self):
+        expanded = _readonly_health_skill_intent("查看服务是否有异常")
+        self.assertIsNotNone(expanded)
+        self.assertIn("version", expanded)
+        self.assertIn("plugins", expanded)
+        self.assertIn("最近 60 分钟日志", expanded)
+        self.assertTrue(_should_plan_request("查看服务是否有异常", {"logs.query", "console.command"}))
+
+    def test_general_knowledge_comparison_uses_the_refinement_agent(self):
         available = {"logs.query", "console.command"}
-        self.assertFalse(_should_plan_request(
+        self.assertTrue(_should_plan_request(
             "概念问题：Paper 与 Fabric 的适用场景有什么不同？只基于通用知识回答，不读取实例数据。",
             available,
         ))
+
+    def test_trivial_arithmetic_skips_the_refinement_agent(self):
+        self.assertFalse(_should_plan_request("17 乘以 19 等于多少？", {"console.command"}))
+
+    def test_refiner_prompt_contains_the_operational_instruction_set(self):
+        prompt = _planner_prompt({
+            "instance": {"id": "current"},
+            "availableTools": ["console.command", "logs.query", "plugin.install"],
+        })
+        for expected in (
+            "任务润色 Agent",
+            "不得重复询问实例 ID",
+            "日志默认最近 60 分钟",
+            "不能混淆已加载插件和磁盘 JAR",
+            "等待每个真实回调",
+            "没有回调证据不得声称成功",
+            "EULA 只能在用户明确同意后写入",
+            "停止和重启属于高风险",
+            "不得无限循环",
+            "仅当缺失信息会改变制品、目标、权限或产生不可逆风险时澄清",
+        ):
+            self.assertIn(expected, prompt)
 
     def test_health_tutorial_question_is_not_expanded_to_a_live_skill(self):
         decision = _deterministic_decision(

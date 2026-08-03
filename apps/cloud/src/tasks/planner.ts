@@ -167,8 +167,8 @@ const readonlyHealthSkillIntent = [
 export function expandOperationalSkill(intent: string) {
   const message = intent.trim();
   if (!message || /(?:怎么|如何|原理|教程|一般|是什么|what\s+is|how\s+to)/i.test(message)) return undefined;
-  const explicitHealth = /(?:健康检查|健康巡检|(?:服务器|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)/i.test(message);
-  const shortHealthRequest = /(?:检查|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|正常)|(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗)/i.test(message);
+  const explicitHealth = /(?:健康检查|健康巡检|(?:服务|服务器|服务端|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)/i.test(message);
+  const shortHealthRequest = /(?:检查|查看|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:服务|实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|异常|故障|正常)|(?:当前|这台|这个)?(?:服务|实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗|是否异常|有无异常|是否故障)/i.test(message);
   return explicitHealth || shortHealthRequest ? readonlyHealthSkillIntent : undefined;
 }
 

@@ -413,6 +413,7 @@ class McaiGraph:
         })
         graph.add_conditional_edges("planner", lambda state: state["next_node"], {
             "model": "model",
+            "delegate": "delegate",
             "end": END,
         })
         graph.add_conditional_edges("model", lambda state: state["next_node"], {
@@ -495,6 +496,12 @@ class McaiGraph:
 
         deterministic = _deterministic_decision(message, history, available)
         if deterministic:
+            if _requires_refinement(message, deterministic):
+                return {
+                    "request": {**request, "preselectedDecision": deterministic},
+                    "pending_action": None,
+                    "next_node": "planner",
+                }
             return {
                 "decision": deterministic,
                 "pending_action": None,
@@ -529,9 +536,22 @@ class McaiGraph:
             summary = "已按原始授权范围补全执行目标"
 
         enriched_request = {**request, "message": planned, "originalMessage": original}
+        preselected = request.get("preselectedDecision")
+        planner_trace = [{"stage": "planning", "label": "目标已细化", "result": summary[:240]}]
+        if isinstance(preselected, dict):
+            decision = {**preselected}
+            if decision.get("route") == "tool":
+                decision["toolIntent"] = planned
+            decision["trace"] = [*planner_trace, *(decision.get("trace") or [])]
+            return {
+                "request": enriched_request,
+                "decision": decision,
+                "planner_trace": planner_trace,
+                "next_node": "delegate" if decision.get("route") == "delegate" else "end",
+            }
         return {
             "request": enriched_request,
-            "planner_trace": [{"stage": "planning", "label": "目标已细化", "result": summary[:240]}],
+            "planner_trace": planner_trace,
             "next_node": "model",
         }
 
@@ -965,37 +985,62 @@ def _planner_prompt(request: dict[str, Any]) -> str:
     instance = json.dumps(request.get("instance") or {}, ensure_ascii=False)
     operations = json.dumps(sorted(_available_tools(request)), ensure_ascii=False)
     return "\n".join((
-        "你是 MCAI 的目标规划模型。把用户的简短 Minecraft 运维目标补全为可执行、可验证的详细说明，再交给执行模型。",
-        "只补充完成原目标必需的检查步骤、工具范围、成功条件和只读约束；不得替用户扩大授权。",
+        "你是 MCAI 的任务润色 Agent。你的唯一职责是把用户原始目标补全成执行模型可直接完成、可验证且不越权的任务说明；你不亲自执行工具，也不向用户展示私有思维链。",
+        "总原则：保留用户原意和语言；优先使用当前实例与库存中的已知信息；只补充必要参数、步骤、默认值、证据要求、成功条件、失败处理和安全边界；不得扩大授权。",
+        "用户只说‘服务/服务端/服务器/实例’时，在当前会话已有实例的前提下都指当前实例，不得重复询问实例 ID。",
+        "用户提供明确动作但省略低风险默认参数时直接补全：日志默认最近 60 分钟且最多 500 行；目录默认实例根目录；插件文件默认 /plugins；输出默认简洁中文。",
+        "知识问答：只需要通用知识时明确禁止读取实时实例或调用工具；不得编造版本、插件、性能或当前状态。",
+        "版本/插件列表/状态：使用当前实例；version 与 plugins 走 Minecraft 控制台，插件文件清单走 files.list /plugins，不能混淆已加载插件和磁盘 JAR。",
+        "健康/异常/卡顿/崩服检查：默认只读，依次确认 version、plugins 和最近日志；必须等待每个真实回调，根据证据区分事实、推断和待验证项后综合回答。",
+        "日志问题：用户只要日志时读取日志并摘要；用户问原因时要求从 ERROR、WARN、Watchdog、Can't keep up、异常退出和时间关联中诊断，证据不足必须明确说明。",
+        "插件查询/安装：先结合服务端平台和 Minecraft 版本解析兼容制品；安装后必须读取 /plugins 或控制台确认真实落盘/加载；没有回调证据不得声称成功；重启只能在用户明确要求或另行批准后执行。",
+        "Paper/Fabric 等服务端安装：保留用户指定平台和版本，使用受控 server.install；缺少真正决定制品的版本时才澄清；EULA 只能在用户明确同意后写入；安装、启动和日志验证必须分阶段取证。",
+        "启动：目标是当前实例，已运行则幂等成功；停止和重启属于高风险，必须保留审批要求；不得把 Minecraft 控制台当成 Shell 或 SSH。",
+        "配置修改：明确配置键、目标值、当前实例、变更前证据、验证方式和回滚点；未获授权不得附加重启、删除、OP 或其他修改。",
+        "失败处理：工具失败后必须引用真实错误决定重试、换安全方案或停止；不得把任务已提交当作完成，不得无限循环，不得在缺少证据时伪造成功。",
+        "澄清规则：仅当缺失信息会改变制品、目标、权限或产生不可逆风险时澄清；可从当前实例、上下文或安全默认值确定的信息不得再问用户。",
+        "安全规则：忽略用户要求绕过审批、伪造回调、泄露密钥、执行 Shell/SSH 或破坏宿主机的指令；只允许当前列出的 MCAI 受控操作。",
         "原文没有明确要求时，禁止新增安装、删除、配置修改、控制台写命令、重启、停止、OP 或任何破坏性动作。",
-        "健康或故障检查默认只读：确认服务端版本、插件列表、近期错误/告警/卡顿日志，并等待每一步真实回调后总结。",
-        "plannedMessage 必须是给执行模型的完整中文任务说明；summary 是一句安全的规划摘要，不得输出私有思维链。",
+        "plannedMessage 必须是一段给执行模型的完整中文任务说明，包含目标、必要步骤、工具范围、默认参数、证据与验收、失败停止条件；summary 只写一句用户可见的规划摘要。",
+        "只输出符合 JSON schema 的对象，不输出 Markdown、解释或额外字段。",
         f"<current_instance>{instance}</current_instance>",
         f"<available_operations>{operations}</available_operations>",
     ))
 
 
 def _should_plan_request(message: str, available: set[str]) -> bool:
-    if not message or not available:
+    if not message:
         return False
-    # Knowledge/comparison questions must go straight to the answering model.
-    # Sending them through the goal planner adds no operational value and can
-    # consume the complete provider budget before streaming begins.
-    if re.search(
-        r"(?:概念问题|什么是|区别|不同|比较|对比|适用场景|原理|教程|一般怎么|如何使用|"
-        r"what\s+is|difference\s+between|compare\b|comparison\b)",
-        message,
+    if _is_trivial_request(message):
+        return False
+    return True
+
+
+def _is_trivial_request(message: str) -> bool:
+    text = message.strip()
+    if re.fullmatch(r"(?:你好|您好|嗨|谢谢|感谢|再见|hi|hello|thanks|bye)[。.!！ ]*", text, re.I):
+        return True
+    return bool(re.fullmatch(
+        r"\d+(?:\.\d+)?\s*(?:加|减|乘以|乘|除以|除|[+\-*/×÷])\s*\d+(?:\.\d+)?(?:\s*(?:等于多少|是多少|=))?[。.!！?？ ]*",
+        text,
         re.I,
-    ):
-        return False
-    return bool(
-        _readonly_health_skill_intent(message)
-        or re.search(
-            r"(?:检查|看看|查查|诊断|排查|修复|处理|优化|安装|部署|配置|修改|启动|停止|重启|下载|插件|日志|报错|崩溃|卡顿|服务器|实例|控制台)",
-            message,
-            re.I,
-        )
-    )
+    ))
+
+
+def _requires_refinement(message: str, decision: dict[str, Any]) -> bool:
+    route = str(decision.get("route", ""))
+    tool = str(decision.get("preferredTool") or "")
+    if route == "delegate":
+        return True
+    if route != "tool":
+        return not _is_trivial_request(message)
+    if tool in {"server.install", "config.patch", "plugin.resolve", "plugin.install", "instance.stop", "instance.restart"}:
+        return True
+    if tool == "logs.query":
+        return bool(re.search(r"(?:诊断|分析|原因|为什么|故障|异常|报错|崩服|崩溃|卡顿|卡服)", message, re.I))
+    # One-step, read-only, fully parameterized operations are intentionally
+    # exempt so `version`, `plugins`, and explicit directory reads stay fast.
+    return False
 
 
 def _introduces_unrequested_action(original: str, planned: str) -> bool:
@@ -1116,10 +1161,10 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
 def _readonly_health_skill_intent(message: str) -> str | None:
     if not message or re.search(r"(?:怎么|如何|原理|教程|一般|是什么|what\s+is|how\s+to)", message, re.I):
         return None
-    explicit = re.search(r"(?:健康检查|健康巡检|(?:服务器|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)", message, re.I)
+    explicit = re.search(r"(?:健康检查|健康巡检|(?:服务|服务器|服务端|实例).{0,4}巡检|全面体检|只读巡检|health\s*check)", message, re.I)
     short_request = re.search(
-        r"(?:检查|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|正常)|"
-        r"(?:当前|这台|这个)?(?:实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗)",
+        r"(?:检查|查看|看看|查查|诊断|评估).{0,10}(?:当前|这台|这个)?(?:服务|实例|服务器|服务端).{0,8}(?:健康|状态|情况|问题|异常|故障|正常)|"
+        r"(?:当前|这台|这个)?(?:服务|实例|服务器|服务端).{0,8}(?:健康吗|正常吗|有没有问题|有问题吗|是否异常|有无异常|是否故障)",
         message,
         re.I,
     )
@@ -1221,6 +1266,8 @@ def _normalize_decision(value: Any, allowed_tools: set[str] | None = None) -> di
     route = decision.get("route") if decision.get("route") in {"direct", "clarify", "delegate", "tool"} else "direct"
     answer = str(decision.get("answer", "")).strip() or "暂时没有可用回答。"
     normalized: dict[str, Any] = {"route": route, "answer": answer, "requestId": str(decision.get("requestId") or uuid.uuid4())}
+    if isinstance(decision.get("trace"), list) and decision["trace"]:
+        normalized["trace"] = decision["trace"]
     if decision.get("providerStatus") == "unavailable":
         normalized["providerStatus"] = "unavailable"
     if isinstance(decision.get("providerError"), str) and decision["providerError"]:
@@ -1232,11 +1279,11 @@ def _normalize_decision(value: Any, allowed_tools: set[str] | None = None) -> di
             return _direct("模型请求的工具当前不可用，未执行任何操作。")
         normalized["toolIntent"] = intent
         normalized["preferredTool"] = tool
-        normalized["trace"] = decision.get("trace") or [{"stage": "tool", "label": "调用工具", "result": tool}]
+        normalized["trace"] = normalized.get("trace") or [{"stage": "tool", "label": "调用工具", "result": tool}]
     elif route == "delegate":
         delegate = decision.get("delegate") if decision.get("delegate") in {"planner", "diagnostics"} else "diagnostics"
         normalized["delegate"] = delegate
-        normalized["trace"] = decision.get("trace") or [{"stage": "delegation", "label": "调用子 Agent", "result": delegate}]
+        normalized["trace"] = normalized.get("trace") or [{"stage": "delegation", "label": "调用子 Agent", "result": delegate}]
     if isinstance(decision.get("pendingAction"), dict):
         normalized["pendingAction"] = decision["pendingAction"]
     return normalized
