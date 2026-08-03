@@ -618,7 +618,7 @@ git diff --stat
 
 ## 18. 接手人的首轮检查清单
 
-1. 阅读本文和根目录技术设计文档。
+1. 阅读本文、根目录技术设计文档和 `TEST_ACCEPTANCE.md`；所有发布结论按验收文档执行。
 2. `git status --short --branch`，确认没有覆盖用户修改。
 3. 安全 fetch GitHub，解决远端分叉，不强推。
 4. 只读检查 Linux 四个服务、Cloud health、模型 ready 和 Web 200。
