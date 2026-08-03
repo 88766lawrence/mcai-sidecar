@@ -384,7 +384,7 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		emit("", "instance", "Restart request accepted by the panel")
 		return nil
 	case "plugin.resolve":
-		return e.resolvePlugin(ctx, plan, step, emit)
+		return e.resolvePlugin(ctx, p, plan, step, emit)
 	case "plugin.install":
 		return e.installPlugin(ctx, p, plan, step, emit)
 	default:

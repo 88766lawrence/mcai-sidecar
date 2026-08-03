@@ -107,7 +107,8 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     }], []);
   }
   if (pluginProject && (options.preferredTool === "plugin.install" || options.preferredTool === "plugin.resolve" || /安装|部署|更新|升级|install|deploy|update/i.test(intent))) {
-    return plan(id, instanceRef, inventoryRevision, intent, [
+    const skipRestart = /(?:不要|无需|不必|禁止|别|不可|避免)[^\r\n，。；;]{0,12}(?:重启|restart)|(?:without|do\s+not|don't)\s+restart/i.test(intent);
+    const steps: TaskPlan["steps"] = [
       { id: "s1", tool: "plugin.resolve", args: {
         project: pluginProject,
         source: "modrinth",
@@ -116,8 +117,12 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
         loader: options.loader ?? options.platform ?? "unknown",
       }, risk: "low" },
       { id: "s2", tool: "plugin.install", args: { project: pluginProject, artifact_ref: "${s1.artifact}", expected_sha256: "${s1.sha256}" }, risk: "medium", requires_confirmation: true, rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" } },
-      { id: "s3", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true },
-    ], [
+    ];
+    if (skipRestart) {
+      return plan(id, instanceRef, inventoryRevision, intent, steps, []);
+    }
+    steps.push({ id: "s3", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true });
+    return plan(id, instanceRef, inventoryRevision, intent, steps, [
       { type: "instance_state", expected: "running" },
       { type: "plugin_enabled", name: pluginProject },
     ]);

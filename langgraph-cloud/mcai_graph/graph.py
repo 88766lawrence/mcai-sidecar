@@ -635,6 +635,30 @@ class McaiGraph:
 
         plugin_name = _plugin_name_from_intent(intent)
         files_evidence = next((str(item.get("summary", "")) for item in reversed(substantive) if item.get("kind") == "files"), "")
+        if "plugin.install" in tools and task_state in {"SUCCEEDED", "FAILED", "ROLLED_BACK", "MANUAL_INTERVENTION"}:
+            if task_state == "SUCCEEDED" and files_evidence:
+                target = re.search(r"(/plugins/[^\s（)]+\.jar)", files_evidence, re.I)
+                digest = re.search(r"SHA-256[：:]\s*([a-f0-9]{64})", files_evidence, re.I)
+                resolved = next((str(item.get("summary", "")) for item in reversed(substantive) if item.get("kind") == "plugin"), "")
+                version = re.search(r"已解析\s+Modrinth\s+插件\s+\S+\s+([^；\s]+)", resolved, re.I)
+                label = plugin_name or "插件"
+                details = [f"{label} 安装已完成，文件已确认落盘到 {target.group(1) if target else '/plugins'}。"]
+                if version:
+                    details.append(f"版本：{version.group(1)}。")
+                if digest:
+                    details.append(f"SHA-256：{digest.group(1)}。")
+                if "instance.restart" not in tools:
+                    details.append("本次计划未执行重启；插件将在服务器下次重启后加载。")
+                return {"decision": _response("\n".join(details), status="answered"), "next_node": "end"}
+            if task_state != "SUCCEEDED":
+                reason = next((
+                    re.sub(r"^工具返回错误[：:]\s*", "", str(item.get("summary", "")).strip())
+                    for item in reversed(evidence)
+                    if isinstance(item, dict)
+                    and item.get("kind") in {"diagnosis", "tool", "state"}
+                    and ("failed" in str(item.get("summary", "")).lower() or "错误" in str(item.get("summary", "")))
+                ), "工具未返回可验证的插件落盘证据")
+                return {"decision": _response(f"{plugin_name or '插件'} 安装失败：{reason}", status="answered"), "next_node": "end"}
         expects_plugin_directory = "files.list" in tools and bool(re.search(r"(?:/plugins\b|plugins/|插件)", intent, re.I))
         if task_state == "SUCCEEDED" and expects_plugin_directory and files_evidence and not re.search(r"(?:目录\s*/plugins\b|/plugins\s*[：:])", files_evidence, re.I):
             continuation = _tool_decision(

@@ -152,6 +152,19 @@ describe("draftPlan", () => {
     expect(plan.acceptance).toContainEqual({ type: "plugin_enabled", name: "essentialsx" });
   });
 
+  it("installs a plugin without restarting when the user explicitly forbids restart", () => {
+    const plan = draftPlan("mcs:daemon:instance", "revision-1", "下载并安装 EssentialsX 插件，但不要重启服务器", {
+      preferredTool: "plugin.install",
+      platform: "paper",
+      minecraftVersion: "1.21.1",
+      loader: "paper",
+    });
+
+    expect(plan.steps.map((step) => step.tool)).toEqual(["plugin.resolve", "plugin.install"]);
+    expect(plan.steps.some((step) => step.tool === "instance.restart")).toBe(false);
+    expect(plan.acceptance).toEqual([]);
+  });
+
   it("resolves plugin metadata without creating an installation plan", () => {
     const plan = draftPlan("mcs:daemon:instance", "revision-1", "解析 EssentialsX 兼容版本和制品，但不要安装", {
       preferredTool: "plugin.resolve",

@@ -172,6 +172,41 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["continuation"]["route"], "tool")
         self.assertEqual(response["continuation"]["trace"][0]["result"], "files.list")
 
+    async def test_plugin_install_success_uses_only_real_file_evidence(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "plugin-install-success.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-plugin-install-success",
+                "intent": "安装 LuckPerms，不要重启服务器",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "plugin.resolve"}, {"tool": "plugin.install"}]},
+                "evidence": [
+                    {"kind": "plugin", "summary": "已解析 Modrinth 插件 luckperms v5.5.53-bukkit；来源 SHA-512 已验证"},
+                    {"kind": "files", "summary": "插件已落盘到 /plugins/LuckPerms-Bukkit-5.5.53.jar（SHA-256：" + "a" * 64 + "）"},
+                ],
+            })
+            self.assertIn("/plugins/LuckPerms-Bukkit-5.5.53.jar", response["answer"])
+            self.assertIn("v5.5.53-bukkit", response["answer"])
+            self.assertIn("本次计划未执行重启", response["answer"])
+            self.assertNotIn("触发", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_plugin_install_failure_reports_resolver_error_without_inventing_restart(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "plugin-install-failure.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-plugin-install-failure",
+                "intent": "安装 EssentialsX，不要重启服务器",
+                "taskState": "FAILED",
+                "plan": {"steps": [{"tool": "plugin.resolve"}, {"tool": "plugin.install"}]},
+                "evidence": [{"kind": "diagnosis", "summary": "工具返回错误：Modrinth 没有兼容制品"}],
+            })
+            self.assertEqual(response["answer"], "EssentialsX 安装失败：Modrinth 没有兼容制品")
+            self.assertNotIn("重启", response["answer"])
+        finally:
+            await graph.close()
+
     async def test_files_task_without_files_evidence_is_not_reported_as_success(self):
         response = await self.graph.respond({
             "threadId": "session-4",

@@ -193,13 +193,25 @@ type pluginManifest struct {
 	InstalledPath string `json:"installed_path,omitempty"`
 }
 
-func (e *Executor) resolvePlugin(ctx context.Context, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
+func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
 	project := strings.ToLower(strings.TrimSpace(stringArg(step.Args, "project")))
 	loader := strings.ToLower(strings.TrimSpace(stringArg(step.Args, "loader")))
 	if loader == "" || loader == "unknown" {
 		loader = strings.ToLower(strings.TrimSpace(stringArg(step.Args, "platform")))
 	}
 	minecraftVersion := strings.TrimSpace(stringArg(step.Args, "minecraft_version"))
+	if loader == "" || loader == "unknown" || !minecraftVersionPattern.MatchString(minecraftVersion) {
+		detectedLoader, detectedVersion := detectPluginTarget(ctx, p, plan.InstanceRef)
+		if loader == "" || loader == "unknown" {
+			loader = detectedLoader
+		}
+		if !minecraftVersionPattern.MatchString(minecraftVersion) {
+			minecraftVersion = detectedVersion
+		}
+		if loader != "" && loader != "unknown" && minecraftVersionPattern.MatchString(minecraftVersion) {
+			emit("", "inventory", fmt.Sprintf("已从当前实例日志与文件识别服务端：%s %s", loader, minecraftVersion))
+		}
+	}
 	artifact, err := e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion)
 	if err != nil {
 		return err
@@ -223,6 +235,58 @@ func (e *Executor) resolvePlugin(ctx context.Context, plan protocol.TaskPlan, st
 	}
 	emit("", "plugin", fmt.Sprintf("已解析 Modrinth 插件 %s %s；来源 SHA-512 已验证，本地 SHA-256：%s", artifact.Project, artifact.VersionNumber, artifact.LocalSHA256))
 	return nil
+}
+
+func detectPluginTarget(ctx context.Context, p provider.Provider, instanceRef string) (string, string) {
+	loader, version := "unknown", ""
+	if instance, err := p.GetInstance(ctx, instanceRef); err == nil {
+		loader = strings.ToLower(strings.TrimSpace(instance.Loader))
+		if loader == "" || loader == "unknown" {
+			loader = strings.ToLower(strings.TrimSpace(instance.Platform))
+		}
+		version = strings.TrimSpace(instance.MinecraftVersion)
+	}
+	var evidence strings.Builder
+	if output, err := p.ReadOutput(ctx, instanceRef, 256); err == nil {
+		evidence.WriteString(output)
+		evidence.WriteByte('\n')
+	}
+	if latest, err := p.ReadFile(ctx, instanceRef, "logs/latest.log"); err == nil {
+		evidence.Write(latest)
+		evidence.WriteByte('\n')
+	}
+	if listing, err := p.ListFiles(ctx, instanceRef, "/"); err == nil {
+		evidence.WriteString(listing)
+	}
+	text := evidence.String()
+	lower := strings.ToLower(text)
+	if loader == "" || loader == "unknown" {
+		switch {
+		case strings.Contains(lower, "paper"):
+			loader = "paper"
+		case strings.Contains(lower, "purpur"):
+			loader = "purpur"
+		case strings.Contains(lower, "fabric"):
+			loader = "fabric"
+		case strings.Contains(lower, "forge"):
+			loader = "forge"
+		case strings.Contains(lower, "spigot.yml") || strings.Contains(lower, "bukkit.yml"):
+			loader = "spigot"
+		}
+	}
+	if !minecraftVersionPattern.MatchString(version) {
+		patterns := []*regexp.Regexp{
+			regexp.MustCompile(`(?i)(?:minecraft(?:\s+server)?\s+version|implementing\s+api\s+version|\bmc\s*[:=])[^0-9]{0,32}(1\.\d+(?:\.\d+)?)`),
+			regexp.MustCompile(`(?i)\bpaper(?:\s+version)?\s+[^\r\n]{0,48}?\b(1\.\d+(?:\.\d+)?)\b`),
+		}
+		for _, pattern := range patterns {
+			if match := pattern.FindStringSubmatch(text); len(match) == 2 {
+				version = match[1]
+				break
+			}
+		}
+	}
+	return loader, version
 }
 
 func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
