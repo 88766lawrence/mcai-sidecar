@@ -317,4 +317,502 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
                     {"kind": "console", "summary": "æ§åˆ¶å°è¿”å›ï¼šThis server is running Paper version 1.21.1-133"},
                     {"kind": "console", "summary": "æ§åˆ¶å°è¿”å›ï¼šServer Plugins (0):"},
                     {"kind": "logs", "summary": "Recent log excerpt: Server started normally. Done (2.1s)!"},
-               ß­ø¶‰Ëkºwµçuµ…¹‰ô°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘•±•…Ñ”ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰‘•±•…Ñ”‰t°€‰‘¥…¹½ÍÑ¥Ìˆ¤((€€€‘•˜Ñ•ÍÑ}•áÁ±¥¥Ñ}½™™±¥¹•}Á±…¹}‘•±•…Ñ•Í}İ¥Ñ¡½ÕÑ}µ½‘•±}É½ÕÑ¥¹œ¡Í•±˜¤è(€€€€€€€‘•¥Í¥½¸€ô}‘•Ñ•Éµ¥¹¥ÍÑ¥}‘•¥Í¥½¸ (€€€€€€€€€€€€‹’â7¢¾ï–>[–º{š^ÛšVÃš6»¾ò3’âë–’Ÿ–z,A…Á•Èƒšr7–*‡–f£–"Û–ºk’â'¦bÛšº×šŸ¢÷šÊïBšZçš†#¾ò3–2–B¯¦;¦f§–n{šîk–J3–sš¶‹šv‡’îÛˆ°(€€€€€€€€€€€mt°(€€€€€€€€€€€ì‰±½Ì¹ÅÕ•Éäˆ°€‰½¹Í½±”¹½µµ…¹‰ô°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘•±•…Ñ”ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰‘•±•…Ñ”‰t°€‰Á±…¹¹•Èˆ¤((€€€‘•˜Ñ•ÍÑ}ÕÉÉ•¹Ñ}±½}‘¥…¹½Í¥Í}É•µ…¥¹Í}…}½¹ÑÉ½±±•‘}Ñ½½±}É•ÅÕ•ÍĞ¡Í•±˜¤è(€€€€€€€‘•¥Í¥½¸€ô}‘•Ñ•Éµ¥¹¥ÍÑ¥}‘•¥Í¥½¸ (€€€€€€€€€€€€‹¢¾ï–>[–öO–&7–º{’ú/šr¢şG’â–Â?š^Ûš^—–ş_¾ò3îO–B#¦Rg¢¾¿’â;–ò–âã¢†3¢¾+šZ·šr–>¿¢÷šV¦js–:–nƒˆ°(€€€€€€€€€€€mt°(€€€€€€€€€€€ì‰±½Ì¹ÅÕ•Éäˆ°€‰½¹Í½±”¹½µµ…¹‰ô°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰Ñ½½°ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰ÁÉ•™•ÉÉ•‘Q½½°‰t°€‰±½Ì¹ÅÕ•Éäˆ¤((€€€‘•˜Ñ•ÍÑ}Í¡½ÉÑ}¡•…±Ñ¡}É•ÅÕ•ÍÑ}¥Í}Í•¹Ñ}Ñ½}Ñ¡•}Á±…¹¹•É}µ½‘•°¡Í•±˜¤è(€€€€€€€…Ù…¥±…‰±”€ôì‰±½Ì¹ÅÕ•Éäˆ°€‰½¹Í½±”¹½µµ…¹‰ô(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%Í9½¹”¡}‘•Ñ•Éµ¥¹¥ÍÑ¥}‘•¥Í¥½¸ ‹r/r/šr7–*‡–f£šr'šÊ‡šr'¦^»¦Š`ˆ°mt°…Ù…¥±…‰±”¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑQÉÕ”¡}Í¡½Õ±‘}Á±…¹}É•ÅÕ•ÍĞ ‹r/r/šr7–*‡–f£šr'šÊ‡šr'¦^»¦Š`ˆ°…Ù…¥±…‰±”¤¤((€€€‘•˜Ñ•ÍÑ}¡•…±Ñ¡}ÑÕÑ½É¥…±}ÅÕ•ÍÑ¥½¹}¥Í}¹½Ñ}•áÁ…¹‘•‘}Ñ½}…}±¥Ù•}Í­¥±°¡Í•±˜¤è(€€€€€€€‘•¥Í¥½¸€ô}‘•Ñ•Éµ¥¹¥ÍÑ¥}‘•¥Í¥½¸ (€€€€€€€€€€€€‰5¥¹•É…™Ğƒšr7–*‡–f£–—–êßšš~—’â¢"³š;’æ#–k¾ò|ˆ°(€€€€€€€€€€€mt°(€€€€€€€€€€€ì‰±½Ì¹ÅÕ•Éäˆ°€‰½¹Í½±”¹½µµ…¹‰ô°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%Í9½¹”¡‘•¥Í¥½¸¤((€€€‘•˜Ñ•ÍÑ}•áÁ±¥¥Ñ}½Á•É…Ñ¥½¹}¥Í}¹½Ñ}Íİ…±±½İ•‘}‰å}½™™±¥¹•}‘•±•…Ñ•}­•åİ½É‘Ì¡Í•±˜¤è(€€€€€€€‘•¥Í¥½¸€ô}‘•Ñ•Éµ¥¹¥ÍÑ¥}‘•¥Í¥½¸ (€€€€€€€€€€€€‹šïêÿ–º'¢šZçš†#¾òk’â/¢öôA…Á•È€Ä¸ÈÄ¸Äƒšr7–*‡®¿ˆ°(€€€€€€€€€€€mt°(€€€€€€€€€€€ì‰Í•ÉÙ•È¹¥¹ÍÑ…±°‰ô°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰Ñ½½°ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰ÁÉ•™•ÉÉ•‘Q½½°‰t°€‰Í•ÉÙ•È¹¥¹ÍÑ…±°ˆ¤(()±…ÍÌ5½‘•±‘…ÁÑ•ÉQ•ÍÑÌ¡Õ¹¥ÑÑ•ÍĞ¹%Í½±…Ñ•‘Íå¹¥½Q•ÍÑ…Í”¤è(€€€‘•˜Ñ•ÍÑ}½ÕÑÁÕÑ}‰Õ‘•ÑÍ}­••Á}É½ÕÑ¥¹}…¹‘}…¹Íİ•ÉÍ}½¹¥Í”¡Í•±˜¤è(€€€€€€€…¹Íİ•É}Í¡•µ„€ôì‰É•ÅÕ¥É•ˆèl‰…¹Íİ•È‰uô(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡}µ…á}Ñ½­•¹Í}™½É}Í¡•µ„¡…¹Íİ•É}Í¡•µ„¤°€ÈÔØ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡}µ…á}Ñ½­•¹Í}™½É}Í¡•µ„¡}‘•¥Í¥½¹}Í¡•µ„ ¤¤°€ÌàĞ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÉ•…Ñ•È¡5=1}9M]I}IEUMQ}Q%5=UQ}M=9L°5=1}IEUMQ}Q%5=UQ}M=9L¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}Á±…¥¹}µ½‘•±}Ñ•áÑ}¥Í}…}Í…™•}‘¥É•Ñ}…¹Íİ•È¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤(€€€€€€€µ½‘•Ì€ômt((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°µ½‘”¤è(€€€€€€€€€€€µ½‘•Ì¹…ÁÁ•¹¡µ½‘”¤(€€€€€€€€€€€É•ÑÕÉ¸€ˆÈˆ¥˜µ½‘”€ôô€‰©Í½¹}Í¡•µ„ˆ•±Í”€ì‰…¹Íİ•ÈˆèˆÈ‰ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€ˆÄ¬Ä‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€ˆÈˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ½‘•Ì°l‰©Í½¹}Í¡•µ„‰t¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}ÑÉÕ¹…Ñ•‘}É½ÕÑ¥¹}©Í½¹}É•½Ù•ÉÍ}Ñ¡•}ÁÕ‰±¥}…¹Íİ•É}½¹±ä¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰É½ÕÑ”ˆè‰‘¥É•Ğˆ°‰…¹Íİ•Èˆè‰A…Á•ÈÕÍ•ÌÁ±Õ¥¹Íqq¹…‰É¥ŒÕÍ•Ì„µ½±½…‘•Èœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰½µÁ…É”‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ…±Í”¡‘•¥Í¥½¹l‰…¹Íİ•È‰t¹ÍÑ…ÉÑÍİ¥Ñ  ‰ìˆ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‰A…Á•ÈÕÍ•ÌÁ±Õ¥¹Ìˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‰…‰É¥ŒÕÍ•Ì„µ½±½…‘•Èˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}ÑÉÕ¹…Ñ•‘}‘½Õ‰±•}İÉ…ÁÁ•‘}©Í½¹}É•½Ù•ÉÍ}Ñ¡•}¹•ÍÑ•‘}…¹Íİ•È¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰…¹Íİ•Èˆè‰íqp‰É½ÕÑ•qpˆéqp‰‘¥É•Ñqpˆ±qp‰…¹Íİ•Éqpˆéqp‰A…Á•ÈÕÍ•ÌÁ±Õ¥¹Ìœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰½µÁ…É”‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰A…Á•ÈÕÍ•ÌÁ±Õ¥¹Ìˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}½¹Ñ•¹Ñ}½µÁ…Ñ¥‰¥±¥Ñå}™¥•±‘}¥Í}¹½Ñ}±½ÍĞ¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰½¹Ñ•¹Ğˆè‰A…Á•ÈƒšnÓ¦–B#š>K’îÛRš¾ò1…‰É¥ŒƒšnÓ¦–B#š¢‡î‰ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰A…Á•Èƒ–J0…‰É¥Œƒj–2ë–"¬‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‰A…Á•Èˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}¹•ÍÑ•‘}½¹Ñ•¹Ñ}½µÁ…Ñ¥‰¥±¥Ñå}™¥•±‘}¥Í}¹½Ñ}±½ÍĞ¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰½¹Ñ•¹Ğˆéì‰Ñ•áĞˆè‰A…Á•È¥Ì„Í•ÉÙ•È¥µÁ±•µ•¹Ñ…Ñ¥½¸ì…‰É¥Œ¥Ì„µ½±½…‘•È¸‰õôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰½µÁ…É”‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‰…‰É¥Œˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}ÁÉ½Ù¥‘•É}…ÕÑ¡•¹Ñ¥…Ñ¥½¹}™…¥±ÕÉ•}¥Í}É•Á½ÉÑ•¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‰ÁÉ½Ù¥‘•È!QQ@€ĞÀÄˆ¤((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€İ¥Ñ Í•±˜¹…ÍÍ•ÉÑI…¥Í•Ì¡5½‘•±AÉ½Ù¥‘•ÉÉÉ½È¤…Ì…Õ¡Ğè(€€€€€€€€€€€…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Õ¡Ğ¹•á•ÁÑ¥½¸¹½‘”°€‰UQ!9Q%Q%=8ˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}É•ÅÕ•ÍÑ}Ñ¥µ•½ÕÑ}µ½Ù•Í}Ñ½}Ñ¡•}½¹™¥ÕÉ•‘}™…±±‰…­}µ½‘•°¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ°€ ‰™…±±‰…¬ˆ°¤¤¤(€€€€€€€Í••¸€ômt((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€Í••¸¹…ÁÁ•¹¡µ½‘•°¤(€€€€€€€€€€€¥˜µ½‘•°€ôô€‰ÁÉ¥µ…Éäˆè(€€€€€€€€€€€€€€€É…¥Í”Q¥µ•½ÕÑÉÉ½È ¤(€€€€€€€€€€€É•ÑÕÉ¸€ì‰É½ÕÑ”ˆè‰‘¥É•Ğˆ°‰…¹Íİ•Èˆè‰™…±±‰…¬…¹Íİ•É•ˆ°‰Ñ½½±%¹Ñ•¹Ğˆé¹Õ±°°‰ÁÉ•™•ÉÉ•‘Q½½°ˆé¹Õ±°°‰‘•±•…Ñ”ˆé¹Õ±°°‰Á•¹‘¥¹Ñ¥½¸ˆé¹Õ±±ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Í••¸°l‰ÁÉ¥µ…Éäˆ°€‰™…±±‰…¬‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰™…±±‰…¬…¹Íİ•É•ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰ÁÉ½Ù¥‘•É5½‘•°‰t°€‰™…±±‰…¬ˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}É•ÍÁ½¹Í•}™½Éµ…Ñ}™…¥±ÕÉ•}ÕÍ•Í}Ñ¡•}¹•áÑ}½µÁ…Ñ¥‰±•}µ½‘”¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤(€€€€€€€µ½‘•Ì€ômt((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°µ½‘”¤è(€€€€€€€€€€€µ½‘•Ì¹…ÁÁ•¹¡µ½‘”¤(€€€€€€€€€€€¥˜µ½‘”€ôô€‰©Í½¹}Í¡•µ„ˆè(€€€€€€€€€€€€€€€É…¥Í”IÕ¹Ñ¥µ•ÉÉ½È ‰ÁÉ½Ù¥‘•È!QQ@€ĞÀÀèÉ•ÍÁ½¹Í•}™½Éµ…Ğ¥ÌÕ¹ÍÕÁÁ½ÉÑ•ˆ¤(€€€€€€€€€€€É•ÑÕÉ¸€ì‰½¹Ñ•¹Ğˆè‰½µÁ…Ñ¥‰±”…¹Íİ•È‰ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ½‘•Ì°l‰©Í½¹}Í¡•µ„ˆ°€‰©Í½¹}½‰©•Ğ‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰½µÁ…Ñ¥‰±”…¹Íİ•Èˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}…¹Íİ•É}½¹±å}Í¡•µ…}ÁÉ•™•ÉÍ}Ñ¡•}½µÁ…Ñ¥‰¥±¥Ñå}ÁÉ½µÁÑ}µ½‘”¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤(€€€€€€€µ½‘•Ì€ômt(€€€€€€€…¹Íİ•É}Í¡•µ„€ôì(€€€€€€€€€€€€‰ÑåÁ”ˆè€‰½‰©•Ğˆ°(€€€€€€€€€€€€‰ÁÉ½Á•ÉÑ¥•Ìˆèì‰…¹Íİ•Èˆèì‰ÑåÁ”ˆè€‰ÍÑÉ¥¹œ‰õô°(€€€€€€€€€€€€‰É•ÅÕ¥É•ˆèl‰…¹Íİ•È‰t°(€€€€€€€ô((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°µ½‘”¤è(€€€€€€€€€€€µ½‘•Ì¹…ÁÁ•¹¡µ½‘”¤(€€€€€€€€€€€É•ÑÕÉ¸€‰½¹¥Í”…¹Íİ•Èˆ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰…¹Íİ•Èˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°…¹Íİ•É}Í¡•µ„¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ½‘•Ì°l‰ÁÉ½µÁĞ‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰½¹¥Í”…¹Íİ•Èˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}…¹Íİ•É}½¹±å}•µÁÑå}ÁÉ¥µ…Éå}µ½Ù•Í}‘¥É•Ñ±å}Ñ½}™…±±‰…¬¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ°€ ‰™…±±‰…¬ˆ°¤¤¤(€€€€€€€Í••¸€ômt(€€€€€€€…¹Íİ•É}Í¡•µ„€ôì(€€€€€€€€€€€€‰ÑåÁ”ˆè€‰½‰©•Ğˆ°(€€€€€€€€€€€€‰ÁÉ½Á•ÉÑ¥•Ìˆèì‰…¹Íİ•Èˆèì‰ÑåÁ”ˆè€‰ÍÑÉ¥¹œ‰õô°(€€€€€€€€€€€€‰É•ÅÕ¥É•ˆèl‰…¹Íİ•È‰t°(€€€€€€€ô((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°µ½‘”¤è(€€€€€€€€€€€Í••¸¹…ÁÁ•¹ ¡µ½‘•°°µ½‘”¤¤(€€€€€€€€€€€É•ÑÕÉ¸€ˆˆ¥˜µ½‘•°€ôô€‰ÁÉ¥µ…Éäˆ•±Í”€‰™…±±‰…¬…¹Íİ•Èˆ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰…¹Íİ•Èˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°…¹Íİ•É}Í¡•µ„¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡Í••¸°l ‰ÁÉ¥µ…Éäˆ°€‰ÁÉ½µÁĞˆ¤°€ ‰™…±±‰…¬ˆ°€‰ÁÉ½µÁĞˆ¥t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰™…±±‰…¬…¹Íİ•Èˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}…¹Íİ•É}½¹±å}ÍÑÉÕÑÕÉ•‘}Í•Ñ¥½¹Í}…É•}ÁÉ•Í•ÉÙ•¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤(€€€€€€€…¹Íİ•É}Í¡•µ„€ôì(€€€€€€€€€€€€‰ÑåÁ”ˆè€‰½‰©•Ğˆ°(€€€€€€€€€€€€‰ÁÉ½Á•ÉÑ¥•Ìˆèì‰…¹Íİ•Èˆèì‰ÑåÁ”ˆè€‰ÍÑÉ¥¹œ‰õô°(€€€€€€€€€€€€‰É•ÅÕ¥É•ˆèl‰…¹Íİ•È‰t°(€€€€€€€ô((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰™…ÑÌˆè‰5MAP¥Ì•±•Ù…Ñ•ˆ°‰Ù•É¥™¥…Ñ¥½¸ˆè‰Í…µÁ±”Á…ÕÍ•Ì‰ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰…¹Íİ•Èˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰‘¥…¹½Í”‰õt°…¹Íİ•É}Í¡•µ„¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‹’ê/–ºxˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‹¦ª3¢¾ˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}…¹Íİ•É}½¹±å}‘½Õ‰±•}İÉ…ÁÁ•‘}©Í½¹}¥Í}Õ¹İÉ…ÁÁ•‘}™½É}Ñ¡•}Õ¤¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤(€€€€€€€…¹Íİ•É}Í¡•µ„€ôì(€€€€€€€€€€€€‰ÑåÁ”ˆè€‰½‰©•Ğˆ°(€€€€€€€€€€€€‰ÁÉ½Á•ÉÑ¥•Ìˆèì‰…¹Íİ•Èˆèì‰ÑåÁ”ˆè€‰ÍÑÉ¥¹œ‰õô°(€€€€€€€€€€€€‰É•ÅÕ¥É•ˆèl‰…¹Íİ•È‰t°(€€€€€€€ô((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ì‰…¹Íİ•Èˆè‰íqp‰…¹Íİ•Éqpˆéqp‰±•…¸…¹Íİ•Éqp‰ô‰ôœ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€‘•¥Í¥½¸€ô…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰…¹Íİ•Èˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°…¹Íİ•É}Í¡•µ„¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰…¹Íİ•È‰t°€‰±•…¸…¹Íİ•Èˆ¤((€€€‘•˜Ñ•ÍÑ}ÁÉ½Ù¥‘•É}½¹Ñ•¹Ñ}¡…¹‘±•Í}½µÁ…Ñ¥‰±•}•¹Ù•±½Á•Í}İ¥Ñ¡½ÕÑ}É•…Í½¹¥¹œ¡Í•±˜¤è(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…° (€€€€€€€€€€€}ÁÉ½Ù¥‘•É}½¹Ñ•¹Ğ¡ì‰¡½¥•Ìˆèmì‰µ•ÍÍ…”ˆèì‰½¹Ñ•¹Ğˆèì‰½¹Ñ•¹Ğˆè€‰½µÁ…Ñ¥‰±”‰õõõuô¤°(€€€€€€€€€€€€‰½µÁ…Ñ¥‰±”ˆ°(€€€€€€€€¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡}ÁÉ½Ù¥‘•É}½¹Ñ•¹Ğ¡ì‰…¹Íİ•Èˆè€‰Ñ½Àµ±•Ù•°½µÁ…Ñ¥‰±”‰ô¤°€‰Ñ½Àµ±•Ù•°½µÁ…Ñ¥‰±”ˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡}ÁÉ½Ù¥‘•É}½¹Ñ•¹Ğ¡ì‰¡½¥•Ìˆèmì‰µ•ÍÍ…”ˆèì‰É•…Í½¹¥¹}½¹Ñ•¹Ğˆè€‰ÁÉ¥Ù…Ñ”‰õõuô¤°€ˆˆ¤((€€€‘•˜Ñ•ÍÑ}¡¥ÍÑ½Éå}¥Í}‰½Õ¹‘•‘}‰ÕÑ}­••ÁÍ}É••¹Ñ}½¹Ñ•áĞ¡Í•±˜¤è(€€€€€€€¡¥ÍÑ½Éä€ômì‰É½±”ˆè€‰…ÍÍ¥ÍÑ…¹Ğˆ°€‰½¹Ñ•¹Ğˆè€‰„ˆ€¨€á|ÀÀÁô°ì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰É••¹Ğ½¹Ñ•áĞ‰õt(€€€€€€€µ•ÍÍ…•Ì€ô}¡¥ÍÑ½Éä¡ì‰¡¥ÍÑ½Éäˆè¡¥ÍÑ½Éä°€‰µ•ÍÍ…”ˆè€‰ÕÉÉ•¹ĞÉ•ÅÕ•ÍĞ‰ô¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ1•ÍÍÅÕ…°¡ÍÕ´¡±•¸¡µ•ÍÍ…•l‰½¹Ñ•¹Ğ‰t¤™½Èµ•ÍÍ…”¥¸µ•ÍÍ…•Ílè´Åt¤°€Ù|ÀÀÀ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ•ÍÍ…•Íl´Éul‰½¹Ñ•¹Ğ‰t°€‰É••¹Ğ½¹Ñ•áĞˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡µ•ÍÍ…•Íl´Åul‰½¹Ñ•¹Ğ‰t°€‰ÕÉÉ•¹ĞÉ•ÅÕ•ÍĞˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}•µÁÑå}½¹Ñ•¹Ñ}¥Í}¹½Ñ}ÑÉ•…Ñ•‘}…Í}…}µ½‘•±}…¹Íİ•È¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€É•ÑÕÉ¸€ˆˆ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€İ¥Ñ Í•±˜¹…ÍÍ•ÉÑI…¥Í•Ì¡5½‘•±AÉ½Ù¥‘•ÉÉÉ½È¤…Ì…Õ¡Ğè(€€€€€€€€€€€…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Õ¡Ğ¹•á•ÁÑ¥½¸¹½‘”°€‰5AQe}IMA=9Mˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}ÁÉ½Ù¥‘•É}Ñ½Ñ…±}Ñ¥µ•½ÕÑ}¥Í}É•Á½ÉÑ•‘}‰•™½É•}É…Á¡}Ñ¥µ•½ÕĞ¡Í•±˜¤è(€€€€€€€ÁÉ½Ù¥‘•È€ô5½‘•±AÉ½Ù¥‘•È¡AÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤¤((€€€€€€€…Íå¹Œ‘•˜É•ÅÕ•ÍĞ¡}µ½‘•°°}ÍåÍÑ•´°}µ•ÍÍ…•Ì°}Í¡•µ„°}µ½‘”¤è(€€€€€€€€€€€…İ…¥Ğ…Íå¹¥¼¹Í±••À À¸Ä¤(€€€€€€€€€€€É•ÑÕÉ¸€‰±…Ñ”…¹Íİ•Èˆ((€€€€€€€ÁÉ½Ù¥‘•È¹}É•ÅÕ•ÍĞ€ôÉ•ÅÕ•ÍĞ€€ŒÑåÁ”è¥¹½É•mµ•Ñ¡½µ…ÍÍ¥¹t(€€€€€€€İ¥Ñ Í•±˜¹…ÍÍ•ÉÑI…¥Í•Ì¡5½‘•±AÉ½Ù¥‘•ÉÉÉ½È¤…Ì…Õ¡Ğè(€€€€€€€€€€€…İ…¥ĞÁÉ½Ù¥‘•È¹ÍÑÉÕÑÕÉ• ‰É½ÕÑ”ˆ°mì‰É½±”ˆè€‰ÕÍ•Èˆ°€‰½¹Ñ•¹Ğˆè€‰¡•±±¼‰õt°}‘•¥Í¥½¹}Í¡•µ„ ¤°Ñ¥µ•½ÕÑ}Í•½¹‘ÌôÀ¸ÀÄ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Õ¡Ğ¹•á•ÁÑ¥½¸¹½‘”°€‰Q%5=UPˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}ÁÉ½‰•}É•©•ÑÍ}…¹}…¹Íİ•É}Ñ¡…Ñ}‘½•Í}¹½Ñ}•¡½}Ñ¡•}É•…‘¥¹•ÍÍ}¹½¹”¡Í•±˜¤è(€€€€€€€±…ÍÌ9½¹•%¹½É¥¹AÉ½Ù¥‘•Èè(€€€€€€€€€€€½¹™¥œ€ôAÉ½Ù¥‘•É½¹™¥œ ‰Ñ•ÍĞˆ°€‰¡ÑÑÀè¼½•á…µÁ±”¹¥¹Ù…±¥½ØÄˆ°€‰ÁÉ¥µ…Éäˆ¤((€€€€€€€€€€€…Íå¹Œ‘•˜ÍÑÉÕÑÕÉ•¡Í•±˜°€©}…ÉÌ°€¨©}­İ…ÉÌ¤è(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì‰…¹Íİ•Èˆè€‰É•…‘äˆ°€‰ÁÉ½Ù¥‘•É5½‘•°ˆè€‰ÁÉ¥µ…Éä‰ô((€€€€€€€É…Á €ô5…¥É…Á ¡9½¹•%¹½É¥¹AÉ½Ù¥‘•È ¤°A…Ñ ¡Ñ•µÁ™¥±”¹µ­‘Ñ•µÀ ¤¤€¼€‰ÁÉ½‰”¹ÍÅ±¥Ñ”ˆ¤(€€€€€€€İ¥Ñ Í•±˜¹…ÍÍ•ÉÑI…¥Í•Ì¡5½‘•±AÉ½Ù¥‘•ÉÉÉ½È¤…Ì…Õ¡Ğè(€€€€€€€€€€€…İ…¥ĞÉ…Á ¹ÁÉ½‰” ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡…Õ¡Ğ¹•á•ÁÑ¥½¸¹½‘”°€‰%9Y1%}IMA=9Mˆ¤((€€€…Íå¹Œ‘•˜Ñ•ÍÑ}É½ÕÑ•}Ñ¥µ•½ÕÑ}¥Í}¹½Ñ}É•Á½ÉÑ•‘}…Í}…¹}¥¹Ñ•É¹…±}•ÉÉ½È¡Í•±˜¤è(€€€€€€€±…ÍÌQ¥µ•½ÕÑAÉ½Ù¥‘•Èè(€€€€€€€€€€€…Íå¹Œ‘•˜ÍÑÉÕÑÕÉ•¡Í•±˜°€©}…ÉÌ°€¨©}­İ…ÉÌ¤è(€€€€€€€€€€€€€€€É…¥Í”Q¥µ•½ÕÑÉÉ½È ¤((€€€€€€€É…Á €ô5…¥É…Á ¡Q¥µ•½ÕÑAÉ½Ù¥‘•È ¤°A…Ñ ¡Ñ•µÁ™¥±”¹µ­‘Ñ•µÀ ¤¤€¼€‰Ñ¥µ•½ÕĞ¹ÍÅ±¥Ñ”ˆ¤(€€€€€€€É•ÍÕ±Ğ€ô…İ…¥ĞÉ…Á ¹}µ½‘•±}É½ÕÑ”¡ì‰É•ÅÕ•ÍĞˆèì‰µ•ÍÍ…”ˆè€‰½µÁ…É”A…Á•È…¹…‰É¥Œˆ°€‰…Ù…¥±…‰±•Q½½±Ìˆèmuõô¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰‘•¥Í¥½¸‰ul‰ÁÉ½Ù¥‘•ÉÉÉ½È‰t°€‰Q%5=UPˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡É•ÍÕ±Ñl‰‘•¥Í¥½¸‰ul‰ÁÉ½Ù¥‘•ÉMÑ…ÑÕÌ‰t°€‰Õ¹…Ù…¥±…‰±”ˆ¤((€€€‘•˜Ñ•ÍÑ}‘¥Í…±±½İ•‘}µ½‘•±}Ñ½½±}¥Í}‘½İ¹É…‘•‘}İ¥Ñ¡½ÕÑ}•á•ÕÑ¥½¸¡Í•±˜¤è(€€€€€€€‘•¥Í¥½¸€ô}¹½Éµ…±¥é•}‘•¥Í¥½¸¡ì(€€€€€€€€€€€€‰É½ÕÑ”ˆè€‰Ñ½½°ˆ°(€€€€€€€€€€€€‰…¹Íİ•Èˆè€‹š¶–r£š&Ÿ¢†0ˆ°(€€€€€€€€€€€€‰Ñ½½±%¹Ñ•¹Ğˆè€‹–sš¶‹–º{’ú,ˆ°(€€€€€€€€€€€€‰ÁÉ•™•ÉÉ•‘Q½½°ˆè€‰¥¹ÍÑ…¹”¹ÍÑ½Àˆ°(€€€€€€€ô°Í•Ğ ¤¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑÅÕ…°¡‘•¥Í¥½¹l‰É½ÕÑ”‰t°€‰‘¥É•Ğˆ¤(€€€€€€€Í•±˜¹…ÍÍ•ÉÑ%¸ ‹šr«š&Ÿ¢†0ˆ°‘•¥Í¥½¹l‰…¹Íİ•È‰t¤(()¥˜}}¹…µ•}|€ôô€‰}}µ…¥¹}|ˆè(€€€Õ¹¥ÑÑ•ÍĞ¹µ…¥¸ ¤(
+                ],
+            })
+            self.assertIn("Paper version 1.21.1-133", response["answer"])
+            self.assertIn("æ’ä»¶æ•°é‡ä¸º 0", response["answer"])
+            self.assertIn("æœªåŒ¹é…åˆ° ERRORã€WARN", response["answer"])
+            self.assertIn("æš‚æœªå‘ç°æ˜æ˜¾å¼‚å¸¸", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_health_completion_uses_the_tool_sequence_even_when_the_planner_rephrases_the_goal(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-rephrased.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-health-rephrased",
+                "intent": "ä¾æ¬¡ç¡®è®¤è¿è¡Œç‰ˆæœ¬ã€å·²åŠ è½½æ‰©å±•å’Œè¿‘æœŸå¼‚å¸¸ï¼Œç­‰å¾…æ¯ä¸€æ­¥è¿”å›åç»¼åˆåˆ¤æ–­",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [
+                    {"tool": "console.command"}, {"tool": "console.command"}, {"tool": "logs.query"},
+                ]},
+                "evidence": [
+                    {"kind": "console", "summary": "This server is running Paper version 1.21.1-133"},
+                    {"kind": "console", "summary": "Server Plugins (0):"},
+                    {"kind": "logs", "summary": "Done (2.1s)!"},
+                ],
+            })
+            self.assertIn("åªè¯»å¥åº·æ£€æŸ¥å·²å®Œæˆ", response["answer"])
+            self.assertIn("Paper version 1.21.1-133", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_readonly_health_inspection_prefers_real_version_line_and_named_log_signals(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "health-signals.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-health-signals",
+                "intent": "å®Œæˆåªè¯»å¥åº·æ£€æŸ¥ï¼šversionã€pluginsã€æ—¥å¿—ï¼›ä¸è¦åœæ­¢æœåŠ¡å™¨",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [
+                    {"tool": "console.command"}, {"tool": "console.command"}, {"tool": "logs.query"},
+                ]},
+                "evidence": [
+                    {"kind": "console", "summary": "PaperVersionFetcher https://api.papermc.io/v2/projects/paper/versions/1.21.1\nThis server is running Paper version 1.21.1-133"},
+                    {"kind": "console", "summary": "Server Plugins (0):"},
+                    {"kind": "logs", "summary": "Paper Watchdog: The server has not responded for 15 seconds\nCan't keep up! Running 18436ms or 368 ticks behind\nPaperVersionFetcher Error while parsing version"},
+                ],
+            })
+            self.assertIn("This server is running Paper version 1.21.1-133", response["answer"])
+            self.assertIn("ä¸»çº¿ç¨‹è¶…è¿‡ 15 ç§’æœªå“åº”", response["answer"])
+            self.assertIn("è½å 18436msï¼ˆ368 ticksï¼‰", response["answer"])
+            self.assertIn("ç‰ˆæœ¬æ£€æŸ¥è®¿é—®è¿œç«¯ API å¤±è´¥", response["answer"])
+            self.assertNotIn("papermc.io/v2", response["answer"])
+        finally:
+            await graph.close()
+
+    async def test_files_completion_uses_real_evidence_without_model(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "files.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-files-success",
+                "intent": "åˆ—å‡ºæ ¹ç›®å½•",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "files.list"}]},
+                "evidence": [{"kind": "files", "summary": "å®ä¾‹ç›®å½• /ï¼šserver.jar, plugins"}],
+            })
+            self.assertEqual(response["answer"], "å®ä¾‹ç›®å½• /ï¼šserver.jar, plugins")
+        finally:
+            await graph.close()
+
+    async def test_explicit_offline_diagnosis_runs_the_delegate_node(self):
+        decision = await self.graph.route({
+            "threadId": "session-offline-diagnosis",
+            "message": "ä¸è¯»å–å½“å‰æœåŠ¡å™¨æ•°æ®ï¼Œä»…æ ¹æ®ä»¥ä¸‹è¯æ®è¯Šæ–­æ•…éšœæ ¹å› ï¼Œå¹¶ç»™å‡ºéªŒè¯æ–¹æ¡ˆä¸éªŒæ”¶æ ‡å‡†ã€‚",
+            "availableTools": ["logs.query", "console.command"],
+        })
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "diagnostics")
+        self.assertEqual(decision["answer"], "å·²æ ¹æ®çœŸå®ä»»åŠ¡è¯æ®å®Œæˆã€‚")
+
+    async def test_delegate_prompts_require_a_concise_complete_result_template(self):
+        class CapturingProvider:
+            config = ProviderConfig("test", "http://example.invalid/v1", "test")
+
+            def __init__(self):
+                self.systems = []
+
+            async def structured(self, system, _messages, _schema):
+                self.systems.append(system)
+                return {"answer": "æ¨¡æ¿åŒ–å›ç­”"}
+
+        provider = CapturingProvider()
+        graph = McaiGraph(provider, Path(self.temp.name) / "delegate-template.sqlite3")
+        try:
+            planner = await graph.route({
+                "threadId": "session-template-plan",
+                "message": "ä¸è¯»å–å®æ—¶æ•°æ®ï¼Œä¸ºå¤§å‹ Paper æœåŠ¡å™¨åˆ¶å®šä¸‰é˜¶æ®µæ€§èƒ½æ²»ç†æ–¹æ¡ˆï¼ŒåŒ…å«é£é™©ã€å›æ»šå’Œåœæ­¢æ¡ä»¶ã€‚",
+                "availableTools": ["logs.query"],
+            })
+            diagnostics = await graph.route({
+                "threadId": "session-template-diagnosis",
+                "message": "ä¸è¯»å–å®æ—¶æ•°æ®ï¼Œä»…æ ¹æ®ä»¥ä¸‹è¯æ®è¯Šæ–­æ•…éšœæ ¹å› ï¼Œå¹¶ç»™å‡ºéªŒè¯æ–¹æ¡ˆä¸éªŒæ”¶æ ‡å‡†ã€‚",
+                "availableTools": ["logs.query"],
+            })
+            self.assertEqual(planner["route"], "delegate")
+            self.assertEqual(diagnostics["route"], "delegate")
+            self.assertIn("é˜¶æ®µã€ä¾èµ–ã€é£é™©ã€éªŒæ”¶ã€å›æ»šã€åœæ­¢æ¡ä»¶", provider.systems[0])
+            self.assertIn("å·²çŸ¥äº‹å®ã€æ¨æ–­ã€éªŒè¯ã€é£é™©ã€éªŒæ”¶", provider.systems[1])
+        finally:
+            await graph.close()
+
+    async def test_failed_delegate_is_reported_as_unavailable_not_as_a_successful_delegate(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "delegate-failure.sqlite3")
+        try:
+            decision = await graph.route({
+                "threadId": "session-offline-delegate-failure",
+                "message": "ä¸è¯»å–å½“å‰æœåŠ¡å™¨æ•°æ®ï¼Œä»…æ ¹æ®ä»¥ä¸‹è¯æ®è¯Šæ–­æ•…éšœæ ¹å› ã€‚",
+                "availableTools": ["logs.query", "console.command"],
+            })
+            self.assertEqual(decision["route"], "direct")
+            self.assertEqual(decision["providerStatus"], "unavailable")
+            self.assertEqual(decision["providerError"], "INTERNAL_ERROR")
+        finally:
+            await graph.close()
+
+    async def test_model_completion_failure_preserves_an_unavailable_status(self):
+        graph = McaiGraph(FailingProvider(), Path(self.temp.name) / "completion-failure.sqlite3")
+        try:
+            response = await graph.respond({
+                "threadId": "session-completion-failure",
+                "intent": "è§£é‡Šä¸€ä¸ªè‡ªå®šä¹‰ä»»åŠ¡ç»“æœ",
+                "taskState": "SUCCEEDED",
+                "plan": {"steps": [{"tool": "custom.operation"}]},
+                "evidence": [],
+            })
+            self.assertEqual(response["status"], "unavailable")
+            self.assertEqual(response["providerStatus"], "unavailable")
+            self.assertEqual(response["providerError"], "INTERNAL_ERROR")
+        finally:
+            await graph.close()
+
+
+class RoutingTests(unittest.TestCase):
+    def test_router_prompt_requires_uncertain_facts_to_remain_explicit(self):
+        prompt = _router_prompt({"instance": {}, "availableTools": []})
+        self.assertIn("ä¸å¾—ç¼–é€ é¡¹ç›®åã€ç‰ˆæœ¬å·ã€æ€§èƒ½æŒ‡æ ‡æˆ–å·¥å…·èƒ½åŠ›", prompt)
+
+    def test_anonymous_requests_do_not_share_checkpoint_state(self):
+        first = _thread_id({"instance": {"id": "same-instance"}})
+        second = _thread_id({"instance": {"id": "same-instance"}})
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("anonymous:"))
+
+    def test_request_id_is_a_stable_thread_fallback(self):
+        self.assertEqual(_thread_id({"request_id": "request-42"}), "request-42")
+
+    def test_plugin_install_routes_to_controlled_tool(self):
+        decision = _deterministic_decision("å¸®æˆ‘å®‰è£… EssentialsX", [], {"plugin.install"})
+        self.assertEqual(decision["trace"][0]["result"], "plugin.install")
+
+    def test_server_install_routes_without_model(self):
+        cases = (
+            ("å®‰è£… Paper 1.21.4 æœåŠ¡ç«¯", "server.install"),
+            ("ä¸‹è½½ Fabric 1.20.1 å¹¶å¼€æœ", "server.install"),
+        )
+        for message, expected_tool in cases:
+            with self.subTest(message=message):
+                decision = _deterministic_decision(message, [], {expected_tool})
+                self.assertEqual(decision["preferredTool"], expected_tool)
+
+    def test_config_patch_routes_without_model(self):
+        decision = _deterministic_decision("æŠŠæœåŠ¡å™¨ view-distance ä¿®æ”¹ä¸º 8", [], {"config.patch"})
+        self.assertEqual(decision["preferredTool"], "config.patch")
+
+    def test_plugin_resolve_routes_without_installing(self):
+        decision = _deterministic_decision("è§£æ EssentialsX å…¼å®¹ç‰ˆæœ¬å’Œåˆ¶å“ï¼Œä½†ä¸è¦å®‰è£…", [], {"plugin.resolve"})
+        self.assertEqual(decision["preferredTool"], "plugin.resolve")
+
+    def test_restart_routes_to_controlled_tool_without_model(self):
+        decision = _deterministic_decision("é‡å¯å®ä¾‹", [], {"instance.restart"})
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "instance.restart")
+        self.assertEqual(decision["answer"], "å·²ç”Ÿæˆé‡å¯è®¡åˆ’ï¼Œç­‰å¾…ç¡®è®¤ã€‚")
+
+    def test_instance_lifecycle_commands_target_current_instance(self):
+        cases = (
+            ("å¯åŠ¨æœåŠ¡å™¨", "instance.start"),
+            ("åœæ­¢å½“å‰å®ä¾‹", "instance.stop"),
+            ("è¯·é‡å¯ä¸€ä¸‹", "instance.restart"),
+        )
+        for message, expected_tool in cases:
+            with self.subTest(message=message):
+                decision = _deterministic_decision(message, [], {expected_tool})
+                self.assertEqual(decision["preferredTool"], expected_tool)
+
+    def test_pending_restart_is_recovered_from_history(self):
+        pending = _infer_pending_action(
+            [{"role": "assistant", "content": "æ’ä»¶åŠ è½½éœ€è¦é‡å¯ï¼Œæ˜¯å¦ç»§ç»­é‡å¯ï¼Ÿ"}],
+            {"instance.restart"},
+        )
+        self.assertEqual(pending["tool"], "instance.restart")
+
+    def test_explicit_offline_diagnosis_delegates_without_model_routing(self):
+        decision = _deterministic_decision(
+            "ä¸è¯»å–å½“å‰æœåŠ¡å™¨æ•°æ®ï¼Œä»…æ ¹æ®ä»¥ä¸‹è¯æ®è¯Šæ–­æ•…éšœæ ¹å› ï¼Œå¹¶ç»™å‡ºéªŒè¯æ–¹æ¡ˆä¸éªŒæ”¶æ ‡å‡†ã€‚",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "diagnostics")
+
+    def test_explicit_offline_plan_delegates_without_model_routing(self):
+        decision = _deterministic_decision(
+            "ä¸è¯»å–å®æ—¶æ•°æ®ï¼Œä¸ºå¤§å‹ Paper æœåŠ¡å™¨åˆ¶å®šä¸‰é˜¶æ®µæ€§èƒ½æ²»ç†æ–¹æ¡ˆï¼ŒåŒ…å«é£é™©ã€å›æ»šå’Œåœæ­¢æ¡ä»¶ã€‚",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "delegate")
+        self.assertEqual(decision["delegate"], "planner")
+
+    def test_current_log_diagnosis_remains_a_controlled_tool_request(self):
+        decision = _deterministic_decision(
+            "è¯»å–å½“å‰å®ä¾‹æœ€è¿‘ä¸€å°æ—¶æ—¥å¿—ï¼Œç»“åˆé”™è¯¯ä¸å¼‚å¸¸è¡Œè¯Šæ–­æœ€å¯èƒ½æ•…éšœåŸå› ã€‚",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "logs.query")
+
+    def test_short_health_request_is_sent_to_the_planner_model(self):
+        available = {"logs.query", "console.command"}
+        self.assertIsNone(_deterministic_decision("çœ‹çœ‹æœåŠ¡å™¨æœ‰æ²¡æœ‰é—®é¢˜", [], available))
+        self.assertTrue(_should_plan_request("çœ‹çœ‹æœåŠ¡å™¨æœ‰æ²¡æœ‰é—®é¢˜", available))
+
+    def test_health_tutorial_question_is_not_expanded_to_a_live_skill(self):
+        decision = _deterministic_decision(
+            "Minecraft æœåŠ¡å™¨å¥åº·æ£€æŸ¥ä¸€èˆ¬æ€ä¹ˆåšï¼Ÿ",
+            [],
+            {"logs.query", "console.command"},
+        )
+        self.assertIsNone(decision)
+
+    def test_explicit_operation_is_not_swallowed_by_offline_delegate_keywords(self):
+        decision = _deterministic_decision(
+            "ç¦»çº¿å®‰è£…æ–¹æ¡ˆï¼šä¸‹è½½ Paper 1.21.1 æœåŠ¡ç«¯ã€‚",
+            [],
+            {"server.install"},
+        )
+        self.assertEqual(decision["route"], "tool")
+        self.assertEqual(decision["preferredTool"], "server.install")
+
+
+class ModelAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def test_output_budgets_keep_routing_and_answers_concise(self):
+        answer_schema = {"required": ["answer"]}
+        self.assertEqual(_max_tokens_for_schema(answer_schema), 256)
+        self.assertEqual(_max_tokens_for_schema(_decision_schema()), 384)
+        self.assertGreater(MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS, MODEL_REQUEST_TIMEOUT_SECONDS)
+
+    async def test_plain_model_text_is_a_safe_direct_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            return "2" if mode == "json_schema" else '{"answer":"2"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "1+1"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertEqual(decision["answer"], "2")
+        self.assertEqual(modes, ["json_schema"])
+
+    async def test_truncated_routing_json_recovers_the_public_answer_only(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"route":"direct","answer":"Paper uses plugins\\nFabric uses a mod loader'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertFalse(decision["answer"].startswith("{"))
+        self.assertIn("Paper uses plugins", decision["answer"])
+        self.assertIn("Fabric uses a mod loader", decision["answer"])
+
+    async def test_truncated_double_wrapped_json_recovers_the_nested_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"answer":"{\\"route\\":\\"direct\\",\\"answer\\":\\"Paper uses plugins'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertEqual(decision["answer"], "Paper uses plugins")
+
+    async def test_content_compatibility_field_is_not_lost(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"content":"Paper æ›´é€‚åˆæ’ä»¶ç”Ÿæ€ï¼ŒFabric æ›´é€‚åˆæ¨¡ç»„ã€‚"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "Paper å’Œ Fabric çš„åŒºåˆ«"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("Paper", decision["answer"])
+
+    async def test_nested_content_compatibility_field_is_not_lost(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"content":{"text":"Paper is a server implementation; Fabric is a mod loader."}}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "compare"}], _decision_schema())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("Fabric", decision["answer"])
+
+    async def test_provider_authentication_failure_is_reported(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            raise RuntimeError("provider HTTP 401")
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(caught.exception.code, "AUTHENTICATION")
+
+    async def test_request_timeout_moves_to_the_configured_fallback_model(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary", ("fallback",)))
+        seen = []
+
+        async def request(model, _system, _messages, _schema, _mode):
+            seen.append(model)
+            if model == "primary":
+                raise TimeoutError()
+            return '{"route":"direct","answer":"fallback answered","toolIntent":null,"preferredTool":null,"delegate":null,"pendingAction":null}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(seen, ["primary", "fallback"])
+        self.assertEqual(decision["answer"], "fallback answered")
+        self.assertEqual(decision["providerModel"], "fallback")
+
+    async def test_response_format_failure_uses_the_next_compatible_mode(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            if mode == "json_schema":
+                raise RuntimeError("provider HTTP 400: response_format is unsupported")
+            return '{"content":"compatible answer"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(modes, ["json_schema", "json_object"])
+        self.assertEqual(decision["answer"], "compatible answer")
+
+    async def test_answer_only_schema_prefers_the_compatibility_prompt_mode(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        modes = []
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, mode):
+            modes.append(mode)
+            return "concise answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(modes, ["prompt"])
+        self.assertEqual(decision["answer"], "concise answer")
+
+    async def test_answer_only_empty_primary_moves_directly_to_fallback(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary", ("fallback",)))
+        seen = []
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(model, _system, _messages, _schema, mode):
+            seen.append((model, mode))
+            return "" if model == "primary" else "fallback answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(seen, [("primary", "prompt"), ("fallback", "prompt")])
+        self.assertEqual(decision["answer"], "fallback answer")
+
+    async def test_answer_only_structured_sections_are_preserved(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"facts":"MSPT is elevated","verification":"sample GC pauses"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "diagnose"}], answer_schema)
+        self.assertIn("äº‹å®", decision["answer"])
+        self.assertIn("éªŒè¯", decision["answer"])
+
+    async def test_answer_only_double_wrapped_json_is_unwrapped_for_the_ui(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+        answer_schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return '{"answer":"{\\"answer\\":\\"clean answer\\"}"}'
+
+        provider._request = request  # type: ignore[method-assign]
+        decision = await provider.structured("answer", [{"role": "user", "content": "hello"}], answer_schema)
+        self.assertEqual(decision["answer"], "clean answer")
+
+    def test_provider_content_handles_compatible_envelopes_without_reasoning(self):
+        self.assertEqual(
+            _provider_content({"choices": [{"message": {"content": {"content": "compatible"}}}]}),
+            "compatible",
+        )
+        self.assertEqual(_provider_content({"answer": "top-level compatible"}), "top-level compatible")
+        self.assertEqual(_provider_content({"choices": [{"message": {"reasoning_content": "private"}}]}), "")
+
+    def test_history_is_bounded_but_keeps_recent_context(self):
+        history = [{"role": "assistant", "content": "a" * 8_000}, {"role": "user", "content": "recent context"}]
+        messages = _history({"history": history, "message": "current request"})
+        self.assertLessEqual(sum(len(message["content"]) for message in messages[:-1]), 6_000)
+        self.assertEqual(messages[-2]["content"], "recent context")
+        self.assertEqual(messages[-1]["content"], "current request")
+
+    async def test_empty_content_is_not_treated_as_a_model_answer(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            return ""
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema())
+        self.assertEqual(caught.exception.code, "EMPTY_RESPONSE")
+
+    async def test_provider_total_timeout_is_reported_before_graph_timeout(self):
+        provider = ModelProvider(ProviderConfig("test", "http://example.invalid/v1", "primary"))
+
+        async def request(_model, _system, _messages, _schema, _mode):
+            await asyncio.sleep(0.1)
+            return "late answer"
+
+        provider._request = request  # type: ignore[method-assign]
+        with self.assertRaises(ModelProviderError) as caught:
+            await provider.structured("route", [{"role": "user", "content": "hello"}], _decision_schema(), timeout_seconds=0.01)
+        self.assertEqual(caught.exception.code, "TIMEOUT")
+
+    async def test_probe_rejects_an_answer_that_does_not_echo_the_readiness_nonce(self):
+        class NonceIgnoringProvider:
+            config = ProviderConfig("test", "http://example.invalid/v1", "primary")
+
+            async def structured(self, *_args, **_kwargs):
+                return {"answer": "ready", "providerModel": "primary"}
+
+        graph = McaiGraph(NonceIgnoringProvider(), Path(tempfile.mkdtemp()) / "probe.sqlite")
+        with self.assertRaises(ModelProviderError) as caught:
+            await graph.probe()
+        self.assertEqual(caught.exception.code, "INVALID_RESPONSE")
+
+    async def test_route_timeout_is_not_reported_as_an_internal_error(self):
+        class TimeoutProvider:
+            async def structured(self, *_args, **_kwargs):
+                raise TimeoutError()
+
+        graph = McaiGraph(TimeoutProvider(), Path(tempfile.mkdtemp()) / "timeout.sqlite")
+        result = await graph._model_route({"request": {"message": "compare Paper and Fabric", "availableTools": []}})
+        self.assertEqual(result["decision"]["providerError"], "TIMEOUT")
+        self.assertEqual(result["decision"]["providerStatus"], "unavailable")
+
+    def test_disallowed_model_tool_is_downgraded_without_execution(self):
+        decision = _normalize_decision({
+            "route": "tool",
+            "answer": "æ­£åœ¨æ‰§è¡Œ",
+            "toolIntent": "åœæ­¢å®ä¾‹",
+            "preferredTool": "instance.stop",
+        }, set())
+        self.assertEqual(decision["route"], "direct")
+        self.assertIn("æœªæ‰§è¡Œ", decision["answer"])
+
+
+if __name__ == "__main__":
+    unittest.main()

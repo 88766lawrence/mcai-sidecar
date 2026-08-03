@@ -351,8 +351,323 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       await api(`/tasks/${reviewTask.id}/confirm`, { method: "POST", body: JSON.stringify({ token: confirmation.token }) });
       setReviewTask(null);
       setHighRiskText("");
-      await refreshã­9¶‰ËkºwµçqÍÑÉ½¹œùíÑ½½±1…‰•°¡ÍÑ•À¹Ñ½½°¥ôğ½ÍÑÉ½¹œøñ½‘”ùí)M=8¹ÍÑÉ¥¹¥™ä¡ÍÑ•À¹…ÉÌ¥ôğ½½‘”øğ½‘¥Øøğ½‘¥Øø¥ôğ½‘¥Øø(€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰Í¹…ÁÍ¡½Ğµ¹½Ñ”ˆøñI½Ñ…Ñ•ÜÍ¥é”õìÄİô€¼øñ‘¥ØøñÍÑÉ½¹œûš&Ÿ¢†3–&7–"o–îëš‹–’7
-äğ½ÍÑÉ½¹œøñÍÁ…¸û–’Ç¢Ò—š^Ûš2'¶[V—š‹–’7–æÛ–7š²‡¦ª3¢¾ğ½ÍÁ…¸øğ½‘¥Øøğ½‘¥Øø(€€€€€íÉ•Ù¥•İQ…Í¬¹É¥Í¬€ôôô€‰¡¥ ˆ€˜˜€ñ±…‰•°±…ÍÍ9…µ”ô‰‘…¹•Èµ½¹™¥É´ˆû¢úO–—–º{’ú/–B4€ñÍÑÉ½¹œùíÕÉÉ•¹Ğ¹¹…µ•ôğ½ÍÑÉ½¹œøƒ’î—†»¢ºñ¥¹ÁÕĞÙ…±Õ”õí¡¥¡I¥Í­Q•áÑô½¹¡…¹”õì¡•Ù•¹Ğ¤€ôøÍ•Ñ!¥¡I¥Í­Q•áĞ¡•Ù•¹Ğ¹Ñ…É•Ğ¹Ù…±Õ”¥ô€¼øğ½±…‰•°ùô(€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ½‘…°µ…Ñ¥½¹Ìˆøñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰Í•½¹‘…Éäˆ½¹±¥¬õì ¤€ôøÍ•ÑI•Ù¥•İQ…Í¬¡¹Õ±°¥ôû–>[šÚ ğ½‰ÕÑÑ½¸øñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰ÁÉ¥µ…Éäˆ½¹±¥¬õì ¤€ôøÙ½¥½¹™¥ÉµQ…Í¬ ¥ô‘¥Í…‰±•õí±½…‘¥¹œñğ€¡É•Ù¥•İQ…Í¬¹É¥Í¬€ôôô€‰¡¥ ˆ€˜˜¡¥¡I¥Í­Q•áĞ€„ôôÕÉÉ•¹Ğ¹¹…µ”¥ôùí±½…‘¥¹œ€ü€ñ1½…‘•É¥É±”±…ÍÍ9…µ”ô‰ÍÁ¥¸ˆÍ¥é”õìÄİô€¼ø€è€ñM¡¥•±‘¡•¬Í¥é”õìÄİô€¼ù÷†»¢º“–æÛš&Ÿ¢†0ğ½‰ÕÑÑ½¸øğ½‘¥Øø(€€€€ğ½‘¥Øøğ½‘¥Øùô(€€ğ½µ…¥¸øì)ô()™Õ¹Ñ¥½¸5•ÍÍ…•	Õ‰‰±”¡ìµ•ÍÍ…”°Ñ…Í¬°¥¹ÍÑ…¹•9…µ”°ÍÑÉ•…µ¥¹œ€ô™…±Í”°½¹I•Ù¥•Üôèìµ•ÍÍ…”è½¹Ù•ÉÍ…Ñ¥½¹5•ÍÍ…”ìÑ…Í¬üèQ…Í­I•½Éì¥¹ÍÑ…¹•9…µ”üèÍÑÉ¥¹œìÍÑÉ•…µ¥¹œüè‰½½±•…¸ì½¹I•Ù¥•Üè€¡Ñ…Í¬èQ…Í­I•½É¤€ôøÙ½¥ô¤ì(€½¹ÍĞµ•ÍÍ…•I•˜€ôÕÍ•I•˜ñ!Q51±•µ•¹Ğø¡¹Õ±°¤ì(€ÕÍ•M@  ¤€ôøì(€€€½¹ÍĞµ•‘¥„€ôÍ…À¹µ…Ñ¡5•‘¥„ ¤ì(€€€µ•‘¥„¹…‘ ˆ¡ÁÉ•™•ÉÌµÉ•‘Õ•µµ½Ñ¥½¸è¹¼µÁÉ•™•É•¹”¤ˆ°€ ¤€ôøì(€€€€€Í…À¹™É½µQ¼¡µ•ÍÍ…•I•˜¹ÕÉÉ•¹Ğ°ì…ÕÑ½±Á¡„è€À°äè€äô°ì(€€€€€€€…ÕÑ½±Á¡„è€Ä°äè€À°‘ÕÉ…Ñ¥½¸è€À¸ÌĞ°•…Í”è€‰Á½İ•ÈÈ¹½ÕĞˆ°±•…ÉAÉ½ÁÌè€‰ÑÉ…¹Í™½É´±½Á…¥Ñä±Ù¥Í¥‰¥±¥Ñäˆ°(€€€€€ô¤ì(€€€ô°µ•ÍÍ…•I•˜¹ÕÉÉ•¹Ğ€üüÕ¹‘•™¥¹•¤ì(€€€É•ÑÕÉ¸€ ¤€ôøµ•‘¥„¹É•Ù•ÉĞ ¤ì(€ô°ìÍ½Á”èµ•ÍÍ…•I•˜ô¤ì(€¥˜€¡µ•ÍÍ…”¹É½±”€ôôô€‰ÕÍ•Èˆ¤É•ÑÕÉ¸€ñ…ÉÑ¥±”É•˜õíµ•ÍÍ…•I•™ô±…ÍÍ9…µ”ô‰¡…Ğµµ•ÍÍ…”ÕÍ•Èİ½É­‰•¹ µÉ•½ÉˆøñÍÁ…¸±…ÍÍ9…µ”ô‰ÕÍ•Èµ…Ù…Ñ…ÈˆøñUÍ•ÉI½Õ¹Í¥é”õìÄÕô€¼øğ½ÍÁ…¸øñ‘¥Øøñ‘¥Ø±…ÍÍ9…µ”ô‰µ•ÍÍ…”µµ•Ñ„ˆøñÍÑÉ½¹œù=559ğ½ÍÑÉ½¹œøñÑ¥µ”ùí¹•Ü…Ñ”¡µ•ÍÍ…”¹É•…Ñ•‘}…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”øğ½‘¥ØøñÀùíµ•ÍÍ…”¹½¹Ñ•¹Ñôğ½Àøğ½‘¥Øøğ½…ÉÑ¥±”øì(€½¹ÍĞ¥ÍQ…Í­I•ÅÕ•ÍĞ€ôµ•ÍÍ…”¹Ñ…Í­}Á¡…Í”€ôôô€‰É•ÅÕ•ÍĞˆì(€¥˜€¡¥ÍQ…Í­I•ÅÕ•ÍĞ€˜˜Ñ…Í¬€˜˜Ñ•Éµ¥¹…°¡Ñ…Í¬¹ÍÑ…Ñ”¤¤É•ÑÕÉ¸¹Õ±°ì(€¥˜€¡¥ÍQ…Í­I•ÅÕ•ÍĞ¤ì(€€€É•ÑÕÉ¸€ñ…ÉÑ¥±”É•˜õíµ•ÍÍ…•I•™ô±…ÍÍ9…µ”ô‰¡…Ğµµ•ÍÍ…”…ÍÍ¥ÍÑ…¹ĞÑ…Í¬µÉ•ÅÕ•ÍĞİ½É­‰•¹ µÉ•½ÉˆøñÍÁ…¸±…ÍÍ9…µ”ô‰‰½Ğµ…Ù…Ñ…Èˆøñ	½ĞÍ¥é”õìÄÙô€¼øğ½ÍÁ…¸øñ‘¥Øøñ‘¥Ø±…ÍÍ9…µ”ô‰µ•ÍÍ…”µµ•Ñ„ˆøñÍÑÉ½¹œùQ==1Lğ½ÍÑÉ½¹œøñÑ¥µ”ùí¹•Ü…Ñ”¡µ•ÍÍ…”¹É•…Ñ•‘}…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”øğ½‘¥ØøñQ…Í­Ñ¥Ù¥Ñä½¹Ñ•¹Ğõíµ•ÍÍ…”¹½¹Ñ•¹ÑôÑ…Í¬õíÑ…Í­ô¥¹ÍÑ…¹•9…µ”õí¥¹ÍÑ…¹•9…µ•ô½¹I•Ù¥•Üõí½¹I•Ù¥•İô€¼øğ½‘¥Øøğ½…ÉÑ¥±”øì(€ô(€½¹ÍĞ½µÁ±•Ñ•‘Q…Í¬€ôÑ…Í¬€˜˜Ñ•Éµ¥¹…°¡Ñ…Í¬¹ÍÑ…Ñ”¤ì(€½¹ÍĞ™…¥±•‘Q…Í¬€ô½µÁ±•Ñ•‘Q…Í¬€˜˜Ñ…Í¬¹ÍÑ…Ñ”€„ôô€‰MUˆì(€É•ÑÕÉ¸€ñ…ÉÑ¥±”É•˜õíµ•ÍÍ…•I•™ô±…ÍÍ9…µ”õí¡…Ğµµ•ÍÍ…”…ÍÍ¥ÍÑ…¹Ğ€‘íÍÑÉ•…µ¥¹œ€ü€‰ÍÑÉ•…µ¥¹œˆ€è€ˆ‰ô€‘í½µÁ±•Ñ•‘Q…Í¬€ü€‰¡…ÌµÉ•ÍÕ±Ğˆ€è€ˆ‰õô…É¥„µ‰ÕÍäõíÍÑÉ•…µ¥¹œñğÕ¹‘•™¥¹•‘ôø(€€€€ñÍÁ…¸±…ÍÍ9…µ”ô‰‰½Ğµ…Ù…Ñ…Èˆøñ	½ĞÍ¥é”õìÄÙô€¼øğ½ÍÁ…¸ø(€€€€ñ‘¥Øø(€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰µ•ÍÍ…”µµ•Ñ„ˆøñÍÑÉ½¹œùí½µÁ±•Ñ•‘Q…Í¬€ü€‰=9ˆ€è€‰=UQAUP‰ôğ½ÍÑÉ½¹œøñÑ¥µ”ùí¹•Ü…Ñ”¡µ•ÍÍ…”¹É•…Ñ•‘}…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”ùíÍÑÉ•…µ¥¹œ€˜˜€ñÍÁ…¸û¢úO–ë’â´ğ½ÍÁ…¸ùôğ½‘¥Øø(€€€€€í½µÁ±•Ñ•‘Q…Í¬€ü€ñÍ•Ñ¥½¸±…ÍÍ9…µ”õí…¹Íİ•ÈµÉ•ÍÕ±Ğ€‘í™…¥±•‘Q…Í¬€ü€‰™…¥±•ˆ€è€‰ÍÕ•ÍÌ‰õôø(€€€€€€€€ñ¡•…‘•Èø(€€€€€€€€€€ñÍÁ…¸±…ÍÍ9…µ”ô‰…¹Íİ•ÈµÉ•ÍÕ±Ğµ¥½¸ˆùí™…¥±•‘Q…Í¬€ü€ñ¥É±•±•ÉĞÍ¥é”õìÄİô€¼ø€è€ñ¡•­¥É±”ÈÍ¥é”õìÄİô€¼ùôğ½ÍÁ…¸ø(€€€€€€€€€€ñ‘¥ØøñÍÑÉ½¹œùí™…¥±•‘Q…Í¬€ü€‹’îï–*‡šr«–º3š"@ˆ€è€‹’îï–*‡–ŞË–º3š"@‰ôğ½ÍÑÉ½¹œøñÍµ…±°ùíÑ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹µ…À ¡ÍÑ•À¤€ôøÑ½½±1…‰•°¡ÍÑ•À¹Ñ½½°¤¤¹©½¥¸ ‹ˆ¥ôğ½Íµ…±°øğ½‘¥Øø(€€€€€€€€€€ñÑ¥µ”ùí¹•Ü…Ñ”¡Ñ…Í¬¹ÕÁ‘…Ñ•‘}…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”ø(€€€€€€€€ğ½¡•…‘•Èø(€€€€€€€€ñI¥¡Q•áĞ½¹Ñ•¹Ğõíµ•ÍÍ…”¹½¹Ñ•¹Ñô€¼ø(€€€€€€€€ñQ…Í­=ÕÑ½µ”Ñ…Í¬õíÑ…Í­ô€¼ø(€€€€€€ğ½Í•Ñ¥½¸ø€è€ğøñI¥¡Q•áĞ½¹Ñ•¹Ğõíµ•ÍÍ…”¹½¹Ñ•¹Ñô€¼ùì…ÍÑÉ•…µ¥¹œ€˜˜€…Ñ…Í¬€˜˜€ñI•ÍÁ½¹Í•QÉ…”É½ÕÑ”õíµ•ÍÍ…”¹É½ÕÑ•ôÑÉ…”õíµ•ÍÍ…”¹ÑÉ…•ô€¼ùôğ¼ùô(€€€€ğ½‘¥Øø(€€ğ½…ÉÑ¥±”øì)ô()™Õ¹Ñ¥½¸Q…Í­Ñ¥Ù¥Ñä¡ì½¹Ñ•¹Ğ°Ñ…Í¬°¥¹ÍÑ…¹•9…µ”°½¹I•Ù¥•Üôèì½¹Ñ•¹ĞèÍÑÉ¥¹œìÑ…Í¬üèQ…Í­I•½Éì¥¹ÍÑ…¹•9…µ”üèÍÑÉ¥¹œì½¹I•Ù¥•Üè€¡Ñ…Í¬èQ…Í­I•½É¤€ôøÙ½¥ô¤ì(€½¹ÍĞ‘¥…¹½Í¥Ì€ôÑ…Í¬€ül¸¸¹Ñ…Í¬¹•Ù¥‘•¹•t¹É•Ù•ÉÍ” ¤¹™¥¹ ¡¥Ñ•´¤€ôø¥Ñ•´¹­¥¹€ôôô€‰‘¥…¹½Í¥Ìˆ¤€èÕ¹‘•™¥¹•ì(€½¹ÍĞÉ•½Ù•Éä€ôÑ…Í¬€ül¸¸¹Ñ…Í¬¹•Ù¥‘•¹•t¹É•Ù•ÉÍ” ¤¹™¥¹ ¡¥Ñ•´¤€ôø¥Ñ•´¹­¥¹€ôôô€‰‘•¥Í¥½¸ˆ¤€èÕ¹‘•™¥¹•ì(€½¹ÍĞ™…¥±•‘Q…Í¬€ô	½½±•…¸¡Ñ…Í¬€˜˜Ñ•Éµ¥¹…°¡Ñ…Í¬¹ÍÑ…Ñ”¤€˜˜Ñ…Í¬¹ÍÑ…Ñ”€„ôô€‰MUˆ¤ì(€½¹ÍĞ¥Í½µÁ±•Ñ”€ô	½½±•…¸¡Ñ…Í¬€˜˜Ñ•Éµ¥¹…°¡Ñ…Í¬¹ÍÑ…Ñ”¤¤ì(€½¹ÍĞ±¥Ù•Ù¥‘•¹”€ôÑ…Í¬ü¹•Ù¥‘•¹”¹™¥±Ñ•È ¡¥Ñ•´¤€ôø¥Ñ•´¹ÍÕµµ…Éä¹ÑÉ¥´ ¤¤¹Í±¥” ´Ô¤€üümtì(€É•ÑÕÉ¸€ñ‘•Ñ…¥±Ì±…ÍÍ9…µ”õíÑ…Í¬µ…Ñ¥Ù¥Ñä€‘í™…¥±•‘Q…Í¬€ü€‰™…¥±•ˆ€è€ˆ‰ô€‘ì…¥Í½µÁ±•Ñ”€ü€‰±¥Ù”ˆ€è€ˆ‰õô½Á•¸õì…¥Í½µÁ±•Ñ•ô…É¥„µ±¥Ù”ô‰Á½±¥Ñ”ˆø(€€€€ñÍÕµµ…Éäø(€€€€€€ñÍÁ…¸±…ÍÍ9…µ”ô‰Ñ…Í¬µ…Ñ¥Ù¥ÑäµÑ¥Ñ±”ˆùí¥Í½µÁ±•Ñ”€ü€ñ¡•­¥É±”ÈÍ¥é”õìÄÑô€¼ø€è€ñ1½…‘•É¥É±”±…ÍÍ9…µ”ô‰ÍÁ¥¸ˆÍ¥é”õìÄÑô€¼ùôñÍÁ…¸øñÍÑÉ½¹œùí¥Í½µÁ±•Ñ”€ü€‹š&Ÿ¢†3¢ºÃ–öTˆ€èÑ…Í¬€üÍÑ…Ñ•1…‰•°¡Ñ…Í¬¹ÍÑ…Ñ”¤€è€‹š¶–r£¢–"H‰ôğ½ÍÑÉ½¹œøñÍµ…±°ùí¥Í½µÁ±•Ñ”€üÑ…Í­Ñ¥Ù¥Ñå1…‰•°¡Ñ…Í¬„¹ÍÑ…Ñ”¤€èÑ…Í¬€ü€‹–º{š^ÛšnÓšZÃ–Ş—–ß¢ÂR£’â;–n{¢Âˆ€è€‹š¶–r£Rš"Cš&Ÿ¢†3¢º‡–"H‰ôğ½Íµ…±°øğ½ÍÁ…¸øğ½ÍÁ…¸ø(€€€€€€ñ¡•ÙÉ½¹½İ¸±…ÍÍ9…µ”ô‰Ñ…Í¬µ…Ñ¥Ù¥Ñäµ¡•ÙÉ½¸ˆÍ¥é”õìÄÕô…É¥„µ¡¥‘‘•¸ô‰ÑÉÕ”ˆ€¼ø(€€€€ğ½ÍÕµµ…Éäø(€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰Ñ…Í¬µ…Ñ¥Ù¥Ñäµ½¹Ñ•¹Ğˆø(€€€€€í½¹Ñ•¹Ğ¹ÑÉ¥´ ¤€˜˜€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰Ñ…Í¬µ…Ñ¥Ù¥Ñäµ½ÁäˆøñÍÁ…¸û’îï–*‡¢¾Óšb8ğ½ÍÁ…¸øñI¥¡Q•áĞ½¹Ñ•¹Ğõí½¹Ñ•¹Ñô€¼øğ½Í•Ñ¥½¸ùô(€€€€€íÑ…Í¬€˜˜€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰ÁÉ½•ÍÌµ±¥ÍĞˆ…É¥„µ±…‰•°ô‹–Ş—–ßš&Ÿ¢†3¢ºÃ–öTˆø(€€€€€€€íÑ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹µ…À ¡ÍÑ•À°¥¹‘•à¤€ôøì(€€€€€€€€€½¹ÍĞÁÉ½É•ÍÌ€ôÑ…Í­MÑ•ÁAÉ½É•ÍÌ¡Ñ…Í¬°¥¹‘•à¤ì(€€€€€€€€€É•ÑÕÉ¸€ñ‘¥Ø±…ÍÍ9…µ”õíÁÉ½•ÍÌµÉ½Ü€‘íÁÉ½É•ÍÌ¹±…ÍÍ9…µ•õô­•äõíÍÑ•À¹¥‘ôø(€€€€€€€€€€ñÍÁ…¸±…ÍÍ9…µ”ô‰ÁÉ½•ÍÌµ¥¹‘•àˆùí¥¹‘•à€¬€Åôğ½ÍÁ…¸ø(€€€€€€€€€€ñ‘¥ØøñÍÑÉ½¹œùíÑ½½±1…‰•°¡ÍÑ•À¹Ñ½½°¥ôğ½ÍÑÉ½¹œøñ½‘”ùíÍÑ•À¹Ñ½½±ôğ½½‘”øğ½‘¥Øø(€€€€€€€€€€ñÍÁ…¸±…ÍÍ9…µ”õíÁÉ½•ÍÌµÍÑ…Ñ”€‘íÁÉ½É•ÍÌ¹±…ÍÍ9…µ•õôùíÁÉ½É•ÍÌ¹±…‰•±ôğ½ÍÁ…¸ø(€€€€€€€€ğ½‘¥Øùô¥ô(€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰ÁÉ½•ÍÌµÑ…É•ĞˆøñÍÁ…¸ûn»š‚–º{’ú,ğ½ÍÁ…¸øñÍÑÉ½¹œùí¥¹ÍÑ…¹•9…µ”€üüÑ…Í¬¹¥¹ÍÑ…¹•}É•™ôğ½ÍÑÉ½¹œøñÑ¥µ”ùí¹•Ü…Ñ”¡Ñ…Í¬¹ÕÁ‘…Ñ•‘}…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈÄÈè™…±Í”ô¥ôğ½Ñ¥µ”øğ½‘¥Øø(€€€€€€ğ½Í•Ñ¥½¸ùô(€€€€€ì…¥Í½µÁ±•Ñ”€˜˜±¥Ù•Ù¥‘•¹”¹±•¹Ñ €ø€À€˜˜€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰±¥Ù”µ•Ù¥‘•¹”ˆ…É¥„µ±…‰•°ô‹–º{š^Û–n{¢Âˆø(€€€€€€€€ñÍÑÉ½¹œûšršZÃ–n{¢Âğ½ÍÑÉ½¹œø(€€€€€€€í±¥Ù•Ù¥‘•¹”¹µ…À ¡¥Ñ•´°¥¹‘•à¤€ôø€ñÀ­•äõí€‘í¥Ñ•´¹…Ñô´‘í¥¹‘•áõôøñÍÁ…¸€¼ø€ñˆùí¥Ñ•´¹ÍÕµµ…Éåôğ½ˆøñ½‘”ùí•Ù¥‘•¹•1…‰•°¡¥Ñ•´¹­¥¹¥ôğ½½‘”øñÑ¥µ”ùí¹•Ü…Ñ”¡¥Ñ•´¹…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”øğ½Àø¥ô(€€€€€€ğ½Í•Ñ¥½¸ùô(€€€€€í™…¥±•‘Q…Í¬€˜˜€ñ‘¥Ø±…ÍÍ9…µ”ô‰™…¥±ÕÉ”µ…¹…±åÍ¥Ìˆø(€€€€€€€€ñ‘¥ØøñÍÑÉ½¹œû–’Ç¢Ò—–:–n€ğ½ÍÑÉ½¹œøñÀùí‘¥…¹½Í¥Ìü¹ÍÕµµ…Éä€üü€‹šr«šRÛ–"Ã–>¿¢¾–"¯j¢¾+šZ·¢¾š6»¾ò3¢¾ßšš~—–º{’ú/š:Ÿ–"Û–>Ãš^—–ş_‰ôğ½Àøğ½‘¥Øø(€€€€€€€€ñ‘¥ØøñÍÑÉ½¹œû’â/’âš¶”ğ½ÍÑÉ½¹œøñÀùíÉ•½Ù•Éäü¹ÍÕµµ…Éä€üü€‹¢¾+šZ·¢¾š6»–ŞË’şw–¶c¾òo¢¾ß’ş»–’7–:–nƒ–B;–7¦7¢¾W’îï–*‡‰ôğ½Àøğ½‘¥Øø(€€€€€€ğ½‘¥Øùô(€€€€€íÑ…Í¬ü¹ÍÑ…Ñ”€ôôô€‰]%Q%9}=9%I5Q%=8ˆ€˜˜€ñ‰ÕÑÑ½¸±…ÍÍ9…µ”ô‰½¹™¥É´µ¥¹±¥¹”ˆ½¹±¥¬õì ¤€ôø½¹I•Ù¥•Ü¡Ñ…Í¬¥ôûšš~—–æÛ†»¢º“š&Ÿ¢†0ğ½‰ÕÑÑ½¸ùô(€€€€ğ½‘¥Øø(€€ğ½‘•Ñ…¥±Ìøì)ô()™Õ¹Ñ¥½¸Q…Í­=ÕÑ½µ”¡ìÑ…Í¬ôèìÑ…Í¬èQ…Í­I•½Éô¤ì(€½¹ÍĞ•Ù¥‘•¹”€ôÑ…Í¬¹•Ù¥‘•¹”¹™¥±Ñ•È ¡¥Ñ•´¤€ôø¥Ñ•´¹ÍÕµµ…Éä¹ÑÉ¥´ ¤¤¹Í±¥” ´ÄÈ¤ì(€½¹ÍĞ™…¥±•€ôÑ…Í¬¹ÍÑ…Ñ”€„ôô€‰MUˆì(€É•ÑÕÉ¸€ñ‘•Ñ…¥±Ì±…ÍÍ9…µ”ô‰É•ÍÕ±Ğµ•Ù¥‘•¹”ˆø(€€€€ñÍÕµµ…ÉäøñÍÁ…¸û–ÆW–ò¢–"K’â;š&Ÿ¢†3¢ö£¢şäğ½ÍÁ…¸øñÍµ…±°ùíÑ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹±•¹Ñ¡ôƒ’â«–Ş—–Üƒ
-Üí•Ù¥‘•¹”¹±•¹Ñ¡ôƒšv‡¢ºÃ–öTğ½Íµ…±°øñ¡•ÙÉ½¹½İ¸Í¥é”õìÄÑô…É¥„µ¡¥‘‘•¸ô‰ÑÉÕ”ˆ€¼øğ½ÍÕµµ…Éäø(€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”ˆø(€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”µÍ•Ñ¥½¸ˆ…É¥„µ±…‰•°ô‹¢–"KšFc¢šˆø(€€€€€€€€ñÍÑÉ½¹œû¢–"Hğ½ÍÑÉ½¹œø(€€€€€€€€ñÀøñÍÁ…¸€¼øñˆùíÑ…Í¬¹¥¹Ñ•¹Ğ¹ÍÁ±¥Ğ ‰q¹q¹•¹Ğ½Á•É…Ñ¥½¸èˆ¥lÁuôğ½ˆøñ½‘”û’îï–*‡n»š‚ğ½½‘”øñ•´±…ÍÍ9…µ”õí™…¥±•€ü€‰™…¥±•ˆ€è€‰ÍÕ•ÍÌ‰ôùí™…¥±•€ü€‹šr«–º3š"@ˆ€è€‹–ŞË–º3š"@‰ôğ½•´øğ½Àø(€€€€€€ğ½Í•Ñ¥½¸ø(€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”µÍ•Ñ¥½¸ˆ…É¥„µ±…‰•°ô‹–Ş—–ß¢ÂR£¢ş¢,ˆø(€€€€€€€€ñÍÑÉ½¹œû–Ş—–ß¢ÂR ğ½ÍÑÉ½¹œø(€€€€€€€íÑ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹µ…À ¡ÍÑ•À°¥¹‘•à¤€ôø€ñÀ­•äõíÍÑ•À¹¥‘ôøñÍÁ…¸€¼øñˆùí¥¹‘•à€¬€Åô¸íÑ½½±1…‰•°¡ÍÑ•À¹Ñ½½°¥ôğ½ˆøñ½‘”ùíÍÑ•À¹Ñ½½±ôğ½½‘”øñ•´±…ÍÍ9…µ”õí™…¥±•€ü€‰™…¥±•ˆ€è€‰ÍÕ•ÍÌ‰ôùí™…¥±•€ü€‹šr«–º3š"@ˆ€è€‹–º3š"@‰ôğ½•´øğ½Àø¥ô(€€€€€€ğ½Í•Ñ¥½¸ø(€€€€€í•Ù¥‘•¹”¹±•¹Ñ €ø€À€˜˜€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”µÍ•Ñ¥½¸ˆ…É¥„µ±…‰•°ô‹š&Ÿ¢†3¢¾š6¸ˆø(€€€€€€€€ñÍÑÉ½¹œû–n{¢Â–"“šZ·’â;¦ª3¢¾ğ½ÍÑÉ½¹œø(€€€€€€€í•Ù¥‘•¹”¹µ…À ¡¥Ñ•´°¥¹‘•à¤€ôø€ñÀ­•äõí€‘í¥Ñ•´¹…Ñô´‘í¥¹‘•áõôøñÍÁ…¸€¼øñˆùí¥Ñ•´¹ÍÕµµ…Éåôğ½ˆøñ½‘”ùí•Ù¥‘•¹•1…‰•°¡¥Ñ•´¹­¥¹¥ôğ½½‘”øñÑ¥µ”ùí¹•Ü…Ñ”¡¥Ñ•´¹…Ğ¤¹Ñ½1½…±•Q¥µ•MÑÉ¥¹œ ‰é µ8ˆ°ì¡½ÕÈè€ˆÈµ‘¥¥Ğˆ°µ¥¹ÕÑ”è€ˆÈµ‘¥¥Ğˆô¥ôğ½Ñ¥µ”øğ½Àø¥ô(€€€€€€ğ½Í•Ñ¥½¸ùô(€€€€ğ½‘¥Øø(€€ğ½‘•Ñ…¥±Ìøì)ô()™Õ¹Ñ¥½¸I•ÍÁ½¹Í•QÉ…”¡ìÉ½ÕÑ”°ÑÉ…”ôèìÉ½ÕÑ”üè½¹Ù•ÉÍ…Ñ¥½¹5•ÍÍ…•l‰É½ÕÑ”‰tìÑÉ…”üè½¹Ù•ÉÍ…Ñ¥½¹5•ÍÍ…•l‰ÑÉ…”‰tô¤ì(€½¹ÍĞÍÑ•ÁÌ€ôÑÉ…”ü¹™¥±Ñ•È ¡¥Ñ•´¤€ôø¥Ñ•´¹±…‰•°¹ÑÉ¥´ ¤ñğ¥Ñ•´¹É•ÍÕ±Ğ¹ÑÉ¥´ ¤¤€üümtì(€É•ÑÕÉ¸€ñ‘•Ñ…¥±Ì±…ÍÍ9…µ”ô‰É•ÍÕ±Ğµ•Ù¥‘•¹”É•ÍÁ½¹Í”µÑÉ…”ˆø(€€€€ñÍÕµµ…ÉäøñÍÁ…¸û–ÆW–ò–n{¶S¢ö£¢şäğ½ÍÁ…¸øñÍµ…±°ùíÍÑ•ÁÌ¹±•¹Ñ €ü€‘íÍÑ•ÁÌ¹±•¹Ñ¡ôƒ’â«–Ï¶[¢ºÃ–öU€€è€‹nÓš:—–n{¶Pƒ
-Üƒšr«¢ÂR£–Ş—–Ü‰ôğ½Íµ…±°øñ¡•ÙÉ½¹½İ¸Í¥é”õìÄÑô…É¥„µ¡¥‘‘•¸ô‰ÑÉÕ”ˆ€¼øğ½ÍÕµµ…Éäø(€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”ˆø(€€€€€€ñÍ•Ñ¥½¸±…ÍÍ9…µ”ô‰É•ÍÕ±ĞµÑÉ…”µÍ•Ñ¥½¸ˆø(€€€€€€€€ñÍÑÉ½¹œû–’BšFc¢šğ½ÍÑÉ½¹œø(€€€€€€€íÍÑ•ÁÌ¹±•¹Ñ €ø€À(€€€€€€€€€€üÍÑ•ÁÌ¹µ…À ¡¥Ñ•´°¥¹‘•à¤€ôø€ñÀ­•äõí€‘í¥Ñ•´¹ÍÑ…•ô´‘í¥¹‘•áõôøñÍÁ…¸€¼øñˆùí¥Ñ•´¹±…‰•±ôğ½ˆøñ½‘”ùí¥Ñ•´¹É•ÍÕ±Ñôğ½½‘”øñ•´±…ÍÍ9…µ”ô‰ÍÕ•ÍÌˆùíÑÉ…•MÑ…•1…‰•°¡¥Ñ•´¹ÍÑ…”¥ôğ½•´øğ½Àø¤(€€€€€€€€€€è€ñÀøñÍÁ…¸€¼øñˆû¢¾–"¯’âë~—¢¾¦^»¶Pğ½ˆøñ½‘”ùíÉ½ÕÑ”€üü€‰‘¥É•Ğ‰ôğ½½‘”øñ•´±…ÍÍ9…µ”ô‰ÍÕ•ÍÌˆû–ŞË–º3š"@ğ½•´øğ½Àùô(€€€€€€€€ñÀøñÍÁ…¸€¼ûšr³š²‡–n{¶Sšr«’ş»šRç–º{’ú/šZ’îÛš"[šr7–*‡–f£*Ûšğ½Àø(€€€€€€ğ½Í•Ñ¥½¸ø(€€€€ğ½‘¥Øø(€€ğ½‘•Ñ…¥±Ìøì)ô()™Õ¹Ñ¥½¸I¥¡Q•áĞ¡ì½¹Ñ•¹Ğôèì½¹Ñ•¹ĞèÍÑÉ¥¹œô¤ì(€½¹ÍĞ‰±½­Ì€ô½¹Ñ•¹Ğ¹ÑÉ¥´ ¤¹ÍÁ±¥Ğ ½q¹ìÈ±ô¼¤ì(€É•ÑÕÉ¸€ñ‘¥Ø±…ÍÍ9…µ”ô‰É¥ µµ•ÍÍ…”ˆùí‰±½­Ì¹µ…À ¡‰±½¬°‰±½­%¹‘•à¤€ôøì(€€€½¹ÍĞ±¥¹•Ì€ô‰±½¬¹ÍÁ±¥Ğ ‰q¸ˆ¤¹™¥±Ñ•È¡	½½±•…¸¤ì(€€€¥˜€¡±¥¹•Ì¹±•¹Ñ €˜˜±¥¹•Ì¹•Ù•Éä ¡±¥¹”¤€ôø€½yqÌ©l´©uqÌ¬¼¹Ñ•ÍĞ¡±¥¹”¤¤¤ì(€€€€€É•ÑÕÉ¸€ñÕ°­•äõí‰±½­%¹‘•áôùí±¥¹•Ì¹µ…À ¡±¥¹”°±¥¹•%¹‘•à¤€ôø€ñ±¤­•äõí±¥¹•%¹‘•áôùí¥¹±¥¹•Q•áĞ¡±¥¹”¹É•Á±…” ½yqÌ©l´©uqÌ¬¼°€ˆˆ¤¥ôğ½±¤ø¥ôğ½Õ°øì(€€€ô(€€€É•ÑÕÉ¸€ñÀ­•äõí‰±½­%¹‘•áôùí±¥¹•Ì¹µ…À ¡±¥¹”°±¥¹•%¹‘•à¤€ôø€ñÉ…µ•¹Ğ­•äõí±¥¹•%¹‘•áôùí¥¹±¥¹•Q•áĞ¡±¥¹”¥õí±¥¹•%¹‘•à€ğ±¥¹•Ì¹±•¹Ñ €´€Ä€˜˜€ñ‰È€¼ùôğ½É…µ•¹Ğø¥ôğ½Àøì(€ô¥ôğ½‘¥Øøì)ô()™Õ¹Ñ¥½¸¥¹±¥¹•Q•áĞ¡Ù…±Õ”èÍÑÉ¥¹œ¤èI•…Ñ9½‘•mtì(€É•ÑÕÉ¸Ù…±Õ”¹ÍÁ±¥Ğ ¼¡p©p©mx©t­p©p¨¤½œ¤¹™¥±Ñ•È¡	½½±•…¸¤¹µ…À ¡Á…ÉĞ°¥¹‘•à¤€ôø€ (€€€Á…ÉĞ¹ÍÑ…ÉÑÍ]¥Ñ  ˆ¨¨ˆ¤€˜˜Á…ÉĞ¹•¹‘Í]¥Ñ  ˆ¨¨ˆ¤€ü€ñÍÑÉ½¹œ­•äõí¥¹‘•áôùíÁ…ÉĞ¹Í±¥” È°€´È¥ôğ½ÍÑÉ½¹œø€èÁ…ÉĞ(€€¤¤ì)ô()™Õ¹Ñ¥½¸Ñ•Éµ¥¹…°¡ÍÑ…Ñ”èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸l‰MUˆ°€‰%1ˆ°€‰I=11}	,ˆ°€‰I)Qˆ°€‰911ˆ°€‰aA%Iˆ°€‰59U1}%9QIY9Q%=8‰t¹¥¹±Õ‘•Ì¡ÍÑ…Ñ”¤ìô)™Õ¹Ñ¥½¸Í…µ•5•ÍÍ…•1¥ÍĞ¡±•™Ğè½¹Ù•ÉÍ…Ñ¥½¹5•ÍÍ…•mt°É¥¡Ğè½¹Ù•ÉÍ…Ñ¥½¹5•ÍÍ…•mt¤ì(€É•ÑÕÉ¸±•™Ğ¹±•¹Ñ €ôôôÉ¥¡Ğ¹±•¹Ñ €˜˜±•™Ğ¹•Ù•Éä ¡µ•ÍÍ…”°¥¹‘•à¤€ôøì(€€€½¹ÍĞ…¹‘¥‘…Ñ”€ôÉ¥¡Ñm¥¹‘•átì(€€€É•ÑÕÉ¸…¹‘¥‘…Ñ”(€€€€€€˜˜µ•ÍÍ…”¹¥€ôôô…¹‘¥‘…Ñ”¹¥(€€€€€€˜˜µ•ÍÍ…”¹½¹Ñ•¹Ğ€ôôô…¹‘¥‘…Ñ”¹½¹Ñ•¹Ğ(€€€€€€˜˜µ•ÍÍ…”¹Ñ…Í­}¥€ôôô…¹‘¥‘…Ñ”¹Ñ…Í­}¥(€€€€€€˜˜µ•ÍÍ…”¹Ñ…Í­}Á¡…Í”€ôôô…¹‘¥‘…Ñ”¹Ñ…Í­}Á¡…Í”(€€€€€€˜˜µ•ÍÍ…”¹É•…Ñ•‘}…Ğ€ôôô…¹‘¥‘…Ñ”¹É•…Ñ•‘}…Ğì(€ô¤ì)ô)™Õ¹Ñ¥½¸Ñ…Í­Ñ¥Ù¥Ñå1…‰•°¡ÍÑ…Ñ”èÍÑÉ¥¹œ¤ì(€¥˜€¡ÍÑ…Ñ”€ôôô€‰]%Q%9}=9%I5Q%=8ˆ¤É•ÑÕÉ¸€‹–ú†»¢ºˆì(€¥˜€¡ÍÑ…Ñ”€ôôô€‰MUˆ¤É•ÑÕÉ¸€‹–ŞË–º3š"@ˆì(€¥˜€¡Ñ•Éµ¥¹…°¡ÍÑ…Ñ”¤¤É•ÑÕÉ¸€‹šr«–º3š"@ˆì(€É•ÑÕÉ¸€‹–’B’â´ˆì)ô)™Õ¹Ñ¥½¸Ñ…Í­MÑ•ÁAÉ½É•ÍÌ¡Ñ…Í¬èQ…Í­I•½É°¥¹‘•àè¹Õµ‰•È¤ì(€¥˜€¡Ñ…Í¬¹ÍÑ…Ñ”€ôôô€‰MUˆ¤É•ÑÕÉ¸ì±…ÍÍ9…µ”è€‰ÍÕ•ÍÌˆ°±…‰•°è€‹–º3š"@ˆôì(€¥˜€¡Ñ•Éµ¥¹…°¡Ñ…Í¬¹ÍÑ…Ñ”¤¤É•ÑÕÉ¸ì±…ÍÍ9…µ”è€‰™…¥±•ˆ°±…‰•°è€‹šr«–º3š"@ˆôì(€½¹ÍĞÉ•ÍÕ±Ñ-¥¹‘Ì€ô¹•ÜM•Ğ¡l‰½¹Í½±”ˆ°€‰™¥±•Ìˆ°€‰±½Ìˆ°€‰½¹™¥œˆ°€‰¥¹ÍÑ…¹”ˆ°€‰‘½İ¹±½…ˆ°€‰Á±Õ¥¸ˆ°€‰Ù•É¥™¥…Ñ¥½¸‰t¤ì(€½¹ÍĞ½µÁ±•Ñ•€ôÑ…Í¬¹ÍÑ…Ñ”€ôôô€‰YI%e%9ˆ(€€€€üÑ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹±•¹Ñ (€€€€è5…Ñ ¹µ¥¸¡Ñ…Í¬¹Á±…¸¹ÍÑ•ÁÌ¹±•¹Ñ °Ñ…Í¬¹•Ù¥‘•¹”¹™¥±Ñ•È ¡¥Ñ•´¤€ôøÉ•ÍÕ±Ñ-¥¹‘Ì¹¡…Ì¡¥Ñ•´¹­¥¹¤¤¹±•¹Ñ ¤ì(€¥˜€¡¥¹‘•à€ğ½µÁ±•Ñ•¤É•ÑÕÉ¸ì±…ÍÍ9…µ”è€‰ÍÕ•ÍÌˆ°±…‰•°è€‹–º3š"@ˆôì(€¥˜€¡¥¹‘•à€ôôô½µÁ±•Ñ•€˜˜l‰M9AM!=QQ%9ˆ°€‰aUQ%9ˆ°€‰YI%e%9‰t¹¥¹±Õ‘•Ì¡Ñ…Í¬¹ÍÑ…Ñ”¤¤É•ÑÕÉ¸ì±…ÍÍ9…µ”è€‰…Ñ¥Ù”ˆ°±…‰•°èÑ…Í¬¹ÍÑ…Ñ”€ôôô€‰YI%e%9ˆ€ü€‹¦ª3¢¾’â´ˆ€è€‹š&Ÿ¢†3’â´ˆôì(€É•ÑÕÉ¸ì±…ÍÍ9…µ”è€‰Á•¹‘¥¹œˆ°±…‰•°è€‹¶'–úˆôì)ô)™Õ¹Ñ¥½¸É¥Í­1…‰•°¡É¥Í¬èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸€¡ìÉ•…è€‹–>«¢¾ìˆ°±½Üè€‹’ö;¦;¦f¤ˆ°µ•‘¥Õ´è€‹’â·¦;¦f¤ˆ°¡¥ è€‹¦®c¦;¦f¤ˆ°™½É‰¥‘‘•¸è€‹šš¶ˆˆô…ÌI•½ÉñÍÑÉ¥¹œ°ÍÑÉ¥¹œø¥mÉ¥Í­t€üüÉ¥Í¬ìô)™Õ¹Ñ¥½¸ÍÑ…Ñ•1…‰•°¡ÍÑ…Ñ”èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸€¡ìIQè€‹š¶–r£Rš"C¢º‡–"Hˆ°A=1%e}!-è€‹¶[V—–ŞËš‚‡¦ª0ˆ°]%Q%9}=9%I5Q%=8è€‹¶'–ú†»¢ºˆ°M9AM!=QQ%9è€‹––’š&Ÿ¢†0ˆ°aUQ%9è€‹š¶–r£š&Ÿ¢†0ˆ°YI%e%9è€‹š¶–r£¦ª3¢¾ˆ°MUè€‹šN7’ösš"C–*|ˆ°%1è€‹š&Ÿ¢†3–’Ç¢Ò”ˆ°I)Qè€‹¶[V—–ŞËš.Kîtˆ°I=11%9}	,è€‹š¶–r£–n{šîhˆ°I=11}	,è€‹–ŞËš‹–’4ˆ°59U1}%9QIY9Q%=8è€‹¦r¢š’êë–Ş—–’Bˆô…ÌI•½ÉñÍÑÉ¥¹œ°ÍÑÉ¥¹œø¥mÍÑ…Ñ•t€üüÍÑ…Ñ”ìô)™Õ¹Ñ¥½¸Ñ½½±1…‰•°¡Ñ½½°èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸€¡ì€‰±½Ì¹ÅÕ•Éäˆè€‹¢¾ï–>[nã–Ïš^—–ş\ˆ°€‰™¥±•Ì¹±¥ÍĞˆè€‹–"_–ën»–öWšZ’îØˆ°€‰™¥±”¹‘½İ¹±½…ˆè€‹’â/¢ö÷–ºcšZäA…Á•Èƒšr7–*‡®¼ˆ°€‰Í•ÉÙ•È¹¥¹ÍÑ…±°ˆè€‹–º'¢5¥¹•É…™Ğƒšr7–*‡®¼ˆ°€‰½¹™¥œ¹Á…Ñ ˆè€‹’ş»šRçšr7–*‡–f£¦7ö¸ˆ°€‰½¹Í½±”¹½µµ…¹ˆè€‹–>G¦š:Ÿ–"Û–>Ã–F÷’îˆ°€‰Á±Õ¥¸¹É•Í½±Ù”ˆè€‹¢šzCš>K’îÛ–ó–ºçšœˆ°€‰Á±Õ¥¸¹¥¹ÍÑ…±°ˆè€‹–º'¢–ŞËš‚‡¦ª3š>K’îØˆ°€‰¥¹ÍÑ…¹”¹ÍÑ…ÉĞˆè€‹–B¿–*£šr7–*‡–f ˆ°€‰¥¹ÍÑ…¹”¹ÍÑ½Àˆè€‹–sš¶‹šr7–*‡–f ˆ°€‰¥¹ÍÑ…¹”¹É•ÍÑ…ÉĞˆè€‹¦7–B¿–æÛ¶'–ú¢Ï–ºhˆ°€‰Í¹…ÁÍ¡½Ğ¹É•ÍÑ½É”ˆè€‹š‹–’7–ş¯œˆô…ÌI•½ÉñÍÑÉ¥¹œ°ÍÑÉ¥¹œø¥mÑ½½±t€üüÑ½½°ìô)™Õ¹Ñ¥½¸•Ù¥‘•¹•1…‰•°¡­¥¹èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸€¡ìÍÑ…Ñ”è€‹*Ûšˆ°Ñ½½°è€‹–Ş—–Üˆ°½¹Í½±”è€‹š:Ÿ–"Û–>Ã–n{¢Âˆ°™¥±•Ìè€‹šZ’îÛ–n{¢Âˆ°Ù•É¥™¥…Ñ¥½¸è€‹¦ª3¢¾ˆ°‘¥…¹½Í¥Ìè€‹–’Ç¢Ò—–"šz@ˆ°‘•¥Í¥½¸è€‹–Ï¶Xˆ°¥¹ÍÑ…¹”è€‹–º{’ú/*Ûšˆ°Á±Õ¥¸è€‹š>K’îÛ¢¾š6¸ˆô…ÌI•½ÉñÍÑÉ¥¹œ°ÍÑÉ¥¹œø¥m­¥¹‘t€üü­¥¹ìô)™Õ¹Ñ¥½¸ÑÉ…•MÑ…•1…‰•°¡ÍÑ…”èÍÑÉ¥¹œ¤ìÉ•ÑÕÉ¸€¡ìÉ½ÕÑ¥¹œè€‹¢Ş¿RÄˆ°‘•±•…Ñ¥½¸è€‹–SšÒøˆ°Ñ½½°è€‹–Ş—–Üˆ°É•Ù¥•Üè€‹šš~”ˆ°É•Ù¥Í¥½¸è€‹’ş»š¶Œˆ°™¥¹…°è€‹–º3š"@ˆô…ÌI•½ÉñÍÑÉ¥¹œ°ÍÑÉ¥¹œø¥mÍÑ…•t€üüÍÑ…”ìô)™Õ¹Ñ¥½¸¥¹ÍÑ…¹•5•Ñ„¡¥¹ÍÑ…¹”èM•ÉÙ•ÉAÉ½™¥±”¤ì(€½¹ÍĞÙ…±Õ•Ì€ôm¥¹ÍÑ…¹”¹±½…‘•È°¥¹ÍÑ…¹”¹µ¥¹•É…™Ñ}Ù•ÉÍ¥½¹t(€€€€¹™¥±Ñ•È ¡Ù…±Õ”¤èÙ…±Õ”¥ÌÍÑÉ¥¹œ€ôø	½½±•…¸¡Ù…±Õ”€˜˜Ù…±Õ”¹Ñ½1½İ•É…Í” ¤€„ôô€‰Õ¹­¹½İ¸ˆ¤¤ì(€¥˜€¡Ù…±Õ•Ì¹±•¹Ñ ¤É•ÑÕÉ¸Ù…±Õ•Ì¹©½¥¸ ˆƒ
-Ü€ˆ¤ì(€É•ÑÕÉ¸¥¹ÍÑ…¹”¹ÁÉ½Ù¥‘•É}ÑåÁ”€ôôô€‰µÍµ…¹…•Èˆ€ü€‰5M5…¹…•Èˆ€è€‰AÑ•É½‘…Ñå°ˆì)ô()™Õ¹Ñ¥½¸É•…Ñ•I•ÅÕ•ÍÑ% ¤ì(€½¹ÍĞÉåÁÑ½Á¤€ôÑåÁ•½˜±½‰…±Q¡¥Ì¹ÉåÁÑ¼€ôôô€‰½‰©•Ğˆ€ü±½‰…±Q¡¥Ì¹ÉåÁÑ¼€èÕ¹‘•™¥¹•ì(€¥˜€¡±½‰…±Q¡¥Ì¹¥ÍM•ÕÉ•½¹Ñ•áĞ€˜˜ÑåÁ•½˜ÉåÁÑ½Á¤ü¹É…¹‘½µUU%€ôôô€‰™Õ¹Ñ¥½¸ˆ¤É•ÑÕÉ¸ÉåÁÑ½Á¤¹É…¹‘½µUU% ¤ì(€½¹ÍĞ•¹ÑÉ½Áä€ô¹•ÜU¥¹ĞÌÉÉÉ…ä Ì¤ì(€¥˜€¡ÉåÁÑ½Á¤ü¹•ÑI…¹‘½µY…±Õ•Ì¤ÉåÁÑ½Á¤¹•ÑI…¹‘½µY…±Õ•Ì¡•¹ÑÉ½Áä¤ì(€•±Í”•¹ÑÉ½Áä¹Í•Ğ¡m…Ñ”¹¹½Ü ¤°5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨€Áá™™™™™™™˜¤°5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨€Áá™™™™™™™˜¥t¤ì(€É•ÑÕÉ¸É•ÅÕ•ÍÑ|‘í…Ñ”¹¹½Ü ¤¹Ñ½MÑÉ¥¹œ ÌØ¥õ|‘íÉÉ…ä¹™É½´¡•¹ÑÉ½Áä°€¡Ù…±Õ”¤€ôøÙ…±Õ”¹Ñ½MÑÉ¥¹œ ÌØ¤¤¹©½¥¸ ‰|ˆ¥õ€ì)ô
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "ç¡®è®¤å¤±è´¥");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <main ref={workspaceRef} className={`agent-shell paper-ops workbench-layout ${activeTask ? "with-inspector" : "conversation-only"}`}>
+    <header className="agent-topbar workbench-topbar">
+      <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="æ‰“å¼€ä¼šè¯"><Menu size={19} /></button>
+      <div className="brand"><span className="brand-symbol"><img src="/brand/mcai-symbol.png" alt="" /></span><strong>MCAI</strong><span>Agent å·¥ä½œå°</span></div>
+      <div className="workbench-session-switcher">
+        <span>ä¼šè¯</span>
+        <div>
+          <MessageSquare size={14} />
+          <select aria-label="åˆ‡æ¢ä¼šè¯" value={activeSessionId} onChange={(event) => {
+            const session = sessions.find((item) => item.id === event.target.value);
+            if (session) void selectSession(session);
+          }}>
+            {!sessions.length && <option value="">æ–°å»ºä¼šè¯</option>}
+            {groupedSessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
+          </select>
+          <ChevronDown size={13} aria-hidden="true" />
+        </div>
+        <button className="topbar-new-session" onClick={() => void createSession()} disabled={loading} aria-label="æ–°å»ºä¼šè¯" title="æ–°å»ºä¼šè¯"><Plus size={17} /></button>
+      </div>
+      <div className="agent-context">{current ? <><Server size={15} /><strong>{current.name}</strong><span>{instanceMeta(current)}</span></> : "æœªé€‰æ‹©å®ä¾‹"}</div>
+      <div className={`cloud-state ${cloudOnline ? "online" : "offline"}`}><Cloud size={15} /><span>{cloudOnline ? "æœ¬åœ°äº‘åœ¨çº¿" : "æœ¬åœ°äº‘ç¦»çº¿"}</span></div>
+      <button className="icon-button topbar-refresh" onClick={() => void refresh()} aria-label="åˆ·æ–°å·¥ä½œå°" title="åˆ·æ–°å·¥ä½œå°"><RefreshCw size={17} /></button>
+      <button className="icon-button topbar-logout" onClick={onLogout} aria-label="é€€å‡ºç™»å½•" title="é€€å‡ºç™»å½•"><LogOut size={18} /></button>
+    </header>
+
+    <aside className={`agent-sidebar ${sidebarOpen ? "open" : ""}`}>
+      <div className="agent-card">
+        <span className={`agent-orb ${onlineAgents ? "online" : ""}`}><Bot size={19} /></span>
+        <div><strong>Sidecar Agent</strong><small>{onlineAgents}/{agents.length} èŠ‚ç‚¹åœ¨çº¿</small></div>
+        <span className="agent-live">{onlineAgents ? "LIVE" : "WAIT"}</span>
+      </div>
+      <div className="instance-switcher">
+        <label>å½“å‰å®ä¾‹</label>
+        <div><Server size={15} /><select value={selectedInstance} onChange={(event) => selectInstance(event.target.value)}>{instances.map((instance) => <option key={instance.instance_id} value={instance.instance_id}>{instance.name}</option>)}</select><ChevronDown size={14} /></div>
+      </div>
+      <section className="resource-browser" aria-label="å½“å‰å®ä¾‹èµ„æº">
+        <div className="resource-browser-head"><span>èµ„æºæµè§ˆå™¨</span><small>{current?.provider_type === "mcsmanager" ? "MCSManager" : current?.provider_type ?? "æœªè¿æ¥"}</small></div>
+        <div className="resource-tree">
+          <div className="resource-root"><Server size={14} /><span>{current?.name ?? "æœªé€‰æ‹©å®ä¾‹"}</span><i className={`status-dot ${current?.state ?? "unknown"}`} /></div>
+          <div className="resource-item current"><MessageSquare size={14} /><span>å½“å‰ä¼šè¯</span><small>{activeSession?.title ?? "æ–°å»ºä¼šè¯"}</small></div>
+          <div className="resource-item"><FileClock size={14} /><span>è¿è¡Œè®°å½•</span><small>{currentTasks.length} æ¡</small></div>
+          <div className="resource-item"><Wrench size={14} /><span>å—æ§å·¥å…·</span><small>å·²è¿æ¥</small></div>
+        </div>
+      </section>
+      <div className="session-section-head"><span>ä¼šè¯</span><button onClick={() => void createSession()} aria-label="æ–°å»ºä¼šè¯"><Plus size={16} /></button></div>
+      <div className="session-list">
+        {groupedSessions.map((session) => <div key={session.id} className={`session-row ${session.id === activeSessionId ? "selected" : ""}`}>
+          <button onClick={() => void selectSession(session)}><MessageSquare size={15} /><span><strong>{session.title}</strong><small>{new Date(session.updated_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span></button>
+          <button className="session-more" onClick={() => void deleteSession(session.id)} aria-label="åˆ é™¤ä¼šè¯"><Trash2 size={14} /></button>
+        </div>)}
+        {!groupedSessions.length && <div className="session-empty"><MessageSquare size={19} /><span>ä¸ºè¿™ä¸ªå®ä¾‹åˆ›å»ºç¬¬ä¸€ä¸ªä¼šè¯</span></div>}
+      </div>
+      <button className="new-session-button" onClick={() => void createSession()}><Plus size={16} />æ–°ä¼šè¯</button>
+    </aside>
+
+    <section className="agent-conversation">
+      <div className="workbench-tabs" role="tablist" aria-label="å·¥ä½œåŒºæ ‡ç­¾">
+        <span className="workbench-tab context"><Server size={14} />{current?.name ?? "å®ä¾‹"}</span>
+        <span className="workbench-tab active" role="tab" aria-selected="true"><MessageSquare size={14} /><span>Agent Â· {activeSession?.title ?? "æ–°ä¼šè¯"}</span><i className="tab-close"><X size={13} aria-hidden="true" /></i></span>
+        <button className="workbench-tab add" onClick={() => void createSession()} disabled={loading} aria-label="æ–°å»º Agent ä¼šè¯" title="æ–°å»º Agent ä¼šè¯"><Plus size={17} /></button>
+      </div>
+      {error && <div className="error-banner" role="alert"><AlertTriangle size={16} /><span>{error}</span><button onClick={() => setError("")} aria-label="å…³é—­é”™è¯¯æç¤º"><X size={14} /></button></div>}
+      <div className="conversation-head">
+        <div className="instance-status-strip">
+          <span>å®ä¾‹ï¼š<strong>{current?.name ?? "æœªé€‰æ‹©"}</strong></span>
+          <span>çŠ¶æ€ï¼š<strong>{current?.state === "running" ? "è¿è¡Œä¸­" : current?.state === "stopped" ? "å·²åœæ­¢" : "åŒæ­¥ä¸­"}</strong><i className={`status-dot ${current?.state ?? "unknown"}`} /></span>
+          <span>Java {current?.java?.major ?? 25}</span>
+          <span>{current ? instanceMeta(current) : "MCSManager"}</span>
+        </div>
+        <button className="prompt-button" onClick={openPrompt} disabled={!activeSession}><Settings2 size={16} /><span>ä¼šè¯è®¾ç½®</span></button>
+      </div>
+      <div
+        className="message-stream workbench-message-stream"
+        ref={messageStreamRef}
+        onScroll={updateScrollPosition}
+        onWheel={(event) => {
+          if (event.deltaY < 0) followLatestRef.current = false;
+        }}
+        onPointerDown={() => { followLatestRef.current = false; }}
+      >
+        <div className="stream-label"><span>æ‰§è¡Œè®°å½•</span><small>{current ? `${current.name} / ${instanceMeta(current)}` : "ç­‰å¾…é€‰æ‹©å®ä¾‹"}</small></div>
+        {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>ä»Šå¤©è¦å¤„ç†ä»€ä¹ˆï¼Ÿ</h2><p>ç›´æ¥æé—®æˆ–æè¿°æ“ä½œï¼ŒMCAI ä¼šä½¿ç”¨å½“å‰å®ä¾‹çš„ä¿¡æ¯å®Œæˆä»»åŠ¡ã€‚</p><div className="suggestions"><button onClick={() => setIntent("å¯åŠ¨æœåŠ¡å™¨")}>å¯åŠ¨å®ä¾‹</button><button onClick={() => setIntent("åˆ†ææœ€è¿‘ä¸€æ¬¡å´©æœçš„åŸå› ")}>åˆ†æå´©æœ</button><button onClick={() => setIntent("æŠŠè§†è·è°ƒæ•´ä¸º 10")}>è°ƒæ•´é…ç½®</button></div></div>}
+        {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
+        {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
+        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>æ­£åœ¨è§„åˆ’</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
+      </div>
+      {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="å›åˆ°æœ€æ–°æ¶ˆæ¯" title="å›åˆ°æœ€æ–°æ¶ˆæ¯"><ChevronDown size={19} /></button>}
+      <div className="agent-composer">
+        <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="è¯¢é—®é—®é¢˜ï¼Œæˆ–æè¿°è¦å®Œæˆçš„æ“ä½œâ€¦" rows={2} />
+        <button onClick={sending ? cancelMessage : () => void sendMessage()} disabled={!sending && (loading || !intent.trim())} aria-label={sending ? "åœæ­¢å‘é€" : "å‘é€"} title={sending ? "åœæ­¢å‘é€" : "å‘é€"}>{sending ? <Square size={17} /> : <Send size={19} />}</button>
+        <div className="composer-hint"><ShieldCheck size={13} />å·¥å…·è°ƒç”¨ä»éœ€ç­–ç•¥æ ¡éªŒï¼Œé«˜é£é™©æ“ä½œå¿…é¡»ç¡®è®¤</div>
+      </div>
+    </section>
+
+    <aside className="agent-inspector workbench-right-rail">
+      <div className="inspector-head"><span>å·¥å…·é¢æ¿</span>{activeTask ? <span className={`risk ${activeTask.risk}`}>{riskLabel(activeTask.risk)}</span> : <span className="tool-count">å·²å°±ç»ª</span>}</div>
+      <div className="instance-health"><span className={`status-dot ${current?.state ?? "unknown"}`} /><div><strong>{current?.state === "running" ? "å®ä¾‹è¿è¡Œä¸­" : current?.state ?? "æœªçŸ¥çŠ¶æ€"}</strong><small>{current ? instanceMeta(current) : "ç­‰å¾…å®ä¾‹ä¿¡æ¯"}</small></div></div>
+      {activeTask ? <>
+        <div className="task-summary"><small>å½“å‰ä»»åŠ¡</small><strong>{activeTask.intent}</strong><span>{stateLabel(activeTask.state)}</span></div>
+        <section className="inspector-section"><h2><ClipboardCheck size={15} />è°ƒç”¨å·¥å…·</h2>{activeTask.plan.steps.map((step) => <div className="plan-step" key={step.id}><span><Wrench size={12} /></span><div><strong>{toolLabel(step.tool)}</strong><small>{step.requires_confirmation ? "æ‰§è¡Œå‰éœ€è¦ç¡®è®¤" : "è‡ªåŠ¨æ‰§è¡Œ"}</small></div></div>)}</section>
+        <section className="inspector-section"><h2><FileClock size={15} />æœ€æ–°è¯æ®</h2>{activeTask.evidence.slice(-4).reverse().map((item, index) => <div className="evidence" key={`${item.at}-${index}`}><span /><p>{item.summary}<small>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small></p></div>)}</section>
+      </> : <>
+        <section className="inspector-section tool-directory">
+          <h2><Wrench size={15} />å¯ç”¨èƒ½åŠ›</h2>
+          <div className="tool-directory-row"><span><Server size={14} /></span><div><strong>å®ä¾‹æ§åˆ¶</strong><small>å¯åŠ¨ã€åœæ­¢ã€é‡å¯ä¸çŠ¶æ€éªŒè¯</small></div></div>
+          <div className="tool-directory-row"><span><FileClock size={14} /></span><div><strong>æ—¥å¿—ä¸æ–‡ä»¶</strong><small>è¯»å–æ§åˆ¶å°ã€ç›®å½•å’Œæ‰§è¡Œè¯æ®</small></div></div>
+          <div className="tool-directory-row"><span><Wrench size={14} /></span><div><strong>å—æ§æ‰§è¡Œ</strong><small>é«˜é£é™©å˜æ›´ä»éœ€ç¡®è®¤</small></div></div>
+        </section>
+        <section className="inspector-section session-policy">
+          <h2><Settings2 size={15} />ä¼šè¯ç­–ç•¥</h2>
+          <p>å½“å‰ä¼šè¯ä¼šä¼˜å…ˆä½¿ç”¨å·²é€‰å®ä¾‹ä¸Šä¸‹æ–‡ã€‚å·¥å…·è¿‡ç¨‹é»˜è®¤æŠ˜å ï¼Œä»…åœ¨éœ€è¦æ—¶å±•å¼€æŸ¥çœ‹ã€‚</p>
+          <button onClick={openPrompt} disabled={!activeSession}><Settings2 size={14} />ç¼–è¾‘ç³»ç»Ÿæç¤ºè¯</button>
+        </section>
+      </>}
+    </aside>
+
+    {promptOpen && activeSession && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPromptOpen(false); }}><div className="modal prompt-modal" role="dialog" aria-modal="true">
+      <div className="modal-head"><div><span className="eyebrow">SESSION INSTRUCTIONS</span><h2>ç³»ç»Ÿæç¤ºè¯</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="å…³é—­ç³»ç»Ÿæç¤ºè¯è®¾ç½®"><X size={18} /></button></div>
+      <p>åªå½±å“å½“å‰ä¼šè¯çš„è¯­æ°”ã€ç›®æ ‡å’Œå·¥ä½œåå¥½ï¼Œä¸èƒ½è¦†ç›–å®‰å…¨ç­–ç•¥ä¸ç¡®è®¤è§„åˆ™ã€‚</p>
+      <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} rows={10} maxLength={4000} />
+      <div className="prompt-meta"><span>{promptDraft.length}/4000</span><span><ShieldCheck size={13} />å®‰å…¨è§„åˆ™å§‹ç»ˆä¼˜å…ˆ</span></div>
+      <div className="modal-actions"><button className="secondary" onClick={() => setPromptOpen(false)}>å–æ¶ˆ</button><button className="primary" onClick={() => void savePrompt()} disabled={loading || !promptDraft.trim()}>ä¿å­˜æç¤ºè¯</button></div>
+    </div></div>}
+
+    {reviewTask && current && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewTask(null); }}><div className="modal" role="dialog" aria-modal="true">
+      <div className="modal-head"><div><span className={`risk ${reviewTask.risk}`}>{riskLabel(reviewTask.risk)}</span><h2>ç¡®è®¤æ‰§è¡Œè®¡åˆ’</h2></div><button className="icon-button" onClick={() => setReviewTask(null)} aria-label="å…³é—­æ‰§è¡Œç¡®è®¤"><X size={18} /></button></div>
+      <div className="scope-line"><Server size={16} /><span>{current.name}</span><span>{current.loader} {current.minecraft_version}</span></div>
+      <p className="intent-review">{reviewTask.intent}</p>
+      <div className="review-steps">{reviewTask.plan.steps.map((step, index) => <div key={step.id}><span>{index + 1}</span><div><strong>{toolLabel(step.tool)}</strong><code>{JSON.stringify(step.args)}</code></div></div>)}</div>
+      <div className="snapshot-note"><RotateCcw size={17} /><div><strong>æ‰§è¡Œå‰åˆ›å»ºæ¢å¤ç‚¹</strong><span>å¤±è´¥æ—¶æŒ‰ç­–ç•¥æ¢å¤å¹¶å†æ¬¡éªŒè¯ã€‚</span></div></div>
+      {reviewTask.risk === "high" && <label className="danger-confirm">è¾“å…¥å®ä¾‹å <strong>{current.name}</strong> ä»¥ç¡®è®¤<input value={highRiskText} onChange={(event) => setHighRiskText(event.target.value)} /></label>}
+      <div className="modal-actions"><button className="secondary" onClick={() => setReviewTask(null)}>å–æ¶ˆ</button><button className="primary" onClick={() => void confirmTask()} disabled={loading || (reviewTask.risk === "high" && highRiskText !== current.name)}>{loading ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}ç¡®è®¤å¹¶æ‰§è¡Œ</button></div>
+    </div></div>}
+  </main>;
+}
+
+function MessageBubble({ message, task, instanceName, streaming = false, onReview }: { message: ConversationMessage; task?: TaskRecord; instanceName?: string; streaming?: boolean; onReview: (task: TaskRecord) => void }) {
+  const messageRef = useRef<HTMLElement>(null);
+  useGSAP(() => {
+    const media = gsap.matchMedia();
+    media.add("(prefers-reduced-motion: no-preference)", () => {
+      gsap.fromTo(messageRef.current, { autoAlpha: 0, y: 9 }, {
+        autoAlpha: 1, y: 0, duration: 0.34, ease: "power2.out", clearProps: "transform,opacity,visibility",
+      });
+    }, messageRef.current ?? undefined);
+    return () => media.revert();
+  }, { scope: messageRef });
+  if (message.role === "user") return <article ref={messageRef} className="chat-message user workbench-record"><span className="user-avatar"><UserRound size={15} /></span><div><div className="message-meta"><strong>COMMAND</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.content}</p></div></article>;
+  const isTaskRequest = message.task_phase === "request";
+  if (isTaskRequest && task && terminal(task.state)) return null;
+  if (isTaskRequest) {
+    return <article ref={messageRef} className="chat-message assistant task-request workbench-record"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>TOOLS</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
+  }
+  const completedTask = task && terminal(task.state);
+  const failedTask = completedTask && task.state !== "SUCCEEDED";
+  return <article ref={messageRef} className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
+    <span className="bot-avatar"><Bot size={16} /></span>
+    <div>
+      <div className="message-meta"><strong>{completedTask ? "DONE" : "OUTPUT"}</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{streaming && <span>è¾“å‡ºä¸­</span>}</div>
+      {completedTask ? <section className={`answer-result ${failedTask ? "failed" : "success"}`}>
+        <header>
+          <span className="answer-result-icon">{failedTask ? <CircleAlert size={17} /> : <CheckCircle2 size={17} />}</span>
+          <div><strong>{failedTask ? "ä»»åŠ¡æœªå®Œæˆ" : "ä»»åŠ¡å·²å®Œæˆ"}</strong><small>{task.plan.steps.map((step) => toolLabel(step.tool)).join("ã€")}</small></div>
+          <time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>
+        </header>
+        <RichText content={message.content} />
+        <TaskOutcome task={task} />
+      </section> : <><RichText content={message.content} />{!streaming && !task && <ResponseTrace route={message.route} trace={message.trace} />}</>}
+    </div>
+  </article>;
+}
+
+function TaskActivity({ content, task, instanceName, onReview }: { content: string; task?: TaskRecord; instanceName?: string; onReview: (task: TaskRecord) => void }) {
+  const diagnosis = task ? [...task.evidence].reverse().find((item) => item.kind === "diagnosis") : undefined;
+  const recovery = task ? [...task.evidence].reverse().find((item) => item.kind === "decision") : undefined;
+  const failedTask = Boolean(task && terminal(task.state) && task.state !== "SUCCEEDED");
+  const isComplete = Boolean(task && terminal(task.state));
+  const liveEvidence = task?.evidence.filter((item) => item.summary.trim()).slice(-5) ?? [];
+  return <details className={`task-activity ${failedTask ? "failed" : ""} ${!isComplete ? "live" : ""}`} open={!isComplete} aria-live="polite">
+    <summary>
+      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "æ‰§è¡Œè®°å½•" : task ? stateLabel(task.state) : "æ­£åœ¨è§„åˆ’"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : task ? "å®æ—¶æ›´æ–°å·¥å…·è°ƒç”¨ä¸å›è°ƒ" : "æ­£åœ¨ç”Ÿæˆæ‰§è¡Œè®¡åˆ’"}</small></span></span>
+      <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
+    </summary>
+    <div className="task-activity-content">
+      {content.trim() && <section className="task-activity-copy"><span>ä»»åŠ¡è¯´æ˜</span><RichText content={content} /></section>}
+      {task && <section className="process-list" aria-label="å·¥å…·æ‰§è¡Œè®°å½•">
+        {task.plan.steps.map((step, index) => {
+          const progress = taskStepProgress(task, index);
+          return <div className={`process-row ${progress.className}`} key={step.id}>
+          <span className="process-index">{index + 1}</span>
+          <div><strong>{toolLabel(step.tool)}</strong><code>{step.tool}</code></div>
+          <span className={`process-state ${progress.className}`}>{progress.label}</span>
+        </div>})}
+        <div className="process-target"><span>ç›®æ ‡å®ä¾‹</span><strong>{instanceName ?? task.instance_ref}</strong><time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour12: false })}</time></div>
+      </section>}
+      {!isComplete && liveEvidence.length > 0 && <section className="live-evidence" aria-label="å®æ—¶å›è°ƒ">
+        <strong>æœ€æ–°å›è°ƒ</strong>
+        {liveEvidence.map((item, index) => <p key={`${item.at}-${index}`}><span /> <b>{item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
+      </section>}
+      {failedTask && <div className="failure-analysis">
+        <div><strong>å¤±è´¥åŸå› </strong><p>{diagnosis?.summary ?? "æœªæ”¶åˆ°å¯è¯†åˆ«çš„è¯Šæ–­è¯æ®ï¼Œè¯·æ£€æŸ¥å®ä¾‹æ§åˆ¶å°æ—¥å¿—ã€‚"}</p></div>
+        <div><strong>ä¸‹ä¸€æ­¥</strong><p>{recovery?.summary ?? "è¯Šæ–­è¯æ®å·²ä¿å­˜ï¼›è¯·ä¿®å¤åŸå› åå†é‡è¯•ä»»åŠ¡ã€‚"}</p></div>
+      </div>}
+      {task?.state === "WAITING_CONFIRMATION" && <button className="confirm-inline" onClick={() => onReview(task)}>æ£€æŸ¥å¹¶ç¡®è®¤æ‰§è¡Œ</button>}
+    </div>
+  </details>;
+}
+
+function TaskOutcome({ task }: { task: TaskRecord }) {
+  const evidence = task.evidence.filter((item) => item.summary.trim()).slice(-12);
+  const failed = task.state !== "SUCCEEDED";
+  return <details className="result-evidence">
+    <summary><span>å±•å¼€è§„åˆ’ä¸æ‰§è¡Œè½¨è¿¹</span><small>{task.plan.steps.length} ä¸ªå·¥å…· Â· {evidence.length} æ¡è®°å½•</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <div className="result-trace">
+      <section className="result-trace-section" aria-label="è§„åˆ’æ‘˜è¦">
+        <strong>è§„åˆ’</strong>
+        <p><span /><b>{task.intent.split("\n\nAgent operation:")[0]}</b><code>ä»»åŠ¡ç›®æ ‡</code><em className={failed ? "failed" : "success"}>{failed ? "æœªå®Œæˆ" : "å·²å®Œæˆ"}</em></p>
+      </section>
+      <section className="result-trace-section" aria-label="å·¥å…·è°ƒç”¨è¿‡ç¨‹">
+        <strong>å·¥å…·è°ƒç”¨</strong>
+        {task.plan.steps.map((step, index) => <p key={step.id}><span /><b>{index + 1}. {toolLabel(step.tool)}</b><code>{step.tool}</code><em className={failed ? "failed" : "success"}>{failed ? "æœªå®Œæˆ" : "å®Œæˆ"}</em></p>)}
+      </section>
+      {evidence.length > 0 && <section className="result-trace-section" aria-label="æ‰§è¡Œè¯æ®">
+        <strong>å›è°ƒã€åˆ¤æ–­ä¸éªŒè¯</strong>
+        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span /><b>{item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
+      </section>}
+    </div>
+  </details>;
+}
+
+function ResponseTrace({ route, trace }: { route?: ConversationMessage["route"]; trace?: ConversationMessage["trace"] }) {
+  const steps = trace?.filter((item) => item.label.trim() || item.result.trim()) ?? [];
+  return <details className="result-evidence response-trace">
+    <summary><span>å±•å¼€å›ç­”è½¨è¿¹</span><small>{steps.length ? `${steps.length} ä¸ªå†³ç­–è®°å½•` : "ç›´æ¥å›ç­” Â· æœªè°ƒç”¨å·¥å…·"}</small><ChevronDown size={14} aria-hidden="true" /></summary>
+    <div className="result-trace">
+      <section className="result-trace-section">
+        <strong>å¤„ç†æ‘˜è¦</strong>
+        {steps.length > 0
+          ? steps.map((item, index) => <p key={`${item.stage}-${index}`}><span /><b>{item.label}</b><code>{item.result}</code><em className="success">{traceStageLabel(item.stage)}</em></p>)
+          : <p><span /><b>è¯†åˆ«ä¸ºçŸ¥è¯†é—®ç­”</b><code>{route ?? "direct"}</code><em className="success">å·²å®Œæˆ</em></p>}
+        <p><span />æœ¬æ¬¡å›ç­”æœªä¿®æ”¹å®ä¾‹ã€æ–‡ä»¶æˆ–æœåŠ¡å™¨çŠ¶æ€ã€‚</p>
+      </section>
+    </div>
+  </details>;
+}
+
+function RichText({ content }: { content: string }) {
+  const blocks = content.trim().split(/\n{2,}/);
+  return <div className="rich-message">{blocks.map((block, blockIndex) => {
+    const lines = block.split("\n").filter(Boolean);
+    if (lines.length && lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+      return <ul key={blockIndex}>{lines.map((line, lineIndex) => <li key={lineIndex}>{inlineText(line.replace(/^\s*[-*]\s+/, ""))}</li>)}</ul>;
+    }
+    return <p key={blockIndex}>{lines.map((line, lineIndex) => <Fragment key={lineIndex}>{inlineText(line)}{lineIndex < lines.length - 1 && <br />}</Fragment>)}</p>;
+  })}</div>;
+}
+
+function inlineText(value: string): ReactNode[] {
+  return value.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) => (
+    part.startsWith("**") && part.endsWith("**") ? <strong key={index}>{part.slice(2, -2)}</strong> : part
+  ));
+}
+
+function terminal(state: string) { return ["SUCCEEDED", "FAILED", "ROLLED_BACK", "REJECTED", "CANCELLED", "EXPIRED", "MANUAL_INTERVENTION"].includes(state); }
+function sameMessageList(left: ConversationMessage[], right: ConversationMessage[]) {
+  return left.length === right.length && left.every((message, index) => {
+    const candidate = right[index];
+    return candidate
+      && message.id === candidate.id
+      && message.content === candidate.content
+      && message.task_id === candidate.task_id
+      && message.task_phase === candidate.task_phase
+      && message.created_at === candidate.created_at;
+  });
+}
+function taskActivityLabel(state: string) {
+  if (state === "WAITING_CONFIRMATION") return "å¾…ç¡®è®¤";
+  if (state === "SUCCEEDED") return "å·²å®Œæˆ";
+  if (terminal(state)) return "æœªå®Œæˆ";
+  return "å¤„ç†ä¸­";
+}
+function taskStepProgress(task: TaskRecord, index: number) {
+  if (task.state === "SUCCEEDED") return { className: "success", label: "å®Œæˆ" };
+  if (terminal(task.state)) return { className: "failed", label: "æœªå®Œæˆ" };
+  const resultKinds = new Set(["console", "files", "logs", "config", "instance", "download", "plugin", "verification"]);
+  const completed = task.state === "VERIFYING"
+    ? task.plan.steps.length
+    : Math.min(task.plan.steps.length, task.evidence.filter((item) => resultKinds.has(item.kind)).length);
+  if (index < completed) return { className: "success", label: "å®Œæˆ" };
+  if (index === completed && ["SNAPSHOTTING", "EXECUTING", "VERIFYING"].includes(task.state)) return { className: "active", label: task.state === "VERIFYING" ? "éªŒè¯ä¸­" : "æ‰§è¡Œä¸­" };
+  return { className: "pending", label: "ç­‰å¾…" };
+}
+function riskLabel(risk: string) { return ({ read: "åªè¯»", low: "ä½é£é™©", medium: "ä¸­é£é™©", high: "é«˜é£é™©", forbidden: "ç¦æ­¢" } as Record<string, string>)[risk] ?? risk; }
+function stateLabel(state: string) { return ({ DRAFTED: "æ­£åœ¨ç”Ÿæˆè®¡åˆ’", POLICY_CHECKED: "ç­–ç•¥å·²æ ¡éªŒ", WAITING_CONFIRMATION: "ç­‰å¾…ç¡®è®¤", SNAPSHOTTING: "å‡†å¤‡æ‰§è¡Œ", EXECUTING: "æ­£åœ¨æ‰§è¡Œ", VERIFYING: "æ­£åœ¨éªŒè¯", SUCCEEDED: "æ“ä½œæˆåŠŸ", FAILED: "æ‰§è¡Œå¤±è´¥", REJECTED: "ç­–ç•¥å·²æ‹’ç»", ROLLING_BACK: "æ­£åœ¨å›æ»š", ROLLED_BACK: "å·²æ¢å¤", MANUAL_INTERVENTION: "éœ€è¦äººå·¥å¤„ç†" } as Record<string, string>)[state] ?? state; }
+function toolLabel(tool: string) { return ({ "logs.query": "è¯»å–ç›¸å…³æ—¥å¿—", "files.list": "åˆ—å‡ºç›®å½•æ–‡ä»¶", "file.download": "ä¸‹è½½å®˜æ–¹ Paper æœåŠ¡ç«¯", "server.install": "å®‰è£… Minecraft æœåŠ¡ç«¯", "config.patch": "ä¿®æ”¹æœåŠ¡å™¨é…ç½®", "console.command": "å‘é€æ§åˆ¶å°å‘½ä»¤", "plugin.resolve": "è§£ææ’ä»¶å…¼å®¹æ€§", "plugin.install": "å®‰è£…å·²æ ¡éªŒæ’ä»¶", "instance.start": "å¯åŠ¨æœåŠ¡å™¨", "instance.stop": "åœæ­¢æœåŠ¡å™¨", "instance.restart": "é‡å¯å¹¶ç­‰å¾…ç¨³å®š", "snapshot.restore": "æ¢å¤å¿«ç…§" } as Record<string, string>)[tool] ?? tool; }
+function evidenceLabel(kind: string) { return ({ state: "çŠ¶æ€", tool: "å·¥å…·", console: "æ§åˆ¶å°å›è°ƒ", files: "æ–‡ä»¶å›è°ƒ", verification: "éªŒè¯", diagnosis: "å¤±è´¥åˆ†æ", decision: "å†³ç­–", instance: "å®ä¾‹çŠ¶æ€", plugin: "æ’ä»¶è¯æ®" } as Record<string, string>)[kind] ?? kind; }
+function traceStageLabel(stage: string) { return ({ routing: "è·¯ç”±", delegation: "å§”æ´¾", tool: "å·¥å…·", review: "æ£€æŸ¥", revision: "ä¿®æ­£", final: "å®Œæˆ" } as Record<string, string>)[stage] ?? stage; }
+function instanceMeta(instance: ServerProfile) {
+  const values = [instance.loader, instance.minecraft_version]
+    .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));
+  if (values.length) return values.join(" Â· ");
+  return instance.provider_type === "mcsmanager" ? "MCSManager" : "Pterodactyl";
+}
+
+function createRequestId() {
+  const cryptoApi = typeof globalThis.crypto === "object" ? globalThis.crypto : undefined;
+  if (globalThis.isSecureContext && typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  const entropy = new Uint32Array(3);
+  if (cryptoApi?.getRandomValues) cryptoApi.getRandomValues(entropy);
+  else entropy.set([Date.now(), Math.floor(Math.random() * 0xffffffff), Math.floor(Math.random() * 0xffffffff)]);
+  return `request_${Date.now().toString(36)}_${Array.from(entropy, (value) => value.toString(36)).join("_")}`;
+}
