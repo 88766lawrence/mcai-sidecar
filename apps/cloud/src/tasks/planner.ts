@@ -20,8 +20,13 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     ], []);
   }
   const stopPattern = /\b(?:stop|shutdown)\b|\u505c\u6b62|\u5173\u95ed|\u5173\u670d/;
-  const negatedStopPattern = /(?:不要|不得|禁止|无需|不应|别|不可|避免)[^\r\n，。；;]{0,10}(?:\b(?:stop|shutdown)\b|停止|关闭|关服)/;
-  if (stopPattern.test(normalized) && !negatedStopPattern.test(normalized)) {
+  const constrainedTool = options.preferredTool;
+  const originalIntent = intent.split(/\n\s*\nAgent operation:\s*/i)[0];
+  const namedProject = parsePluginProject(intent);
+  const pluginContext = /插件|\bplugins?\b/i.test(intent) ||
+    Boolean(namedProject && !["paper", "fabric"].includes(namedProject));
+  if ((!constrainedTool || constrainedTool === "instance.stop") && stopPattern.test(normalized) &&
+      !deniesAction(originalIntent, /\b(?:stop|shutdown|shut\s+down)\b|停止|关闭|关服/)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "instance.stop",
@@ -30,7 +35,10 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       requires_confirmation: true,
     }], [{ type: "instance_state", expected: "stopped" }]);
   }
-  const install = parseServerInstallIntent(normalized);
+  const install = (!constrainedTool || constrainedTool === "server.install") &&
+    !pluginContext &&
+    !deniesAction(originalIntent, /安装|下载|部署|创建|\b(?:install|download|setup|deploy|create)\b/)
+    ? parseServerInstallIntent(normalized) : undefined;
   if (install) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
@@ -65,7 +73,8 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     }], []);
   }
   const configPatch = parseConfigurationPatch(intent);
-  if (options.preferredTool === "config.patch" && configPatch) {
+  if (options.preferredTool === "config.patch" && configPatch &&
+      !deniesAction(originalIntent, /修改|设置|改为|配置|\b(?:change|set|modify|update)\b/)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "config.patch",
@@ -95,19 +104,15 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       ...(risk === "medium" || risk === "high" ? { requires_confirmation: true } : {}),
     }], []);
   }
-  if (/(下载|download).*(paper|1\.21\.1|server\.jar)|(paper|1\.21\.1|server\.jar).*(下载|download)/.test(normalized)) {
-    return plan(id, instanceRef, inventoryRevision, intent, [{
-      id: "s1",
-      tool: "logs.query",
-      args: {
-        url: "https://fill-data.papermc.io/v1/objects/39bd8c00b9e18de91dcabd3cc3dcfa5328685a53b7187a2f63280c22e2d287b9/paper-1.21.1-133.jar",
-        target: "/server.jar",
-      },
-      risk: "low",
-    }], []);
-  }
-  if (/视距|view-distance|配置|config/.test(normalized)) {
-    const value = Number(intent.match(/(?:视距|view-distance)\D*(\d+)/i)?.[1] ?? 10);
+  if (/视距|view-distance|配置|config|server\.properties/.test(normalized)) {
+    const requestedValue = intent.match(/(?:视距|view-distance)\s*(?:设置为|设为|改为|调整为|调为|to|=|:)\s*(\d+)\b/i)?.[1];
+    if (!requestedValue || options.preferredTool === "config.inspect" ||
+        deniesAction(originalIntent, /修改|设置|改为|配置|\b(?:change|set|modify|update)\b/)) {
+      return plan(id, instanceRef, inventoryRevision, intent, [{
+        id: "s1", tool: "config.inspect", args: { path: configPath ?? "server.properties" }, risk: "read",
+      }], []);
+    }
+    const value = Number(requestedValue);
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "config.patch",
@@ -117,8 +122,10 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       rollback: { tool: "snapshot.restore", snapshot: "${task.snapshot}" },
     }], [{ type: "config_semantics", expected: `view-distance=${value}` }]);
   }
-  const pluginProject = parsePluginProject(intent);
-  if (pluginProject && options.preferredTool === "plugin.resolve") {
+  const pluginProject = !pluginContext && parseServerInstallIntent(normalized)
+    ? undefined : namedProject;
+  if (pluginProject && (options.preferredTool === "plugin.resolve" ||
+      deniesAction(originalIntent, /安装|部署|更新|升级|\b(?:install|deploy|update|upgrade)\b/))) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "plugin.resolve",
@@ -133,7 +140,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
     }], []);
   }
   if (pluginProject && (options.preferredTool === "plugin.install" || options.preferredTool === "plugin.resolve" || /安装|部署|更新|升级|install|deploy|update/i.test(intent))) {
-    const skipRestart = /(?:不要|无需|不必|禁止|别|不可|避免)[^\r\n，。；;]{0,12}(?:重启|restart)|(?:without|do\s+not|don't)\s+restart/i.test(intent);
+    const skipRestart = deniesAction(originalIntent, /重启|\brestart\b/);
     const steps: TaskPlan["steps"] = [
       { id: "s1", tool: "plugin.resolve", args: {
         project: pluginProject,
@@ -162,7 +169,8 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       risk: "read",
     }], []);
   }
-  if (/启动|开机|开启|运行服务器|\bstart\b/.test(normalized)) {
+  if (/启动|开机|开启|运行服务器|\bstart\b/.test(normalized) &&
+      !deniesAction(originalIntent, /启动|开机|开启|运行服务器|\bstart\b/)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{
       id: "s1",
       tool: "instance.start",
@@ -172,7 +180,7 @@ export function draftPlan(instanceRef: string, inventoryRevision: string, intent
       { type: "instance_state", expected: "running" },
     ]);
   }
-  if (/重启|restart/.test(normalized)) {
+  if (/重启|restart/.test(normalized) && !deniesAction(originalIntent, /重启|\brestart\b/)) {
     return plan(id, instanceRef, inventoryRevision, intent, [{ id: "s1", tool: "instance.restart", args: { timeout_seconds: 120 }, risk: "high", requires_confirmation: true }], [
       { type: "instance_state", expected: "running" },
       { type: "log_absence", pattern: "(ERROR|Exception)" },
@@ -269,7 +277,18 @@ function parseServerInstallIntent(intent: string) {
   return { platform, minecraftVersion };
 }
 
+// Keep negation within a clause, and conservatively refuse ambiguous mutations.
+// User constraints must not be overridden by the model's appended operation.
+function deniesAction(intent: string, action: RegExp) {
+  const negative = /不要|不得|禁止|无需|不应|不必|不用|别|不可|避免|不(?:同意|接受)|\b(?:do\s+not|don['’]t|never|without|not)\b/i;
+  return intent.split(/[\r\n，。；;,!?！？]/).some(clause => {
+    const negation = negative.exec(clause);
+    return Boolean(negation && action.test(clause.slice(negation.index)));
+  });
+}
+
 function acceptsMinecraftEula(intent: string) {
+  if (deniesAction(intent, /同意|接受|\b(?:accept|agree)\b/)) return false;
   const consent = /(?:\b(?:i\s+)?accept\b|\bagree\b|同意|接受)/i;
   const eula = /(?:minecraft\s+)?eula/i;
   const consentMatch = intent.match(consent);

@@ -39,15 +39,25 @@ export class AgentSocketServer {
         const message = JSON.parse(raw.toString()) as AgentEnvelope<Record<string, unknown>>;
         if (message.schema_version !== AGENT_MESSAGE_SCHEMA_VERSION) throw new Error("unsupported schema");
         if (!message.agent_id || !message.type) throw new Error("invalid envelope");
+        if (!agentId && message.type !== "agent.hello") throw new Error("hello required");
+        if (agentId && message.agent_id !== agentId) throw new Error("connection identity mismatch");
         this.verifyEnvelope(message);
-        agentId = message.agent_id;
         if (message.type === "agent.hello") {
           clearTimeout(helloTimeout);
           this.handleHello(socket, message);
+          agentId = message.agent_id;
         } else if (message.type === "inventory.report") {
           this.handleInventory(message as AgentEnvelope<{ instances: ServerProfile[] }>);
         } else if (message.type === "task.event") {
-          void this.tasks.recordAgentEvent(message.payload);
+          const task = this.store.tasks.get(String(message.payload.task_id ?? ""));
+          const instance = task && this.store.instances.get(task.instance_ref);
+          if (!task || !instance || instance.agent_id !== agentId ||
+              task.tenant_id !== message.tenant_id || instance.tenant_id !== message.tenant_id) {
+            throw new Error("task does not belong to this agent");
+          }
+          void this.tasks.recordAgentEvent(message.payload).catch(error => {
+            this.logger.warn(`Agent event failed: ${error instanceof Error ? error.message : "unknown"}`);
+          });
         } else if (message.type === "heartbeat") {
           const agent = this.store.agents.get(agentId);
           if (agent) agent.lastSeen = new Date().toISOString();
@@ -62,7 +72,7 @@ export class AgentSocketServer {
       if (!agentId) return;
       this.registry.disconnect(agentId, socket);
       const agent = this.store.agents.get(agentId);
-      if (agent) agent.status = "offline";
+      if (agent && !this.registry.isOnline(agentId)) agent.status = "offline";
     });
   }
 
@@ -110,6 +120,13 @@ export class AgentSocketServer {
   private handleInventory(message: AgentEnvelope<{ instances: ServerProfile[] }>) {
     const agent = this.store.agents.get(message.agent_id);
     if (!agent?.tenantId) return;
+    // Validate the complete batch before replacing any inventory records.
+    for (const profile of message.payload.instances ?? []) {
+      const existing = this.store.instances.get(profile.instance_id);
+      if (existing && (existing.agent_id !== agent.id || existing.tenant_id !== agent.tenantId)) {
+        throw new Error("instance belongs to another agent");
+      }
+    }
     for (const profile of message.payload.instances ?? []) {
       this.store.instances.set(profile.instance_id, { ...profile, tenant_id: agent.tenantId, agent_id: agent.id });
     }
