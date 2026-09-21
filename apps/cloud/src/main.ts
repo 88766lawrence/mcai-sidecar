@@ -5,6 +5,7 @@ import { AgentSocketServer } from "./agents/agent-socket.server";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { cors: false });
+  app.enableShutdownHooks();
   const origin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
   app.enableCors({
     origin,
