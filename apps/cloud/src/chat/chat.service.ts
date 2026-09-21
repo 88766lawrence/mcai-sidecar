@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, type OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, type OnModuleInit, type OnModuleDestroy } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -36,7 +36,12 @@ interface PersistedChat {
 }
 
 @Injectable()
-export class ChatService implements OnModuleInit {
+export class ChatService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ChatService.name);
+  private loopTimer?: ReturnType<typeof setInterval>;
+  private loopTick?: Promise<void>;
+  private readonly advances = new Map<string, Promise<ConversationMessage[]>>();
+  private persistence: Promise<void> = Promise.resolve();
   private readonly path = join(resolve(process.env.MCAI_CONFIG_DIR ?? join(process.cwd(), ".data", "mcai")), "conversations.json");
   private readonly pendingSends = new Map<string, Promise<{ message: ConversationMessage; task?: ReturnType<TasksService["get"]> }>>();
   private readonly pendingCompletions = new Map<string, ReturnType<TasksService["complete"]>>();
@@ -59,6 +64,31 @@ export class ChatService implements OnModuleInit {
     } catch {
       // First run or an unreadable optional conversation archive starts empty.
     }
+    this.loopTimer = setInterval(() => { void this.runAgentLoop(); }, 1_000);
+    this.loopTimer.unref();
+  }
+
+  async onModuleDestroy() {
+    if (this.loopTimer) clearInterval(this.loopTimer);
+    await this.loopTick;
+    await Promise.allSettled([...this.advances.values()]);
+    await this.persistence;
+  }
+
+  /** Drive result -> model -> next controlled task even with no browser polling. */
+  async runAgentLoop() {
+    if (this.loopTick) return this.loopTick;
+    const tick = async () => {
+      await Promise.all([...this.store.sessions.values()].map(async (session) => {
+        try {
+          await this.messages(session.id, session.tenant_id);
+        } catch {
+          this.logger.error(`Agent loop could not advance session ${session.id}; will retry`);
+        }
+      }));
+    };
+    this.loopTick = tick();
+    try { await this.loopTick; } finally { this.loopTick = undefined; }
   }
 
   list(tenantId: string) {
@@ -88,10 +118,21 @@ export class ChatService implements OnModuleInit {
   }
 
   async messages(sessionId: string, tenantId: string) {
+    this.getSession(sessionId, tenantId);
+    const pending = this.advances.get(sessionId);
+    if (pending) return pending;
+    const operation = this.advanceSession(sessionId, tenantId);
+    this.advances.set(sessionId, operation);
+    try { return await operation; } finally { this.advances.delete(sessionId); }
+  }
+
+  private async advanceSession(sessionId: string, tenantId: string) {
     const session = this.getSession(sessionId, tenantId);
     const list = this.store.messages.get(sessionId) ?? [];
     let changed = false;
-    for (const message of [...list]) {
+    // New requests appended below are observed in this pass; active tasks yield
+    // until the next callback/tick. Depth limits bound immediately completed chains.
+    for (const message of list) {
       if (message.role !== "assistant" || !message.task_id || message.task_phase === "completion") continue;
       const alreadyCompleted = list.some((item) => item.task_id === message.task_id && item.task_phase === "completion");
       if (alreadyCompleted) continue;
@@ -103,6 +144,7 @@ export class ChatService implements OnModuleInit {
         throw cause;
       }
       if (!completion) continue;
+      if (this.store.sessions.get(sessionId) !== session) return list;
       if (list.some((item) => item.task_id === message.task_id && item.task_phase === "completion")) continue;
       const finalMessage: ConversationMessage = {
         id: `message_${randomUUID()}`,
@@ -114,13 +156,12 @@ export class ChatService implements OnModuleInit {
         task_phase: "completion",
         created_at: new Date().toISOString(),
       };
-      list.push(finalMessage);
-      session.updated_at = finalMessage.created_at;
-      changed = true;
       const parentTask = this.tasks.get(message.task_id, tenantId);
       const continuation = completion.continuation;
       const nextDepth = (parentTask.chain_depth ?? 0) + 1;
-      if (continuation && nextDepth <= maxContinuationDepth) {
+      const stopReason = continuation ? this.continuationStop(parentTask, continuation.intent, continuation.preferred_tool, nextDepth) : undefined;
+      if (stopReason) finalMessage.content += `\n\n${stopReason}`;
+      if (continuation && !stopReason) {
         const nextTask = await this.tasks.create({
           tenantId,
           instanceRef: session.instance_ref,
@@ -144,12 +185,33 @@ export class ChatService implements OnModuleInit {
           trace: [{ stage: "tool", label: "继续调用工具", result: continuation.preferred_tool ?? nextTask.plan.steps[0]?.tool ?? "controlled" }],
           created_at: new Date().toISOString(),
         };
-        list.push(requestMessage);
+        list.push(finalMessage, requestMessage);
         session.updated_at = requestMessage.created_at;
+      } else {
+        list.push(finalMessage);
+        session.updated_at = finalMessage.created_at;
       }
+      changed = true;
     }
     if (changed) await this.persist();
     return list;
+  }
+
+  private continuationStop(task: ReturnType<TasksService["get"]>, intent: string, tool: string | undefined, depth: number) {
+    if (task.state !== "SUCCEEDED") return "本轮任务未成功，Agent 循环已停止；请检查执行结果后再重试。";
+    if (depth > maxContinuationDepth) return "已达到自动执行上限（初始任务加 6 轮后续任务），Agent 循环已停止。";
+    const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+    let ancestor: typeof task | undefined = task;
+    const visited = new Set<string>();
+    while (ancestor && !visited.has(ancestor.id)) {
+      visited.add(ancestor.id);
+      if (ancestor.tenant_id !== task.tenant_id || ancestor.session_id !== task.session_id) break;
+      if (normalize(ancestor.intent ?? "") === normalize(intent) && ancestor.plan?.steps.some((step) => step.tool === tool)) {
+        return "检测到重复工具请求，Agent 循环已停止，避免反复执行同一操作。";
+      }
+      ancestor = ancestor.parent_task_id ? this.store.tasks.get(ancestor.parent_task_id) : undefined;
+    }
+    return undefined;
   }
 
   private async completeTask(taskId: string, tenantId: string) {
@@ -321,6 +383,12 @@ export class ChatService implements OnModuleInit {
   }
 
   private async persist() {
+    const operation = this.persistence.then(() => this.writeArchive());
+    this.persistence = operation.catch(() => {});
+    return operation;
+  }
+
+  private async writeArchive() {
     const data: PersistedChat = {
       sessions: [...this.store.sessions.values()],
       messages: [...this.store.messages.values()].flat(),
