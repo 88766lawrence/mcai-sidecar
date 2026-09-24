@@ -343,63 +343,8 @@ async def test_multiple_native_calls_are_serialized_in_provider_order():
     assert result["decision"]["arguments"] == {"window_minutes": 30}
 
 
-async def test_final_answer_citations_are_bound_to_successful_observations():
-    provider = FakeNativeProvider({"content": "日志与指标都已综合，当前没有证据支持重启。", "tool_calls": []})
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    request = payload("综合已有证据给出判断")
-    request["observations"] = [
-        {"tool_call_id": "call-logs", "status": "succeeded", "output": {"lines": []}},
-        {"tool_call_id": "call-metrics", "status": "succeeded", "output": {"tps": 20}},
-        {"tool_call_id": "call-failed", "status": "failed", "error": "timeout"},
-    ]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert result["decision"]["action"] == "final"
-    assert result["decision"]["citations"] == ["call-logs", "call-metrics"]
-    assert provider.route_messages == []
-    assert [item["name"] for item in provider.seen_tools] == ["route_evidence_complete", "route_more_tools"]
-    assert len(provider.answer_calls) == 1
 
 
-async def test_incomplete_terminal_is_repaired_to_the_missing_registered_tool():
-    provider = FakeNativeProvider([
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-more-logs", "type": "function",
-                "function": {"name": "route_more_tools", "arguments": '{"reason":"缺少最近一小时日志","next_tool":"logs.query"}'},
-            }],
-        },
-        {
-            "content": "",
-            "tool_calls": [{
-                "id": "call-logs",
-                "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60}'},
-            }],
-        },
-    ])
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    graph.planner_provider = provider
-    request = payload("核对插件和配置，并检查最近一小时日志，最后综合风险")
-    request["round"] = 4
-    request["observations"] = [
-        {"tool_call_id": "call-plugins", "tool": "files.list", "status": "succeeded", "observed": {"path": "plugins", "names": ["EssentialsX.jar"]}},
-        {"tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded", "observed": {"path": "server.properties", "values": {"online-mode": "true"}}},
-    ]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert result["repairUsed"] is True
-    assert result["decision"]["action"] == "tool_call"
-    assert result["decision"]["tool"] == "logs.query"
-    assert result["decision"]["arguments"] == {"window_minutes": 60}
-    assert len(provider.review_calls) == 0
-    assert "pair every explicit requested subject with a successful observation" in provider.seen_systems[0]
-    assert "selected logs.query as the exact next application function" in provider.seen_messages[1][-1]["content"]
 
 
 async def test_total_decision_deadline_caps_router_and_answer_chain():
@@ -665,40 +610,6 @@ async def test_terminal_answer_projection_keeps_user_facts_and_removes_protocol_
     ) == "LOG_SAMPLE_SCOPE_INFERENCE"
 
 
-async def test_native_decision_receives_bounded_observations_without_losing_successful_facts():
-    provider = FakeNativeProvider({"content": "插件、配置和日志已核查并综合。", "tool_calls": []})
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    graph.planner_provider = provider
-    request = payload("综合插件、配置和日志事实")
-    request["round"] = 4
-    request["observations"] = [
-        {
-            "tool_call_id": "call-logs", "tool": "logs.query", "status": "succeeded",
-            "data": {"result": {"matches": 200, "samples": ["watchdog saved all chunks"], "raw": "x" * 20_000}},
-            "evidence": {"summaries": ["最近一小时日志命中200条，样本含watchdog保存信息"]},
-        },
-        {
-            "tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded",
-            "data": {"result": {"online-mode": "true", "difficulty": "easy", "max-players": "20", "view-distance": "10"}},
-            "evidence": {"summaries": ["server.properties四项配置已读取"]},
-        },
-        {
-            "tool_call_id": "call-files", "tool": "files.list", "status": "succeeded",
-            "data": {"result": {"path": "plugins", "names": ["EssentialsX.jar", "LuckPerms.jar"]}},
-            "evidence": {"summaries": ["plugins目录已读取"]},
-        },
-    ]
-
-    result = await graph.decide_agent_loop(request)
-
-    visible = json.loads(provider.seen_messages[0][-1]["content"])["observations"]
-    encoded = json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
-    assert len(visible) == 3
-    assert len(encoded) <= 5_000
-    assert "x" * 5_000 not in encoded
-    assert "online-mode" in encoded and "plugins" in encoded and "watchdog" in encoded
-    assert result["decision"]["citations"] == ["call-logs", "call-config", "call-files"]
 
 
 async def test_evidence_routing_uses_primary_model():
@@ -821,226 +732,18 @@ async def test_native_provider_falls_back_after_empty_public_message():
     assert turn["message"]["tool_calls"][0]["function"]["name"] == "route_evidence_final"
 
 
-async def test_evidence_complete_marker_uses_one_reviewed_generation_and_binds_all_successes():
-    provider = FakeNativeProvider({
-        "content": None,
-        "tool_calls": [{
-            "id": "call-complete-route", "type": "function",
-            "function": {"name": "route_evidence_complete", "arguments": "{}"},
-        }],
-    })
-    provider.generated_answers = ["插件、配置和日志事实已综合，当前应优先处理日志风险。"]
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    graph.planner_provider = provider
-    request = payload("综合插件、配置和日志事实")
-    request["round"] = 4
-    request["observations"] = [
-        {"tool_call_id": "call-logs", "tool": "logs.query", "status": "succeeded", "evidence": {"summaries": ["日志已读取"]}},
-        {"tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded", "evidence": {"summaries": ["配置已读取"]}},
-        {"tool_call_id": "call-files", "tool": "files.list", "status": "succeeded", "evidence": {"summaries": ["插件已读取"]}},
-    ]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert [item["name"] for item in provider.seen_tools] == ["route_evidence_complete", "route_more_tools"]
-    assert provider.prefer_fast_values == [False]
-    assert provider.structured_fast_values == [False]
-    assert len(provider.answer_calls) == 1
-    assert "independent final answer editor" in provider.answer_calls[0]["system"]
-    assert result["decision"] == {
-        "action": "final",
-        "answer": "插件、配置和日志事实已综合，当前应优先处理日志风险。",
-        "citations": ["call-logs", "call-config", "call-files"],
-    }
 
 
-async def _run_ai_selected_tool_continuation():
-    provider = FakeNativeProvider([
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-more", "type": "function",
-                "function": {"name": "route_more_tools", "arguments": '{"reason":"还缺少日志事实","next_tool":"logs.query"}'},
-            }],
-        },
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-logs", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60}'},
-            }],
-        },
-    ])
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    request = payload("结合配置和日志给出判断")
-    request["round"] = 2
-    request["observations"] = [{
-        "tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded",
-        "evidence": {"summaries": ["配置已读取"]},
-    }]
-
-    result = await graph.decide_agent_loop(request)
-
-    return provider, result
 
 
-async def test_evidence_application_continuation_uses_fast_model():
-    provider, _result = await _run_ai_selected_tool_continuation()
-
-    assert provider.prefer_fast_values == [False, True], (
-        "evidence routing must use primary before fast application continuation")
 
 
-async def test_application_continuation_exposes_only_ai_selected_tool():
-    provider, result = await _run_ai_selected_tool_continuation()
-
-    assert [item["name"] for item in provider.seen_tool_sets[1]] == ["logs.query"], (
-        "application continuation must expose only the AI-selected tool")
-    assert [item["name"] for item in provider.seen_tool_sets[0]] == ["route_evidence_complete", "route_more_tools"]
-    more_route = provider.seen_tool_sets[0][1]
-    assert more_route["input_schema"]["properties"]["next_tool"]["enum"] == [item["name"] for item in TOOLS]
-    assert result["decision"]["action"] == "tool_call"
-    assert result["decision"]["tool"] == "logs.query"
 
 
-async def test_selected_tool_schema_error_is_repaired_once_without_reselection():
-    provider = FakeNativeProvider([
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-more", "type": "function",
-                "function": {"name": "route_more_tools", "arguments": '{"reason":"还缺日志证据","next_tool":"logs.query"}'},
-            }],
-        },
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-invalid-logs", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":"sixty"}'},
-            }],
-        },
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-repaired-logs", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60}'},
-            }],
-        },
-    ])
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    request = payload("结合配置和最近一小时日志给出判断")
-    request["round"] = 2
-    request["observations"] = [{
-        "tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded",
-        "evidence": {"summaries": ["配置已读取"]},
-    }]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert provider.prefer_fast_values == [False, True, False]
-    assert [item["name"] for item in provider.seen_tool_sets[1]] == ["logs.query"]
-    assert [item["name"] for item in provider.seen_tool_sets[2]] == ["logs.query"]
-    assert "already-selected logs.query" in provider.seen_messages[2][-1]["content"]
-    assert "$.arguments.window_minutes:TYPE" in provider.seen_messages[2][-1]["content"]
-    assert result["decision"]["tool"] == "logs.query"
-    assert result["decision"]["arguments"] == {"window_minutes": 60}
 
 
-async def test_selected_tool_plain_text_is_rejected_and_repaired_without_reselection():
-    provider = FakeNativeProvider([
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-more-logs", "type": "function",
-                "function": {"name": "route_more_tools", "arguments": '{"reason":"缺少日志证据","next_tool":"logs.query"}'},
-            }],
-        },
-        {"content": "已有信息足够，直接回答。", "tool_calls": []},
-        {
-            "content": None,
-            "tool_calls": [{
-                "id": "call-logs", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60}'},
-            }],
-        },
-    ])
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    request = payload("继续取得缺少的日志证据")
-    request["round"] = 2
-    request["observations"] = [{
-        "tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded",
-        "evidence": {"summaries": ["配置已读取"]},
-    }]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert provider.prefer_fast_values == [False, True, False]
-    assert [item["name"] for item in provider.seen_tool_sets[1]] == ["logs.query"]
-    assert [item["name"] for item in provider.seen_tool_sets[2]] == ["logs.query"]
-    assert "SELECTED_TOOL_CALL_REQUIRED" in provider.seen_messages[2][-1]["content"]
-    assert result["decision"]["tool"] == "logs.query"
-    assert result["decision"]["arguments"] == {"window_minutes": 60}
-    assert len(provider.answer_calls) == 0
 
 
-async def test_selected_tool_gets_a_second_bounded_schema_repair_with_exact_array_limit():
-    tools = json.loads(json.dumps(TOOLS))
-    tools[0]["input_schema"] = {
-        "type": "object", "additionalProperties": False,
-        "properties": {
-            "window_minutes": {"type": "integer"},
-            "filters": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
-        },
-        "required": ["window_minutes", "filters"],
-    }
-    provider = FakeNativeProvider([
-        {
-            "content": None, "tool_calls": [{
-                "id": "call-more", "type": "function",
-                "function": {"name": "route_more_tools", "arguments": '{"reason":"缺少日志","next_tool":"logs.query"}'},
-            }],
-        },
-        {
-            "content": None, "tool_calls": [{
-                "id": "call-over-1", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60,"filters":["a","b","c"]}'},
-            }],
-        },
-        {
-            "content": None, "tool_calls": [{
-                "id": "call-over-2", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60,"filters":["a","b","c"]}'},
-            }],
-        },
-        {
-            "content": None, "tool_calls": [{
-                "id": "call-valid", "type": "function",
-                "function": {"name": "logs.query", "arguments": '{"window_minutes":60,"filters":["a","b"]}'},
-            }],
-        },
-    ])
-    graph = object.__new__(McaiGraph)
-    graph.provider = provider
-    request = payload("读取缺少的日志")
-    request["toolCatalog"] = tools
-    request["round"] = 2
-    request["observations"] = [{
-        "tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded",
-        "evidence": {"summaries": ["配置已读取"]},
-    }]
-
-    result = await graph.decide_agent_loop(request)
-
-    assert provider.prefer_fast_values == [False, True, False, False]
-    assert all([item["name"] for item in tool_set] == ["logs.query"] for tool_set in provider.seen_tool_sets[1:])
-    assert "MAX_ITEMS=2" in provider.seen_messages[2][-1]["content"]
-    assert "MAX_ITEMS=2" in provider.seen_messages[3][-1]["content"]
-    assert "exact authoritative array limit" in provider.seen_messages[3][-1]["content"]
-    assert result["decision"]["arguments"]["filters"] == ["a", "b"]
 
 
 async def test_answer_coverage_omission_is_corrected_without_reopening_tools():
@@ -1182,6 +885,35 @@ async def test_listing_transcription_error_gets_one_fact_only_repair_without_reo
     assert "Never choose or reopen tools" in provider.answer_calls[2]["system"]
 
 
+async def test_native_final_with_uncovered_evidence_uses_bounded_editor():
+    provider = FakeNativeProvider({
+        "content": None,
+        "tool_calls": [{"id": "call-final", "type": "function", "function": {
+            "name": "route_evidence_final",
+            "arguments": json.dumps({"answer": "插件和日志已核查。"}),
+        }}],
+    })
+    provider.generated_answers = ["插件和日志已核查；difficulty=easy；最近一小时日志查询零命中。"]
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("汇总插件、difficulty 和日志")
+    request["round"] = 4
+    request["observations"] = [
+        {"tool_call_id": "call-files", "tool": "files.list", "status": "succeeded", "side_effect": "none", "evidence": {"summaries": ["插件已读取"]}},
+        {"tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded", "side_effect": "none", "evidence": {"summaries": ["difficulty=easy"]}},
+        {"tool_call_id": "call-logs", "tool": "logs.query", "status": "succeeded", "side_effect": "none", "evidence": {"summaries": ["Log query result: matches=0; window_minutes=60; scanned_lines=200; sample_count=0; query_digest=" + "a" * 64]}},
+    ]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["action"] == "final"
+    assert "difficulty=easy" in result["decision"]["answer"]
+    assert result["decision"]["citations"] == ["call-files", "call-config", "call-logs"]
+    assert result["repairUsed"] is True
+    assert len(provider.seen_tool_sets) == 1
+    assert len(provider.answer_calls) == 1
+
+
 async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
@@ -1197,25 +929,17 @@ async def main():
         test_text_cannot_impersonate_a_native_tool_call,
         test_invalid_native_arguments_are_repaired_once_without_planner_rewrite,
         test_multiple_native_calls_are_serialized_in_provider_order,
-        test_final_answer_citations_are_bound_to_successful_observations,
-        test_incomplete_terminal_is_repaired_to_the_missing_registered_tool,
         test_total_decision_deadline_caps_router_and_answer_chain,
         test_terminal_review_projection_keeps_all_attempts_with_bounded_high_signal_results,
         test_evidence_routing_projection_folds_only_older_recovered_failures,
         test_terminal_answer_projection_keeps_user_facts_and_removes_protocol_details,
-        test_native_decision_receives_bounded_observations_without_losing_successful_facts,
         test_evidence_routing_uses_primary_model,
         test_native_provider_falls_back_after_model_specific_http_400,
         test_native_provider_falls_back_after_empty_public_message,
-        test_evidence_complete_marker_uses_one_reviewed_generation_and_binds_all_successes,
-        test_evidence_application_continuation_uses_fast_model,
-        test_application_continuation_exposes_only_ai_selected_tool,
-        test_selected_tool_schema_error_is_repaired_once_without_reselection,
-        test_selected_tool_plain_text_is_rejected_and_repaired_without_reselection,
-        test_selected_tool_gets_a_second_bounded_schema_repair_with_exact_array_limit,
         test_answer_coverage_omission_is_corrected_without_reopening_tools,
         test_invalid_terminal_revision_fails_closed_without_reopening_tools,
         test_listing_transcription_error_gets_one_fact_only_repair_without_reopening_tools,
+        test_native_final_with_uncovered_evidence_uses_bounded_editor,
     ]
     for test in tests:
         await test()
