@@ -703,6 +703,20 @@ def _agent_loop_tools_available_for_instance(
     return [item for item in tools if item["name"] not in unavailable]
 
 
+def _instance_snapshot_answer(message: str, instance: dict[str, Any]) -> str | None:
+    """Answer narrow metadata questions from the bound instance snapshot."""
+    query = re.sub(r"[\s？?。！!]", "", message)
+    name = str(instance.get("name") or "").strip()
+    state = str(instance.get("state") or "").strip().lower()
+    if name and re.fullmatch(r"(?:当前|现在|这个)?(?:选中的)?实例(?:叫什么|叫啥|的?(?:名称|名字)(?:是(?:什么|啥))?)", query):
+        return f"当前选中的实例叫「{name}」。"
+    if name and state in {"running", "stopped"} and re.fullmatch(
+        r"(?:当前|现在|这个)?实例(?:(?:正在|是否|还在|在)?运行(?:吗|么)?|的?(?:运行)?状态(?:是(?:什么|怎样)|如何)?)", query,
+    ):
+        return f"当前实例「{name}」正在运行。" if state == "running" else f"当前实例「{name}」已停止，未在运行。"
+    return None
+
+
 def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
     return {
         "oneOf": [
@@ -1288,6 +1302,10 @@ def _validate_agent_loop_decision(
     if decision["action"] in {"final", "cannot_proceed"}:
         answer = str(decision.get("answer") or "")
         tool_names = [str(item["name"]) for item in tools]
+        if re.search(r"\b(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\b|\binstance\.(?:id|name|state)\b|\bstate\s*(?:[:=]|为)\s*[`\"']?(?:running|stopped)\b", answer, re.I):
+            return "$.answer:INTERNAL_DETAIL_LEAK"
+        if re.search(r"(?:^|\n)\s*(?:用户问的是|这是一个概念性问题|不需要任何外部工具调用|来源[：:]\s*运行时上下文)", answer):
+            return "$.answer:INTERNAL_REASONING_LEAK"
         if observations and any(re.search(rf"(?:^|[^A-Za-z0-9_.-]){re.escape(name)}(?:$|[^A-Za-z0-9_.-])", answer, re.I) for name in tool_names):
             return "$.answer:INTERNAL_TOOL_LEAK"
         if re.search(r"executed successfully\s*;?\s*not independently verified", answer, re.I):
@@ -1902,6 +1920,13 @@ class McaiGraph:
         instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
         tools = _agent_loop_tools_available_for_instance(tools, instance)
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
+        if round_number == 1 and not observations:
+            snapshot_answer = _instance_snapshot_answer(message, instance)
+            if snapshot_answer is not None:
+                return {
+                    "decision": {"action": "final", "answer": snapshot_answer, "citations": []},
+                    "requestId": request_id, "providerModel": "instance-snapshot", "repairUsed": False,
+                }
         system = "\n".join((
             system_prompt.strip(),
             "You are operating one bounded Minecraft server agent loop.",
@@ -1915,6 +1940,7 @@ class McaiGraph:
             "For host resource headroom, process capacity, or memory exhaustion evidence, prefer the dedicated instance metrics function; use console commands for game-runtime facts such as TPS, players, weather, or game rules.",
             "For instance lifecycle actions, use the dedicated start, stop, or restart function; never substitute an equivalent console command.",
             "Finding, resolving, searching, downloading, or installing current plugin artifacts, compatible versions, or sources requires the relevant registered application function; never answer it from model memory alone.",
+            "When checking installed plugin files or a named plugin's installation status, list the plugins directory with files.list path plugins. Never substitute an instance-root listing for that evidence. A console plugins command reports loaded plugins, which is a different fact from files present in the plugins directory.",
             "For a task-relevant public file, use web.search only when a source URL must first be discovered, then use file.download for the exact public HTTP(S) URL and a new downloads/<filename> target. Downloading never implies installation, execution, extraction, overwrite, or restart.",
             "When a requested write lacks required prior state, choose the specific read function that obtains that state or revision, never a generic directory listing as a substitute.",
             "Do not emit a JSON action in message content. Function choices must use the provider-native tool call channel.",
@@ -1998,6 +2024,14 @@ class McaiGraph:
                     turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
                     [item["name"] for item in tools],
                 )
+            if (
+                error is None and decision.get("action") == "tool_call"
+                and decision.get("tool") == "files.list"
+                and str((decision.get("arguments") or {}).get("path") or "").strip() in {"", ".", "/"}
+                and re.search(r"插件|plugins?|EssentialsX|\.jar\b", message, re.I)
+                and not re.search(r"根目录|root directory", message, re.I)
+            ):
+                error = "$.arguments.path:PLUGIN_DIRECTORY_REQUIRED"
             terminal_provider_model = str(turn.get("providerModel") or self.provider.config.model)
             if (
                 error is None and selected_continuation_tool and attempt >= 2
