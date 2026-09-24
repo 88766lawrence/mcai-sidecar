@@ -8,6 +8,8 @@
     "packages/*"
   ],
   "scripts": {
+    "policy:generate": "node scripts/generate-operation-policy.mjs",
+    "policy:check": "node scripts/generate-operation-policy.mjs --check",
     "build": "npm run build -w @mcai/contracts && npm run build -w @mcai/cloud && npm run build -w @mcai/web",
     "dev": "concurrently -n cloud,web -c cyan,green \"npm run dev -w @mcai/cloud\" \"npm run dev -w @mcai/web\"",
     "dev:cloud": "npm run dev -w @mcai/cloud",

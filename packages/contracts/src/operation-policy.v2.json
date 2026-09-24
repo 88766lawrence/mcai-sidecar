@@ -1,0 +1,366 @@
+{
+  "schema_version": "operation-policy/v2",
+  "digest": "0e2e4c23b65a954ece06e874f66f50b2da1141a2749e8a5e6940b9b7a94910bc",
+  "action_order": [
+    "read",
+    "diagnose",
+    "write",
+    "lifecycle",
+    "install"
+  ],
+  "risk_order": [
+    "read",
+    "low",
+    "medium",
+    "high",
+    "forbidden"
+  ],
+  "target_keys": [
+    "path",
+    "project",
+    "command",
+    "platform",
+    "target"
+  ],
+  "tools": {
+    "instance.metrics": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "metrics",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "players.inspect": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "players",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "logs.query": {
+      "action": "diagnose",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "logs",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "files.list": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "files",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "config.inspect": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "config",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "plugin.resolve": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "plugin",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "web.search": {
+      "action": "read",
+      "risk": "read",
+      "requires_confirmation": false,
+      "mutates": false,
+      "evidence_kind": "web_search",
+      "forbidden_actions": [],
+      "verification": {}
+    },
+    "file.download": {
+      "action": "write",
+      "risk": "low",
+      "requires_confirmation": false,
+      "mutates": true,
+      "producer_verified": true,
+      "evidence_kind": "download",
+      "forbidden_actions": [
+        "download",
+        "write"
+      ],
+      "verification": {}
+    },
+    "config.patch": {
+      "action": "write",
+      "risk": "medium",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "config",
+      "forbidden_actions": [
+        "write"
+      ],
+      "verification": {
+        "config.inspect": "same_path"
+      }
+    },
+    "plugin.install": {
+      "action": "install",
+      "risk": "medium",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "files",
+      "forbidden_actions": [
+        "download",
+        "install",
+        "write"
+      ],
+      "verification": {
+        "files.list": "plugins_directory"
+      }
+    },
+    "server.install": {
+      "action": "install",
+      "risk": "high",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "download",
+      "forbidden_actions": [
+        "download",
+        "install",
+        "write"
+      ],
+      "verification": {}
+    },
+    "instance.start": {
+      "action": "lifecycle",
+      "risk": "medium",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "instance",
+      "forbidden_actions": [
+        "start",
+        "write"
+      ],
+      "verification": {}
+    },
+    "instance.stop": {
+      "action": "lifecycle",
+      "risk": "high",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "instance",
+      "forbidden_actions": [
+        "stop",
+        "write"
+      ],
+      "verification": {}
+    },
+    "instance.restart": {
+      "action": "lifecycle",
+      "risk": "high",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "instance",
+      "forbidden_actions": [
+        "restart",
+        "stop",
+        "start",
+        "write"
+      ],
+      "verification": {}
+    },
+    "snapshot.restore": {
+      "action": "write",
+      "risk": "high",
+      "requires_confirmation": true,
+      "mutates": true,
+      "evidence_kind": "snapshot",
+      "forbidden_actions": [
+        "write"
+      ],
+      "verification": {}
+    }
+  },
+  "action_vectors": [
+    {
+      "name": "read-only",
+      "tools": [
+        "files.list",
+        "console.command"
+      ],
+      "console_command": "version",
+      "expected": "read"
+    },
+    {
+      "name": "read-diagnose",
+      "tools": [
+        "files.list",
+        "logs.query"
+      ],
+      "expected": "diagnose"
+    },
+    {
+      "name": "diagnose-write",
+      "tools": [
+        "logs.query",
+        "config.patch"
+      ],
+      "expected": "write"
+    },
+    {
+      "name": "write-lifecycle",
+      "tools": [
+        "config.patch",
+        "instance.start"
+      ],
+      "expected": "lifecycle"
+    },
+    {
+      "name": "lifecycle-install",
+      "tools": [
+        "instance.restart",
+        "plugin.install"
+      ],
+      "expected": "install"
+    }
+  ],
+  "console": {
+    "evidence_kind": "console",
+    "verification": {
+      "console.command": "console_readback",
+      "logs.query": "any",
+      "config.inspect": "whitelist_config"
+    },
+    "read_verbs": [
+      "list",
+      "help",
+      "version",
+      "plugins",
+      "pl",
+      "tps",
+      "mspt",
+      "seed"
+    ],
+    "read_exact": [
+      "difficulty",
+      "whitelist list",
+      "worldborder get",
+      "datapack list enabled",
+      "datapack list available",
+      "banlist players",
+      "team list",
+      "scoreboard objectives list",
+      "forceload query"
+    ],
+    "read_patterns": [
+      "^time\\s+query\\s+(?:daytime|gametime|day)$",
+      "^gamerule\\s+[a-z][a-z0-9]*$",
+      "^data\\s+get\\s+entity\\s+[a-z0-9_]{3,16}\\s+playergametype$"
+    ],
+    "medium_verbs": [
+      "say",
+      "me",
+      "title",
+      "time",
+      "weather",
+      "difficulty",
+      "gamerule",
+      "gamemode",
+      "whitelist",
+      "give",
+      "clear",
+      "tp",
+      "teleport",
+      "effect",
+      "enchant",
+      "xp",
+      "experience",
+      "setworldspawn",
+      "spawnpoint"
+    ],
+    "medium_patterns": [
+      "^playsound\\s+minecraft:block\\.note_block\\.bell\\s+master\\s+@a\\s+~\\s+~\\s+~\\s+1\\s+1$",
+      "^execute\\s+if\\s+entity\\s+@a\\s+run\\s+execute\\s+as\\s+@a\\s+at\\s+@s\\s+run\\s+particle\\s+minecraft:happy_villager\\s+~\\s+~1\\s+~\\s+0\\.25\\s+0\\.25\\s+0\\.25\\s+0\\s+5\\s+force\\s+@s$"
+    ],
+    "outcome": {
+      "schema_version": "console-command-outcome/v1",
+      "completeness": {
+        "schema_version": "console-callback-frame/v1",
+        "minimum_visible_runes": 2,
+        "user_message": "服务器返回的命令结果不完整，因此无法确认这次操作是否生效。"
+      },
+      "failure_patterns": [
+        {
+          "code": "NO_TARGETS",
+          "patterns": [
+            "\\bno (?:players?|entities|targets?) (?:was |were )?found\\b",
+            "\\bno (?:players?|entities|targets?) match(?:ed|es)?\\b",
+            "\\bselector .{0,80} found no (?:players?|entities|targets?)\\b",
+            "(?:未找到|没有找到|找不到|无匹配的)(?:任何)?(?:玩家|实体|目标)"
+          ],
+          "user_message": "没有找到符合条件的目标，因此没有对象收到或应用这次操作。"
+        },
+        {
+          "code": "INVALID_COMMAND",
+          "patterns": [
+            "\\bunknown or incomplete command\\b",
+            "\\bunknown command\\b",
+            "\\bincorrect argument\\b",
+            "\\binvalid (?:command|argument|syntax)\\b",
+            "\\bsyntax error\\b",
+            "(?:未知命令|命令不完整|命令语法错误|参数错误|无效命令)"
+          ],
+          "user_message": "服务器拒绝了这条命令，因为命令或参数无效。"
+        },
+        {
+          "code": "PERMISSION_DENIED",
+          "patterns": [
+            "\\byou do not have permission\\b",
+            "\\bnot permitted\\b",
+            "\\bpermission denied\\b",
+            "\\binsufficient permissions?\\b",
+            "(?:没有权限|权限不足|不允许执行)"
+          ],
+          "user_message": "服务器拒绝了这条命令，因为当前执行身份没有足够权限。"
+        },
+        {
+          "code": "EXECUTION_ERROR",
+          "patterns": [
+            "\\ban unexpected error occurred trying to execute\\b",
+            "\\bexception (?:while|when) executing\\b",
+            "\\bcould not execute\\b",
+            "\\bfailed to execute\\b",
+            "\\bcommand failed\\b",
+            "(?:执行命令时发生错误|命令执行失败|无法执行命令)"
+          ],
+          "user_message": "服务器在执行命令时返回错误，这次操作没有成功应用。"
+        }
+      ],
+      "success_patterns": [
+        "\\b(?:successfully|broadcasted|announced|message sent)\\b",
+        "\\bdisplayed (?:message|title|text) to [1-9][0-9]* (?:players?|entities|targets?)\\b",
+        "\\[(?:server|服务器)\\]",
+        "\\bset .{1,120} to .{1,120}\\b",
+        "\\bchanged .{1,120} to .{1,120}\\b",
+        "(?:已成功|已设置|已发送|已广播|设置为)"
+      ],
+      "accepted_patterns": [
+        "\\bcommand (?:accepted|submitted)\\b",
+        "\\brequest accepted\\b",
+        "(?:命令已接受|命令已提交|请求已接受)"
+      ]
+    },
+    "write_forbidden_actions": [
+      "write"
+    ]
+  }
+}

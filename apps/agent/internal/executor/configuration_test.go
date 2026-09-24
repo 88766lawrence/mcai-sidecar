@@ -61,3 +61,14 @@ func TestSanitizeConfigurationRedactsCredentials(t *testing.T) {
 		t.Fatalf("configuration sanitizer removed safe context: %s", value)
 	}
 }
+
+func TestSelectConfigurationKeysFromPropertiesAndYAML(t *testing.T) {
+	properties := selectConfigurationKeys([]byte("motd=Welcome\nonline-mode=true\nmax-players=20\n"), "server.properties", []string{"online-mode", "motd", "missing"})
+	if properties != "online-mode=true\nmotd=Welcome\nmissing=<MISSING>" {
+		t.Fatalf("unexpected properties projection: %q", properties)
+	}
+	yamlValue := selectConfigurationKeys([]byte("proxies:\n  velocity:\n    enabled: true\nlocale: zh_CN\n"), "config/paper.yml", []string{"proxies.velocity.enabled", "locale"})
+	if yamlValue != "proxies.velocity.enabled=true\nlocale=zh_CN" {
+		t.Fatalf("unexpected YAML projection: %q", yamlValue)
+	}
+}

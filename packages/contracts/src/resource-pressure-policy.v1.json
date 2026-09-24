@@ -1,0 +1,7 @@
+{
+  "schema_version": "resource-pressure/v1",
+  "cpu_high_percent": 85,
+  "memory_high_ratio": 0.9,
+  "cpu_elevated_percent": 60,
+  "memory_elevated_ratio": 0.75
+}

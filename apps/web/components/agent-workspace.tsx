@@ -13,6 +13,14 @@ import type {
   ChatRoute, ConversationMessage, ConversationSession, ConversationStreamEvent, ServerProfile, TaskRecord,
 } from "@mcai/contracts";
 import { api, apiStream } from "../lib/api";
+import {
+  deterministicAcceptanceLabel,
+  isTerminalTask,
+  redactTaskId,
+  streamRecoveryState,
+  taskApprovalLabel,
+  taskPresentation,
+} from "../lib/task-state";
 
 type Agent = { id: string; displayName: string; status: "online" | "offline" | "pending"; version: string; lastSeen: string };
 
@@ -31,7 +39,9 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState("正在理解请求");
   const [pendingSessionId, setPendingSessionId] = useState("");
+  const [recoveringRequest, setRecoveringRequest] = useState<{ sessionId: string; requestId: string } | null>(null);
   const [cloudOnline, setCloudOnline] = useState(true);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -144,6 +154,32 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
   }, [activeSessionId, loadMessages]);
 
   useEffect(() => {
+    if (!recoveringRequest) return;
+    let cancelled = false;
+    const recover = async () => {
+      try {
+        const [nextMessages, nextTasks] = await Promise.all([
+          api<ConversationMessage[]>(`/sessions/${recoveringRequest.sessionId}/messages`),
+          api<TaskRecord[]>("/tasks"),
+        ]);
+        if (cancelled) return;
+        const state = streamRecoveryState(nextMessages, nextTasks, recoveringRequest.requestId);
+        setMessages(nextMessages);
+        setTasks(nextTasks);
+        if (state.recovered) {
+          setRecoveringRequest(null);
+          setError("");
+        }
+      } catch {
+        // Keep the request locked and retry; the persisted request is authoritative.
+      }
+    };
+    void recover();
+    const timer = window.setInterval(() => void recover(), 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [recoveringRequest]);
+
+  useEffect(() => {
     if (!activeSessionId) return;
     const timer = setInterval(() => void loadMessages(activeSessionId), 3000);
     return () => clearInterval(timer);
@@ -217,10 +253,11 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     setStreamingMessage(null);
     streamRouteRef.current = null;
     setPlanning(false);
+    setAnalysisStatus("正在理解请求");
   }
 
   async function sendMessage() {
-    if (!intent.trim() || sendingRef.current) return;
+    if (!intent.trim() || sendingRef.current || recoveringRequest) return;
     const outgoing = intent.trim();
     const requestId = createRequestId();
     const controller = new AbortController();
@@ -231,6 +268,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
     followLatestRef.current = true;
     setShowScrollToLatest(false);
     setPlanning(true);
+    setAnalysisStatus("正在理解请求");
     setPendingSessionId(sessionId);
     setLoading(true);
     setSending(true);
@@ -252,16 +290,21 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       const content = outgoing;
       setIntent("");
       setMessages((value) => [...value, {
-        id: `optimistic-${Date.now()}`, session_id: sessionId, role: "user", content, created_at: new Date().toISOString(),
+        id: `optimistic-${Date.now()}`, session_id: sessionId, request_id: requestId, role: "user", content, created_at: new Date().toISOString(),
       }]);
+      await waitForBrowserPaint();
       const streamId = `streaming-${Date.now()}`;
       let result: { message: ConversationMessage; task?: TaskRecord } | undefined;
       await apiStream<ConversationStreamEvent>(`/sessions/${sessionId}/messages/stream`, {
         method: "POST",
         body: JSON.stringify({ content, request_id: requestId }),
         signal: controller.signal,
-      }, (event) => {
-        if (event.type === "route") {
+      }, async (event) => {
+        if (event.type === "status") {
+          setAnalysisStatus(event.text);
+          setPlanning(true);
+          await waitForBrowserPaint();
+        } else if (event.type === "route") {
           streamRouteRef.current = event.route;
           setPlanning(event.route === "tool");
           if (event.route === "tool") setStreamingMessage(null);
@@ -282,6 +325,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         } else if (event.type === "done") {
           result = event.result;
           setPlanning(false);
+          setAnalysisStatus("正在理解请求");
         } else if (event.type === "error") {
           throw new Error(event.message);
         }
@@ -293,8 +337,32 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       if (result.task?.state === "WAITING_CONFIRMATION") setReviewTask(result.task);
     } catch (cause) {
       setStreamingMessage(null);
-      setError(cause instanceof DOMException && cause.name === "AbortError" ? "消息发送已停止，请重新发送。" : cause instanceof Error ? cause.message : "消息发送失败");
-      if (activeSessionIdRef.current === sessionId) await loadMessages(sessionId);
+      let recovered = false;
+      if (sessionId) {
+        try {
+          const [nextMessages, nextTasks] = await Promise.all([
+            api<ConversationMessage[]>(`/sessions/${sessionId}/messages`),
+            api<TaskRecord[]>("/tasks"),
+          ]);
+          const state = streamRecoveryState(nextMessages, nextTasks, requestId);
+          if (activeSessionIdRef.current === sessionId) setMessages(nextMessages);
+          setTasks(nextTasks);
+          if (state.recovered) {
+            recovered = true;
+            setError("");
+          } else if (state.persistedUser) {
+            recovered = true;
+            setRecoveringRequest({ sessionId, requestId });
+            setError("");
+          }
+        } catch {
+          // Fall through to the original transport error only when recovery cannot prove persistence.
+        }
+      }
+      if (!recovered) {
+        setError(cause instanceof DOMException && cause.name === "AbortError" ? "连接已中断，Cloud 尚未确认收到这条消息。" : cause instanceof Error ? cause.message : "消息发送失败");
+        if (activeSessionIdRef.current === sessionId) await loadMessages(sessionId);
+      }
     } finally {
       window.clearTimeout(timeout);
       if (sendAbortRef.current === controller) sendAbortRef.current = null;
@@ -302,6 +370,7 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       setLoading(false);
       setSending(false);
       setPlanning(false);
+      setAnalysisStatus("正在理解请求");
       streamRouteRef.current = null;
       setPendingSessionId("");
     }
@@ -445,13 +514,13 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
         {!messages.length && <div className="agent-welcome"><span><Sparkles size={23} /></span><p className="welcome-label">MCAI / OPERATIONS</p><h2>今天要处理什么？</h2><p>直接提问或描述操作，MCAI 会使用当前实例的信息完成任务。</p><div className="suggestions"><button onClick={() => setIntent("启动服务器")}>启动实例</button><button onClick={() => setIntent("分析最近一次崩服的原因")}>分析崩服</button><button onClick={() => setIntent("把视距调整为 10")}>调整配置</button></div></div>}
         {messages.map((message) => <MessageBubble key={message.id} message={message} task={message.task_id ? tasks.find((task) => task.id === message.task_id) : undefined} instanceName={current?.name} onReview={(task) => setReviewTask(task)} />)}
         {streamingMessage?.session_id === activeSessionId && <MessageBubble message={streamingMessage} streaming onReview={(task) => setReviewTask(task)} />}
-        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>正在规划</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
+        {planning && pendingSessionId === activeSessionId && !streamingMessage && <div className="thinking-row" role="status" aria-live="polite"><span className="bot-avatar"><Bot size={16} /></span><div className="thinking-status"><strong>{analysisStatus}</strong><span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span></div></div>}
       </div>
       {showScrollToLatest && <button className="scroll-latest-button" onClick={scrollToLatest} aria-label="回到最新消息" title="回到最新消息"><ChevronDown size={19} /></button>}
       <div className="agent-composer">
-        <textarea value={intent} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="询问问题，或描述要完成的操作…" rows={2} />
-        <button onClick={sending ? cancelMessage : () => void sendMessage()} disabled={!sending && (loading || !intent.trim())} aria-label={sending ? "停止发送" : "发送"} title={sending ? "停止发送" : "发送"}>{sending ? <Square size={17} /> : <Send size={19} />}</button>
-        <div className="composer-hint"><ShieldCheck size={13} />工具调用仍需策略校验，高风险操作必须确认</div>
+        <textarea value={intent} disabled={Boolean(recoveringRequest)} onChange={(event) => setIntent(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={recoveringRequest ? "正在恢复 Cloud 已接收的消息…" : "询问问题，或描述要完成的操作…"} rows={2} />
+        <button onClick={sending ? cancelMessage : () => void sendMessage()} disabled={!sending && (loading || Boolean(recoveringRequest) || !intent.trim())} aria-label={sending ? "停止发送" : "发送"} title={sending ? "停止发送" : recoveringRequest ? "正在恢复已接收消息" : "发送"}>{sending ? <Square size={17} /> : recoveringRequest ? <LoaderCircle className="spin" size={17} /> : <Send size={19} />}</button>
+        <div className="composer-hint"><ShieldCheck size={13} />{recoveringRequest ? "Cloud 已接收请求，正在恢复权威结果；不会重复发送" : "工具调用仍需策略校验，高风险操作必须确认"}</div>
       </div>
     </section>
 
@@ -459,7 +528,8 @@ export function AgentWorkspace({ onLogout }: { onLogout: () => void }) {
       <div className="inspector-head"><span>工具面板</span>{activeTask ? <span className={`risk ${activeTask.risk}`}>{riskLabel(activeTask.risk)}</span> : <span className="tool-count">已就绪</span>}</div>
       <div className="instance-health"><span className={`status-dot ${current?.state ?? "unknown"}`} /><div><strong>{current?.state === "running" ? "实例运行中" : current?.state ?? "未知状态"}</strong><small>{current ? instanceMeta(current) : "等待实例信息"}</small></div></div>
       {activeTask ? <>
-        <div className="task-summary"><small>当前任务</small><strong>{activeTask.intent}</strong><span>{stateLabel(activeTask.state)}</span></div>
+        <div className="task-summary"><small>当前任务 · {redactTaskId(activeTask.id)}</small><strong>{activeTask.intent}</strong><span>{stateLabel(activeTask.state)}</span></div>
+        <section className="inspector-section task-facts"><h2><ShieldCheck size={15} />权威状态</h2><dl><div><dt>Route</dt><dd>tool</dd></div><div><dt>Operation</dt><dd>{activeTask.plan.operation.action}</dd></div><div><dt>Risk</dt><dd>{riskLabel(activeTask.risk)}</dd></div><div><dt>审批</dt><dd>{taskApprovalLabel(activeTask)}</dd></div><div><dt>证据</dt><dd>{activeTask.evidence.filter((item) => item.kind !== "state").length} 条</dd></div></dl></section>
         <section className="inspector-section"><h2><ClipboardCheck size={15} />调用工具</h2>{activeTask.plan.steps.map((step) => <div className="plan-step" key={step.id}><span><Wrench size={12} /></span><div><strong>{toolLabel(step.tool)}</strong><small>{step.requires_confirmation ? "执行前需要确认" : "自动执行"}</small></div></div>)}</section>
         <section className="inspector-section"><h2><FileClock size={15} />最新证据</h2>{activeTask.evidence.slice(-4).reverse().map((item, index) => <div className="evidence" key={`${item.at}-${index}`}><span /><p>{item.summary}<small>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small></p></div>)}</section>
       </> : <>
@@ -510,20 +580,20 @@ function MessageBubble({ message, task, instanceName, streaming = false, onRevie
   }, { scope: messageRef });
   if (message.role === "user") return <article ref={messageRef} className="chat-message user workbench-record"><span className="user-avatar"><UserRound size={15} /></span><div><div className="message-meta"><strong>COMMAND</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.content}</p></div></article>;
   const isTaskRequest = message.task_phase === "request";
-  if (isTaskRequest && task && terminal(task.state)) return null;
   if (isTaskRequest) {
     return <article ref={messageRef} className="chat-message assistant task-request workbench-record"><span className="bot-avatar"><Bot size={16} /></span><div><div className="message-meta"><strong>TOOLS</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><TaskActivity content={message.content} task={task} instanceName={instanceName} onReview={onReview} /></div></article>;
   }
   const completedTask = task && terminal(task.state);
+  const presentation = task ? taskPresentation(task.state) : undefined;
   const failedTask = completedTask && task.state !== "SUCCEEDED";
   return <article ref={messageRef} className={`chat-message assistant ${streaming ? "streaming" : ""} ${completedTask ? "has-result" : ""}`} aria-busy={streaming || undefined}>
     <span className="bot-avatar"><Bot size={16} /></span>
     <div>
-      <div className="message-meta"><strong>{completedTask ? "DONE" : "OUTPUT"}</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{streaming && <span>输出中</span>}</div>
-      {completedTask ? <section className={`answer-result ${failedTask ? "failed" : "success"}`}>
+      <div className="message-meta"><strong>{completedTask ? presentation?.eyebrow : "OUTPUT"}</strong><time>{new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>{streaming && <span>输出中</span>}</div>
+      {completedTask ? <section className={`answer-result ${presentation?.tone ?? (failedTask ? "failed" : "success")}`}>
         <header>
           <span className="answer-result-icon">{failedTask ? <CircleAlert size={17} /> : <CheckCircle2 size={17} />}</span>
-          <div><strong>{failedTask ? "任务未完成" : "任务已完成"}</strong><small>{task.plan.steps.map((step) => toolLabel(step.tool)).join("、")}</small></div>
+          <div><strong>{presentation?.title}</strong><small>{task.plan.steps.map((step) => toolLabel(step.tool)).join("、") || "未执行工具"}</small></div>
           <time>{new Date(task.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time>
         </header>
         <RichText content={message.content} />
@@ -539,9 +609,10 @@ function TaskActivity({ content, task, instanceName, onReview }: { content: stri
   const failedTask = Boolean(task && terminal(task.state) && task.state !== "SUCCEEDED");
   const isComplete = Boolean(task && terminal(task.state));
   const liveEvidence = task?.evidence.filter((item) => item.summary.trim()).slice(-5) ?? [];
-  return <details className={`task-activity ${failedTask ? "failed" : ""} ${!isComplete ? "live" : ""}`} open={!isComplete} aria-live="polite">
+  const presentation = task ? taskPresentation(task.state) : undefined;
+  return <details className={`task-activity ${failedTask ? "failed" : ""} ${!isComplete ? "live" : ""}`} open aria-live="polite">
     <summary>
-      <span className="task-activity-title">{isComplete ? <CheckCircle2 size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? "执行记录" : task ? stateLabel(task.state) : "正在规划"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : task ? "实时更新工具调用与回调" : "正在生成执行计划"}</small></span></span>
+      <span className="task-activity-title">{isComplete ? presentation?.tone === "success" ? <CheckCircle2 size={14} /> : <CircleAlert size={14} /> : <LoaderCircle className="spin" size={14} />}<span><strong>{isComplete ? presentation?.title : task ? stateLabel(task.state) : "正在规划"}</strong><small>{isComplete ? taskActivityLabel(task!.state) : task ? "实时更新工具调用与回调" : "正在生成执行计划"}</small></span></span>
       <ChevronDown className="task-activity-chevron" size={15} aria-hidden="true" />
     </summary>
     <div className="task-activity-content">
@@ -575,17 +646,26 @@ function TaskOutcome({ task }: { task: TaskRecord }) {
   return <details className="result-evidence">
     <summary><span>展开规划与执行轨迹</span><small>{task.plan.steps.length} 个工具 · {evidence.length} 条记录</small><ChevronDown size={14} aria-hidden="true" /></summary>
     <div className="result-trace">
+      <section className="task-audit-meta" aria-label="任务审计信息">
+        <div><span>Task ID</span><code title={task.id}>{redactTaskId(task.id)}</code></div>
+        <div><span>Route</span><code>tool</code></div>
+        <div><span>Operation</span><code>{task.plan.operation.action} · {task.plan.operation.capability}</code></div>
+        <div><span>Risk</span><code>{riskLabel(task.risk)}</code></div>
+        <div><span>Approval</span><code>{taskApprovalLabel(task)}</code></div>
+        <div><span>Evidence</span><code>{task.evidence.filter((item) => item.kind !== "state").length} 条工具证据</code></div>
+        <div><span>Source goals</span><code>{task.plan.source_goals.length} 项 · {deterministicAcceptanceLabel(task)}</code></div>
+      </section>
       <section className="result-trace-section" aria-label="规划摘要">
         <strong>规划</strong>
         <p><span /><b>{task.intent.split("\n\nAgent operation:")[0]}</b><code>任务目标</code><em className={failed ? "failed" : "success"}>{failed ? "未完成" : "已完成"}</em></p>
       </section>
       <section className="result-trace-section" aria-label="工具调用过程">
         <strong>工具调用</strong>
-        {task.plan.steps.map((step, index) => <p key={step.id}><span /><b>{index + 1}. {toolLabel(step.tool)}</b><code>{step.tool}</code><em className={failed ? "failed" : "success"}>{failed ? "未完成" : "完成"}</em></p>)}
+        {task.plan.steps.map((step, index) => { const progress = taskStepProgress(task, index); return <p key={step.id}><span /><b>{index + 1}. {toolLabel(step.tool)}</b><code>{step.tool}</code><em className={progress.className}>{progress.label}</em></p>; })}
       </section>
       {evidence.length > 0 && <section className="result-trace-section" aria-label="执行证据">
         <strong>回调、判断与验证</strong>
-        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span /><b>{item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
+        {evidence.map((item, index) => <p key={`${item.at}-${index}`}><span /><b>{item.kind === "state" && /deterministic acceptance checks passed/i.test(item.summary) ? deterministicAcceptanceLabel(task) : item.summary}</b><code>{evidenceLabel(item.kind)}</code><time>{new Date(item.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></p>)}
       </section>}
     </div>
   </details>;
@@ -624,7 +704,7 @@ function inlineText(value: string): ReactNode[] {
   ));
 }
 
-function terminal(state: string) { return ["SUCCEEDED", "FAILED", "ROLLED_BACK", "REJECTED", "CANCELLED", "EXPIRED", "MANUAL_INTERVENTION"].includes(state); }
+function terminal(state: string) { return isTerminalTask(state); }
 function sameMessageList(left: ConversationMessage[], right: ConversationMessage[]) {
   return left.length === right.length && left.every((message, index) => {
     const candidate = right[index];
@@ -639,11 +719,21 @@ function sameMessageList(left: ConversationMessage[], right: ConversationMessage
 function taskActivityLabel(state: string) {
   if (state === "WAITING_CONFIRMATION") return "待确认";
   if (state === "SUCCEEDED") return "已完成";
+  if (state === "PARTIAL") return "部分完成";
+  if (state === "WAITING") return "等待补全";
   if (terminal(state)) return "未完成";
   return "处理中";
 }
 function taskStepProgress(task: TaskRecord, index: number) {
   if (task.state === "SUCCEEDED") return { className: "success", label: "完成" };
+  if (task.state === "PARTIAL") {
+    const step = task.plan.steps[index];
+    const satisfied = (task.plan.goal_requirements ?? []).some((goal) =>
+      [...goal.execute_step_ids, ...goal.verify_step_ids].includes(step.id)
+      && (task.goal_statuses ?? []).some((status) => status.goal_id === goal.id && status.status === "satisfied"));
+    return satisfied ? { className: "success", label: "完成" } : { className: "failed", label: "未完成" };
+  }
+  if (task.state === "WAITING") return { className: "pending", label: "未执行" };
   if (terminal(task.state)) return { className: "failed", label: "未完成" };
   const resultKinds = new Set(["console", "files", "logs", "config", "instance", "download", "plugin", "verification"]);
   const completed = task.state === "VERIFYING"
@@ -654,7 +744,7 @@ function taskStepProgress(task: TaskRecord, index: number) {
   return { className: "pending", label: "等待" };
 }
 function riskLabel(risk: string) { return ({ read: "只读", low: "低风险", medium: "中风险", high: "高风险", forbidden: "禁止" } as Record<string, string>)[risk] ?? risk; }
-function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
+function stateLabel(state: string) { return ({ DRAFTED: "正在生成计划", POLICY_CHECKED: "策略已校验", WAITING: "等待补全计划", WAITING_CONFIRMATION: "等待确认", SNAPSHOTTING: "准备执行", EXECUTING: "正在执行", VERIFYING: "正在验证", SUCCEEDED: "操作成功", PARTIAL: "部分完成", FAILED: "执行失败", REJECTED: "策略已拒绝", ROLLING_BACK: "正在回滚", ROLLED_BACK: "已恢复", MANUAL_INTERVENTION: "需要人工处理" } as Record<string, string>)[state] ?? state; }
 function toolLabel(tool: string) { return ({ "logs.query": "读取相关日志", "files.list": "列出目录文件", "file.download": "下载官方 Paper 服务端", "server.install": "安装 Minecraft 服务端", "config.inspect": "读取配置文件", "config.patch": "修改服务器配置", "console.command": "发送控制台命令", "plugin.resolve": "搜索并校验插件", "plugin.install": "安装已校验插件", "instance.start": "启动服务器", "instance.stop": "停止服务器", "instance.restart": "重启并等待稳定", "snapshot.restore": "恢复快照" } as Record<string, string>)[tool] ?? tool; }
 function evidenceLabel(kind: string) { return ({ state: "状态", tool: "工具", console: "控制台回调", files: "文件回调", logs: "日志", config: "配置", source: "下载来源", inventory: "环境识别", download: "下载", verification: "验证", diagnosis: "失败分析", decision: "决策", instance: "实例状态", plugin: "插件证据" } as Record<string, string>)[kind] ?? kind; }
 function traceStageLabel(stage: string) { return ({ routing: "路由", delegation: "委派", tool: "工具", review: "检查", revision: "修正", final: "完成" } as Record<string, string>)[stage] ?? stage; }
@@ -663,6 +753,21 @@ function instanceMeta(instance: ServerProfile) {
     .filter((value): value is string => Boolean(value && value.toLowerCase() !== "unknown"));
   if (values.length) return values.join(" · ");
   return instance.provider_type === "mcsmanager" ? "MCSManager" : "Pterodactyl";
+}
+
+function waitForBrowserPaint() {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    let timeoutId: number | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      resolve();
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+    timeoutId = window.setTimeout(finish, 50);
+  });
 }
 
 function createRequestId() {

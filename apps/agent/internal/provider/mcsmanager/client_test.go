@@ -44,6 +44,44 @@ func TestDownloadFromURLUsesRootFileName(t *testing.T) {
 	}
 }
 
+func TestGetInstancePreservesRuntimeMetrics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/instance" {
+			t.Fatalf("unexpected request path %s", request.URL.Path)
+		}
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{"instanceUuid":"instance","status":3,"config":{"nickname":"Metrics","startCommand":"java -Xmx2G -jar server.jar","type":"paper","docker":{"memory":0}},"info":{"version":"1.21.1"},"processInfo":{"memory":805306368,"cpu":4.25}}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", []string{"daemon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := client.GetInstance(context.Background(), "mcs:daemon:instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.MemoryBytes != 805306368 || instance.MemoryLimitBytes != 2147483648 || instance.CPUUsage != 4.25 {
+		t.Fatalf("runtime metrics not preserved: %#v", instance)
+	}
+}
+
+func TestGetInstancePrefersConfiguredContainerMemoryLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":200,"data":{"instanceUuid":"instance","status":3,"config":{"nickname":"Metrics","startCommand":"java -Xmx2G -jar server.jar","type":"paper","docker":{"memory":3221225472}},"info":{"version":"1.21.1"},"processInfo":{"memory":805306368,"cpu":4.25}}}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, "test-key", []string{"daemon"})
+	instance, err := client.GetInstance(context.Background(), "mcs:daemon:instance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.MemoryLimitBytes != 3221225472 {
+		t.Fatalf("memory limit = %d", instance.MemoryLimitBytes)
+	}
+}
+
 func TestDownloadFromURLRejectsNestedTarget(t *testing.T) {
 	client, err := New("http://127.0.0.1:23333", "test-key", []string{"daemon"})
 	if err != nil {
@@ -81,7 +119,7 @@ func TestUploadFileUsesOneTimeDaemonPassport(t *testing.T) {
 			t.Fatalf("unexpected panel request %s %s", request.Method, request.URL.String())
 		}
 		writer.Header().Set("content-type", "application/json")
-		_, _ = writer.Write([]byte(`{"status":200,"data":{"password":"passport-1","addr":"` + daemon.URL + `","remoteMappings":[]}}`))
+		_, _ = writer.Write([]byte(`{"status":200,"data":{"password":"passport-1","addr":"` + strings.TrimPrefix(daemon.URL, "http://") + `","remoteMappings":[]}}`))
 	}))
 	defer panel.Close()
 
@@ -220,6 +258,25 @@ func TestProfileRevisionIgnoresRuntimeState(t *testing.T) {
 	}
 }
 
+func TestProfileRevisionIgnoresRuntimeMetricsAndCapacity(t *testing.T) {
+	detail := instanceDetail{InstanceUUID: "instance", Status: 3}
+	detail.Config.Nickname = "Paper"
+	detail.Config.StartCommand = "java -Xmx2G -jar server.jar nogui"
+	detail.Config.Type = "universal"
+	detail.Info.Version = "1.21.1"
+	baseline := profile("daemon", detail)
+	detail.ProcessInfo.CPU = 84.5
+	detail.ProcessInfo.Memory = 1610612736
+	detail.Config.Docker.Memory = 3221225472
+	changed := profile("daemon", detail)
+	if baseline.ProfileRevision != changed.ProfileRevision {
+		t.Fatalf("runtime telemetry changed profile revision: %s != %s", baseline.ProfileRevision, changed.ProfileRevision)
+	}
+	if changed.CPUUsage != 84.5 || changed.MemoryBytes != 1610612736 || changed.MemoryLimitBytes != 3221225472 {
+		t.Fatalf("runtime telemetry was not preserved independently: %#v", changed)
+	}
+}
+
 func TestEnrichProfileDiscoversPaperVersionFromRuntimeEvidence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("content-type", "application/json")
@@ -262,5 +319,52 @@ func TestEnrichProfileDoesNotProbeKnownCapability(t *testing.T) {
 	})
 	if got.Loader != "paper" || got.MinecraftVersion != "1.21.1" {
 		t.Fatalf("known capability changed: %#v", got)
+	}
+}
+
+func TestListFilesTreatsAnAbsentNestedDirectoryAsAnEmptyCollection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		switch request.URL.Query().Get("target") {
+		case "/world/stats":
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = writer.Write([]byte(`{"status":500}`))
+		case "/world":
+			_, _ = writer.Write([]byte(`{"status":200,"data":{"items":[{"name":"region"},{"name":"data"}],"total":2}}`))
+		default:
+			t.Fatalf("unexpected target %q", request.URL.Query().Get("target"))
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing, err := client.ListFiles(context.Background(), "mcs:daemon:instance", "/world/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listing != "共 0 项：" {
+		t.Fatalf("unexpected empty listing: %q", listing)
+	}
+}
+
+func TestListFilesDoesNotHideAnExistingNestedDirectoryFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("content-type", "application/json")
+		if request.URL.Query().Get("target") == "/world/stats" {
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = writer.Write([]byte(`{"status":500}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"status":200,"data":{"items":[{"name":"stats"}],"total":1}}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL, "test-key", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListFiles(context.Background(), "mcs:daemon:instance", "/world/stats"); err == nil {
+		t.Fatal("expected the original provider failure for an existing directory")
 	}
 }

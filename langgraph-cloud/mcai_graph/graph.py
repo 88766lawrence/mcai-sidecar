@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 import re
 import uuid
@@ -37,6 +38,37 @@ MODEL_ROUTING_MAX_TOKENS = 384
 MODEL_ANSWER_MAX_TOKENS = 512
 MODEL_HISTORY_ITEM_MAX_CHARS = 1_600
 MODEL_HISTORY_TOTAL_CHARS = 6_000
+AGENT_LOOP_MAX_PROVIDER_TOKENS = 768
+AGENT_LOOP_MAX_OUTPUT_CHARS = 12_000
+AGENT_LOOP_MAX_TOOLS = 64
+INTENT_CANDIDATE_OUTPUT_MAX_CHARS = 24_000
+INTENT_COMPILER_INPUT_MAX_CHARS = 16_000
+INTENT_COMPILER_PROMPT_MAX_CHARS = 24_000
+INTENT_COMPILER_SCHEMA_MAX_CHARS = 14_000
+INTENT_COMPILER_MAX_TOKENS = 2_048
+INTENT_COMPILER_ATTEMPT_SECONDS = float(os.environ.get("MCAI_INTENT_COMPILER_ATTEMPT_SECONDS", "24"))
+INTENT_COMPILER_TOTAL_SECONDS = float(os.environ.get("MCAI_INTENT_COMPILER_TOTAL_SECONDS", "28"))
+LOG_FILTER_TERMS = (
+    "client_connection", "http_request", "backup", "world_storage", "software_component", "database_service", "proxy_service", "server_lag", "memory_resource",
+    "authentication_failure", "connection_failure", "timeout", "resource_failure", "permission_failure", "disconnect", "warning", "crash", "error", "initialization_failure", "dependency_missing", "response_failure", "cannot_keep_up", "tick_timeout", "out_of_memory", "heap_exhaustion", "gc_overhead", "save_failure", "chunk_corruption", "chunk_read_failure",
+)
+LOG_FILTER_TERM_ALIASES = {
+    "proxy": "proxy_service", "gateway": "proxy_service", "reverse_proxy": "proxy_service",
+    "world": "world_storage", "world_snapshot": "world_storage", "snapshot": "world_storage",
+    "database": "database_service", "db": "database_service", "component": "software_component",
+    "plugin": "software_component", "memory": "memory_resource", "lag": "server_lag",
+    "auth_failure": "authentication_failure", "auth_rejection": "authentication_failure",
+    "connection_timeout": "timeout", "corruption": "chunk_corruption",
+}
+
+
+def _canonical_log_term(value: Any) -> str | None:
+    token = re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
+    token = LOG_FILTER_TERM_ALIASES.get(token, token)
+    if token in LOG_FILTER_TERMS:
+        return token
+    return None
+
 
 AFFIRMATIVE = re.compile(r"^(?:需要|要|可以|好的?|好|确认|继续|是|对|行|执行|读取|检查|查一下|重试|yes|ok|continue)[。.!！ ]*$", re.I)
 
@@ -50,18 +82,25 @@ class AgentState(TypedDict, total=False):
 
 
 @dataclass(frozen=True)
+class ProviderCapabilityProfile:
+    mode: Literal["auto", "native_structured", "json_only"] = "auto"
+
+
+@dataclass(frozen=True)
 class ProviderConfig:
     api_key: str
     base_url: str
     model: str
     fallback_models: tuple[str, ...] = ()
+    profile: ProviderCapabilityProfile = ProviderCapabilityProfile()
 
 
 class ModelProviderError(RuntimeError):
-    def __init__(self, code: str, attempts: list[dict[str, str]]):
+    def __init__(self, code: str, attempts: list[dict[str, Any]], metrics: dict[str, Any] | None = None):
         super().__init__(code)
         self.code = code
         self.attempts = attempts
+        self.metrics = metrics or {}
 
 
 class ModelProvider:
@@ -84,7 +123,12 @@ class ModelProvider:
         # plain-text result is already safe to consume.  Retrying two strict
         # response formats after an empty result burns the entire fallback
         # window on one provider.
-        modes = ("prompt",) if answer_only else ("json_schema", "json_object", "prompt")
+        if self.config.profile.mode == "native_structured":
+            modes = ("json_schema",)
+        elif self.config.profile.mode == "json_only":
+            modes = ("prompt",)
+        else:
+            modes = ("prompt",) if answer_only else ("json_schema", "json_object", "prompt")
         request_timeout = MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS if answer_only else MODEL_REQUEST_TIMEOUT_SECONDS
         for model in models:
             for mode in modes:
@@ -116,6 +160,170 @@ class ModelProvider:
                         break
         raise ModelProviderError(_dominant_provider_error(attempts), attempts)
 
+    async def plain_json(
+        self,
+        system: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = AGENT_LOOP_MAX_PROVIDER_TOKENS,
+    ) -> str:
+        """Request ordinary provider content without format or reasoning extensions."""
+        attempts: list[dict[str, Any]] = []
+        models = tuple(dict.fromkeys((self.config.model, *self.config.fallback_models)))
+        for model in models:
+            try:
+                async with asyncio.timeout(MODEL_REQUEST_TIMEOUT_SECONDS):
+                    content = await self._request(model, system, messages, {}, "plain_content", max(64, min(2_048, max_tokens)))
+                if content.strip():
+                    return content
+                attempts.append({"model": model, "mode": "plain_content", "code": "EMPTY_RESPONSE"})
+            except Exception as error:  # noqa: BLE001
+                attempts.append({"model": model, "mode": "plain_content", "code": _provider_error_code(error)})
+        raise ModelProviderError(_dominant_provider_error(attempts), attempts)
+
+    async def compact_json(
+        self,
+        system: str,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        budget: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        attempt_seconds = max(0.001, float((budget or {}).get("attempt_seconds", INTENT_COMPILER_ATTEMPT_SECONDS)))
+        total_seconds = max(0.001, float((budget or {}).get("total_seconds", INTENT_COMPILER_TOTAL_SECONDS)))
+        max_tokens = max(64, int((budget or {}).get("max_tokens", INTENT_COMPILER_MAX_TOKENS)))
+        if schema.get("properties", {}).get("schema_version", {}).get("const") != "log-branch/v1":
+            max_tokens = min(INTENT_COMPILER_MAX_TOKENS, max_tokens)
+        output_max_chars = max(256, min(INTENT_CANDIDATE_OUTPUT_MAX_CHARS, int((budget or {}).get("output_max_chars", INTENT_CANDIDATE_OUTPUT_MAX_CHARS))))
+        schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        prompt = _compact_structured_prompt(system, schema_text)
+        input_chars = sum(len(str(item.get("content") or "")) for item in messages)
+        metrics: dict[str, Any] = {
+            "provider": self.config.model,
+            "mode": "native_structured" if self.config.profile.mode == "native_structured" else "json_only",
+            "attempt": 1,
+            "input_chars": input_chars,
+            "prompt_chars": len(prompt),
+            "schema_chars": len(schema_text),
+            "input_token_estimate": _token_estimate(input_chars),
+            "prompt_token_estimate": _token_estimate(len(prompt)),
+            "schema_token_estimate": _token_estimate(len(schema_text)),
+            "attempt_budget_ms": round(attempt_seconds * 1_000),
+              "total_budget_ms": round(total_seconds * 1_000),
+              "max_output_tokens": max_tokens,
+              "shard_id": str((budget or {}).get("shard_id") or "single"),
+              "provider_call_index": int((budget or {}).get("provider_call_index", 1)),
+        }
+        if len(schema_text) > INTENT_COMPILER_SCHEMA_MAX_CHARS or len(prompt) > INTENT_COMPILER_PROMPT_MAX_CHARS:
+            metrics["terminal_code"] = "INTENT_COMPILER_BUDGET_EXCEEDED"
+            raise ModelProviderError("INTENT_COMPILER_BUDGET_EXCEEDED", [], metrics)
+        if input_chars > INTENT_COMPILER_INPUT_MAX_CHARS:
+            metrics["terminal_code"] = "INTENT_COMPILER_INPUT_BUDGET_EXCEEDED"
+            raise ModelProviderError("INTENT_COMPILER_INPUT_BUDGET_EXCEEDED", [], metrics)
+        mode = "native_compact" if self.config.profile.mode == "native_structured" else "json_only"
+        deadline = started + total_seconds
+        timeout = min(attempt_seconds, max(0.001, deadline - loop.time()))
+        try:
+            async with asyncio.timeout(timeout):
+                content = await self._request(self.config.model, prompt, messages, schema, mode, max_tokens)
+        except (TimeoutError, asyncio.TimeoutError) as error:
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": "INTENT_COMPILER_PROVIDER_TIMEOUT"})
+            raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [{"model": self.config.model, "mode": mode, "code": "TIMEOUT"}], metrics) from error
+        except asyncio.CancelledError:
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": "INTENT_COMPILER_CANCELLED"})
+            raise
+        except Exception as error:  # noqa: BLE001
+            code = _provider_error_code(error)
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": f"INTENT_COMPILER_PROVIDER_{code}"})
+            raise ModelProviderError(f"INTENT_COMPILER_PROVIDER_{code}", [{"model": self.config.model, "mode": mode, "code": code}], metrics) from error
+        metrics["provider_ms"] = round((loop.time() - started) * 1_000)
+        metrics["output_chars"] = len(content)
+        metrics["output_token_estimate"] = _token_estimate(len(content))
+        if len(content) > output_max_chars:
+            metrics["terminal_code"] = "INTENT_COMPILER_OUTPUT_BUDGET_EXCEEDED"
+            raise ModelProviderError("INTENT_COMPILER_OUTPUT_BUDGET_EXCEEDED", [], metrics)
+        parse_started = loop.time()
+        try:
+            candidate = _strict_json_object(content)
+        except ValueError as error:
+            metrics.update({"parse_ms": round((loop.time() - parse_started) * 1_000), "terminal_code": "INTENT_COMPILER_PARSE_ERROR"})
+            raise ModelProviderError("INTENT_COMPILER_PARSE_ERROR", [], metrics) from error
+        parse_ms = round((loop.time() - parse_started) * 1_000)
+        validation_started = loop.time()
+        validation_error = _validate_json_shape(candidate, schema)
+        if validation_error:
+            metrics.update({"parse_ms": parse_ms, "validate_ms": round((loop.time() - validation_started) * 1_000), "terminal_code": "INTENT_COMPILER_VALIDATION_ERROR"})
+            raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.config.model, "mode": mode, "code": validation_error}], metrics)
+        metrics.update({
+            "parse_ms": parse_ms,
+            "validate_ms": round((loop.time() - validation_started) * 1_000),
+            "total_ms": round((loop.time() - started) * 1_000),
+            "candidate_clause_count": len(candidate.get("clauses", [])),
+            "candidate_goal_count": len(candidate.get("goals", [])),
+            "terminal_code": "OK",
+        })
+        return {**candidate, "providerModel": self.config.model, "compilerMetrics": metrics}
+
+    async def compact_labels(
+        self,
+        system: str,
+        branch: str,
+        canonical_terms: list[str],
+        budget: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Classify one small semantic branch through the plain content channel."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        attempt_seconds = max(0.001, float((budget or {}).get("attempt_seconds", INTENT_COMPILER_ATTEMPT_SECONDS)))
+        total_seconds = max(0.001, float((budget or {}).get("total_seconds", INTENT_COMPILER_TOTAL_SECONDS)))
+        max_tokens = max(64, min(256, int((budget or {}).get("max_tokens", 256))))
+        prompt = "\n".join((
+            system,
+            "Output exactly one line: ALL=term1,term2|ANY=term3,term4",
+            "Use only terms from CANONICAL_TERMS. Either field may be empty, but not both. No prose or code fences.",
+            "CANONICAL_TERMS=" + ",".join(canonical_terms),
+        ))
+        metrics: dict[str, Any] = {
+            "provider": self.config.model,
+            "mode": "compact_labels",
+            "attempt": 1,
+            "input_chars": len(branch),
+            "prompt_chars": len(prompt),
+            "schema_chars": 0,
+            "max_output_tokens": max_tokens,
+            "shard_id": str((budget or {}).get("shard_id") or "single"),
+            "provider_call_index": int((budget or {}).get("provider_call_index", 1)),
+        }
+        timeout = min(attempt_seconds, total_seconds)
+        try:
+            async with asyncio.timeout(timeout):
+                content = await self._request(
+                    self.config.model,
+                    prompt,
+                    [{"role": "user", "content": branch}],
+                    {},
+                    "plain_labels",
+                    max_tokens,
+                )
+        except (TimeoutError, asyncio.TimeoutError) as error:
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": "INTENT_COMPILER_PROVIDER_TIMEOUT"})
+            raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [{"model": self.config.model, "mode": "compact_labels", "code": "TIMEOUT"}], metrics) from error
+        except asyncio.CancelledError:
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": "INTENT_COMPILER_CANCELLED"})
+            raise
+        except Exception as error:  # noqa: BLE001
+            code = _provider_error_code(error)
+            metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "terminal_code": f"INTENT_COMPILER_PROVIDER_{code}"})
+            raise ModelProviderError(f"INTENT_COMPILER_PROVIDER_{code}", [{"model": self.config.model, "mode": "compact_labels", "code": code}], metrics) from error
+        metrics.update({"provider_ms": round((loop.time() - started) * 1_000), "output_chars": len(content)})
+        try:
+            group = _parse_compact_log_labels(content, set(canonical_terms))
+        except ValueError as error:
+            metrics["terminal_code"] = "INTENT_COMPILER_PARSE_ERROR"
+            raise ModelProviderError("INTENT_COMPILER_PARSE_ERROR", [{"model": self.config.model, "mode": "compact_labels", "code": str(error)}], metrics) from error
+        metrics.update({"total_ms": round((loop.time() - started) * 1_000), "terminal_code": "OK"})
+        return {"group": group, "providerModel": self.config.model, "compilerMetrics": metrics}
+
     async def _request(
         self,
         model: str,
@@ -123,15 +331,34 @@ class ModelProvider:
         messages: list[dict[str, str]],
         schema: dict[str, Any],
         mode: str,
+        max_tokens: int | None = None,
     ) -> str:
         endpoint = self.config.base_url.rstrip("/") + "/chat/completions"
         body: dict[str, Any] = {
             "model": model,
-            "temperature": 0.15,
-            "max_tokens": _max_tokens_for_schema(schema),
-            "messages": [{"role": "system", "content": _structured_prompt(system, schema)}, *messages],
+            # MiniMax's OpenAI-compatible API documents a strictly positive
+            # temperature range.  Use its deterministic-compatible floor
+            # instead of the out-of-contract zero value.
+            "temperature": 0.1,
+            "max_completion_tokens": max_tokens or _max_tokens_for_schema(schema),
+            "messages": [{"role": "system", "content": system if mode in {"json_only", "native_compact", "plain_labels", "plain_content"} else _structured_prompt(system, schema)}, *messages],
         }
-        if mode == "json_schema":
+        if mode in {"json_only", "native_compact"}:
+            # Keep provider reasoning out of the public JSON channel.  The
+            # bounded compiler validates only `content`; reasoning details are
+            # deliberately ignored and can never become executable semantics.
+            body["reasoning_split"] = True
+            if schema.get("properties", {}).get("schema_version", {}).get("const") == "log-branch/v1":
+                body["service_tier"] = "priority"
+                body["stream"] = True
+        if mode == "json_only":
+            # MiniMax's compact branch calls are most reliable when the
+            # schema is carried by the prompt without a second provider-side
+            # response-format constraint.  The returned content still passes
+            # the same strict JSON/schema/semantic validators below.
+            if not (schema.get("properties", {}).get("schema_version", {}).get("const") == "log-branch/v1"):
+                body["response_format"] = {"type": "json_object"}
+        if mode in {"json_schema", "native_compact"}:
             body["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "mcai_decision", "strict": True, "schema": schema},
@@ -142,11 +369,28 @@ class ModelProvider:
         # timeout at the provider budget prevents httpx from cutting a
         # legitimate longer prose response off before that deadline.
         async with httpx.AsyncClient(timeout=MODEL_PROVIDER_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                endpoint,
-                headers={"authorization": f"Bearer {self.config.api_key}"},
-                json=body,
-            )
+            if body.get("stream"):
+                chunks: list[str] = []
+                async with client.stream("POST", endpoint, headers={"authorization": f"Bearer {self.config.api_key}"}, json=body) as response:
+                    if response.status_code >= 400:
+                        raise RuntimeError(f"provider HTTP {response.status_code}: {(await response.aread()).decode(errors='replace')[:240]}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if not data or data == "[DONE]":
+                            continue
+                        try:
+                            packet = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = packet.get("choices") if isinstance(packet, dict) else None
+                        delta = choices[0].get("delta") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
+                        content = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(content, str):
+                            chunks.append(content)
+                return "".join(chunks)
+            response = await client.post(endpoint, headers={"authorization": f"Bearer {self.config.api_key}"}, json=body)
         if response.status_code >= 400:
             raise RuntimeError(f"provider HTTP {response.status_code}: {response.text[:240]}")
         return _provider_content(response.json())
@@ -163,8 +407,298 @@ def _structured_prompt(system: str, schema: dict[str, Any]) -> str:
     ))
 
 
+def _compact_structured_prompt(system: str, schema_text: str) -> str:
+    return "\n".join((
+        system,
+        "Return exactly one JSON object matching this compact schema; one optional json code fence is allowed, no other text.",
+        schema_text,
+    ))
+
+
+def _token_estimate(chars: int) -> int:
+    return (max(0, chars) + 3) // 4
+
+
+def _parse_compact_log_labels(content: str, canonical_terms: set[str]) -> dict[str, list[str]]:
+    match = re.fullmatch(r"ALL=([a-z0-9_,]*)\|ANY=([a-z0-9_,]*)", content)
+    if not match:
+        raise ValueError("INVALID_COMPACT_LABEL_ENVELOPE")
+    values: list[list[str]] = []
+    for raw in match.groups():
+        terms = raw.split(",") if raw else []
+        if any(not term or term not in canonical_terms for term in terms):
+            raise ValueError("UNKNOWN_COMPACT_LABEL")
+        if len(terms) != len(set(terms)):
+            raise ValueError("DUPLICATE_COMPACT_LABEL")
+        values.append(terms)
+    if not values[0] and not values[1]:
+        raise ValueError("EMPTY_COMPACT_LABELS")
+    if set(values[0]) & set(values[1]):
+        raise ValueError("CROSS_FIELD_COMPACT_LABEL_DUPLICATE")
+    return {"all_of": values[0], "any_of": values[1]}
+
+
+def _strict_json_object(content: str) -> dict[str, Any]:
+    text = content.strip()
+    # MiniMax's OpenAI-compatible endpoint can keep the model's reasoning in
+    # the public content channel when interleaved reasoning is enabled.  The
+    # compiler never consumes that reasoning: it accepts only the single JSON
+    # object that follows a complete <think> block.
+    text = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", text, count=1, flags=re.IGNORECASE)
+    fenced = re.fullmatch(r"```(?:json)?\s*\n?(\{.*\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1)
+    decoder = json.JSONDecoder()
+    # Some compatible reasoning models omit the closing think marker but do
+    # append the requested JSON object.  Ignore the non-executable prefix and
+    # accept only a final object carrying the requested protocol discriminator.
+    if not text.startswith("{"):
+        markers = [match.start() for match in re.finditer(r'\{\s*"schema_version"\s*:', text)]
+        for start in reversed(markers):
+            try:
+                candidate, candidate_end = decoder.raw_decode(text[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and isinstance(candidate.get("schema_version"), str):
+                return candidate
+        # A fenced final object may be preceded by provider reasoning.
+        fenced_objects = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
+        for candidate_text in reversed(fenced_objects):
+            try:
+                candidate = json.loads(candidate_text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and isinstance(candidate.get("schema_version"), str):
+                return candidate
+        # Last-resort bounded extraction: locate a protocol discriminator and
+        # balance braces while respecting JSON strings.  The resulting object
+        # still undergoes the full schema and semantic validators.
+        marker = text.rfind('{"schema_version"')
+        if marker >= 0:
+            depth = 0
+            quoted = False
+            escaped = False
+            for index, char in enumerate(text[marker:], start=marker):
+                if quoted:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        quoted = False
+                    continue
+                if char == '"':
+                    quoted = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            candidate = json.loads(text[marker:index + 1])
+                        except json.JSONDecodeError:
+                            break
+                        if isinstance(candidate, dict):
+                            return candidate
+                        break
+    try:
+        value, end = decoder.raw_decode(text)
+    except json.JSONDecodeError as error:
+        raise ValueError("invalid JSON") from error
+    if text[end:].strip() or not isinstance(value, dict):
+        raise ValueError("response is not one JSON object")
+    return value
+
+
+def _unique_json_object(content: str) -> dict[str, Any]:
+    """Extract exactly one top-level JSON object from ordinary model content."""
+    objects: list[str] = []
+    start = -1
+    depth = 0
+    quoted = False
+    escaped = False
+    for index, char in enumerate(content):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+            continue
+        if char == '"' and depth > 0:
+            quoted = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                objects.append(content[start:index + 1])
+                start = -1
+    if depth != 0 or quoted or len(objects) != 1:
+        raise ValueError("response must contain exactly one complete JSON object")
+    try:
+        value = json.loads(objects[0])
+    except json.JSONDecodeError as error:
+        raise ValueError("invalid JSON object") from error
+    if not isinstance(value, dict):
+        raise ValueError("response is not a JSON object")
+    return value
+
+
+def _validate_json_shape(value: Any, schema: dict[str, Any], path: str = "$") -> str | None:
+    if "const" in schema and value != schema["const"]: return f"{path}:CONST"
+    if "oneOf" in schema:
+        matches = [item for item in schema["oneOf"] if _validate_json_shape(value, item, path) is None]
+        return None if len(matches) == 1 else f"{path}:ONE_OF"
+    expected = schema.get("type")
+    if expected == "object":
+        if not isinstance(value, dict): return f"{path}:TYPE"
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+        if any(key not in value for key in required): return f"{path}:REQUIRED"
+        if schema.get("additionalProperties") is False and any(key not in properties for key in value): return f"{path}:UNKNOWN_FIELD"
+        for key, item in value.items():
+            if key in properties:
+                error = _validate_json_shape(item, properties[key], f"{path}.{key}")
+                if error: return error
+    elif expected == "array":
+        if not isinstance(value, list): return f"{path}:TYPE"
+        if len(value) < int(schema.get("minItems", 0)): return f"{path}:MIN_ITEMS"
+        if len(value) > int(schema.get("maxItems", 10_000)): return f"{path}:MAX_ITEMS"
+        for index, item in enumerate(value):
+            error = _validate_json_shape(item, schema.get("items") or {}, f"{path}[{index}]")
+            if error: return error
+    elif expected == "string" and not isinstance(value, str): return f"{path}:TYPE"
+    elif expected == "integer" and (not isinstance(value, int) or isinstance(value, bool)): return f"{path}:TYPE"
+    elif expected == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)): return f"{path}:TYPE"
+    elif expected == "boolean" and not isinstance(value, bool): return f"{path}:TYPE"
+    if "enum" in schema and value not in schema["enum"]: return f"{path}:ENUM"
+    if isinstance(value, str) and len(value) < int(schema.get("minLength", 0)): return f"{path}:MIN_LENGTH"
+    if isinstance(value, str) and len(value) > int(schema.get("maxLength", len(value))): return f"{path}:MAX_LENGTH"
+    if isinstance(value, int) and value < int(schema.get("minimum", value)): return f"{path}:MINIMUM"
+    if isinstance(value, int) and value > int(schema.get("maximum", value)): return f"{path}:MAXIMUM"
+    return None
+
+
+def _agent_loop_tool_catalog(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value or len(value) > AGENT_LOOP_MAX_TOOLS:
+        raise ValueError("INVALID_TOOL_CATALOG")
+    tools: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"name", "description", "input_schema"}:
+            raise ValueError("INVALID_TOOL_CATALOG")
+        name = item.get("name")
+        description = item.get("description")
+        schema = item.get("input_schema")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) or name in names:
+            raise ValueError("INVALID_TOOL_CATALOG")
+        if not isinstance(description, str) or not description.strip() or len(description) > 500:
+            raise ValueError("INVALID_TOOL_CATALOG")
+        if not isinstance(schema, dict) or schema.get("type") != "object" or schema.get("additionalProperties") is not False:
+            raise ValueError("INVALID_TOOL_CATALOG")
+        if not isinstance(schema.get("properties"), dict) or not isinstance(schema.get("required", []), list):
+            raise ValueError("INVALID_TOOL_CATALOG")
+        if any(not isinstance(key, str) or key not in schema["properties"] for key in schema.get("required", [])):
+            raise ValueError("INVALID_TOOL_CATALOG")
+        names.add(name)
+        tools.append({"name": name, "description": description.strip(), "input_schema": schema})
+    return tools
+
+
+def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
+    return {
+        "oneOf": [
+            {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "action": {"const": "tool_call"}, "tool": {"type": "string", "enum": tool_names},
+                    "arguments": {"type": "object"}, "reason": {"type": "string", "minLength": 1, "maxLength": 240},
+                },
+                "required": ["action", "tool", "arguments", "reason"],
+            },
+            {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "action": {"const": "final"}, "answer": {"type": "string", "minLength": 1, "maxLength": 4_000},
+                    "citations": {"type": "array", "maxItems": 19, "items": {"type": "string", "minLength": 1}},
+                },
+                "required": ["action", "answer", "citations"],
+            },
+            {
+                "type": "object", "additionalProperties": False,
+                "properties": {"action": {"const": "cannot_proceed"}, "answer": {"type": "string", "minLength": 1, "maxLength": 4_000}},
+                "required": ["action", "answer"],
+            },
+        ],
+    }
+
+
+def _validate_agent_loop_decision(
+    decision: dict[str, Any],
+    tools: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    limits: dict[str, int],
+) -> str | None:
+    error = _validate_json_shape(decision, _agent_loop_decision_schema([item["name"] for item in tools]))
+    if error:
+        return error
+    if decision["action"] == "tool_call":
+        if len(observations) >= limits["maxToolCalls"]:
+            return "$.action:TOOL_CALL_LIMIT"
+        tool = next(item for item in tools if item["name"] == decision["tool"])
+        return _validate_json_shape(decision["arguments"], tool["input_schema"], "$.arguments")
+    if decision["action"] == "final":
+        citations = decision["citations"]
+        if len(citations) != len(set(citations)):
+            return "$.citations:DUPLICATE"
+        succeeded = {
+            str(item.get("tool_call_id")) for item in observations
+            if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)
+        }
+        if succeeded and not citations:
+            return "$.citations:EVIDENCE_REQUIRED"
+        if any(item not in succeeded for item in citations):
+            return "$.citations:UNKNOWN_OR_UNSUCCESSFUL"
+        if len(citations) != len(succeeded):
+            return "$.citations:INCOMPLETE_SUCCESS_SET"
+    if decision["action"] in {"final", "cannot_proceed"}:
+        answer = str(decision.get("answer") or "")
+        tool_names = [str(item["name"]) for item in tools]
+        if any(re.search(rf"(?:^|[^A-Za-z0-9_.-]){re.escape(name)}(?:$|[^A-Za-z0-9_.-])", answer, re.I) for name in tool_names):
+            return "$.answer:INTERNAL_TOOL_LEAK"
+        if re.search(r"executed successfully\s*;?\s*not independently verified", answer, re.I):
+            return "$.answer:INTERNAL_DETAIL_LEAK"
+        if re.search(r"\bmcs:[A-Za-z0-9:_-]{12,}\b|(?:实例|instance)\s*[（(:]?\s*[a-f0-9]{8}(?:[a-f0-9]{8,}|…)|\b(?:[A-Za-z_$][\w$]*Exception|FileNotFoundException|stack\s*trace)\b|https?://\S+|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|(?:控制台|console)\s*(?:命令|command|输出|output|未返回)", answer, re.I):
+            return "$.answer:INTERNAL_DETAIL_LEAK"
+        if re.search(r"(?:接下来|下面|然后|下一步|我(?:将|会)|将会|准备|改用|继续)[^。.!！\n]{0,48}(?:调用|查询|获取|读取|检查|执行|使用|命令)|\b(?:next|then|I\s*(?:will|'ll)|going\s+to)\b[^.!?\n]{0,64}\b(?:call|query|fetch|read|inspect|execute|use|run)\b", answer, re.I):
+            return "$.answer:NON_TERMINAL_FINAL"
+        if re.search(r"(?:尚未|还未|未能|没有)[^。.!！\n]{0,48}(?:取得|获取|查询|读取|拉取|核验)[^。.!！\n]{0,80}(?:如需|需要|请).{0,24}(?:继续|确认)|\b(?:not yet|have not|did not)\b[^.!?\n]{0,72}\b(?:fetch|query|read|resolve|check)\b[^.!?\n]{0,72}\b(?:continue|confirm)\b", answer, re.I):
+            return "$.answer:INCOMPLETE_WORK"
+    return None
+
+
+def _bind_agent_final_citations(decision: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Evidence identity is protocol-owned, not a token-copying task for the model."""
+    if decision.get("action") != "final" or not isinstance(decision.get("citations"), list):
+        return decision
+    succeeded = [
+        str(item.get("tool_call_id")) for item in observations
+        if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)
+    ]
+    supplied = decision["citations"]
+    if any(not isinstance(item, str) or item not in succeeded for item in supplied):
+        return decision
+    return {**decision, "citations": list(dict.fromkeys(succeeded))}
+
+
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
+    if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
+        return 4_096
     return MODEL_ANSWER_MAX_TOKENS if required == {"answer"} else MODEL_ROUTING_MAX_TOKENS
 
 
@@ -179,6 +713,14 @@ def _provider_content(payload: Any) -> str:
             content = _compatibility_text(message.get("content"))
             if content:
                 return content
+            # Some OpenAI-compatible reasoning providers honor split mode by
+            # placing the requested final JSON in a dedicated field.  This is
+            # executable output (not the reasoning trace), so preserve it for
+            # the same strict schema and semantic validation as `content`.
+            for key in ("final", "final_content", "output_text"):
+                candidate = _compatibility_text(message.get(key))
+                if candidate:
+                    return candidate
     # A few OpenAI-compatible gateways return the content object at top level.
     return _compatibility_text(payload)
 
@@ -449,6 +991,96 @@ class McaiGraph:
         )
         return state.get("decision") or _response("任务结果不可用。", status="unavailable")
 
+    async def decide_agent_loop(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return one validated AI-first loop decision from ordinary model content."""
+        message = payload.get("message")
+        system_prompt = payload.get("systemPrompt")
+        if not isinstance(message, str) or not message.strip() or len(message) > 16_000:
+            raise ValueError("INVALID_MESSAGE")
+        if not isinstance(system_prompt, str) or not system_prompt.strip() or len(system_prompt) > 16_000:
+            raise ValueError("INVALID_SYSTEM_PROMPT")
+        tools = _agent_loop_tool_catalog(payload.get("toolCatalog"))
+        observations = payload.get("observations", [])
+        if not isinstance(observations, list) or len(observations) > 19 or any(not isinstance(item, dict) for item in observations):
+            raise ValueError("INVALID_OBSERVATIONS")
+        history = payload.get("history", [])
+        if not isinstance(history, list) or len(history) > 40:
+            raise ValueError("INVALID_HISTORY")
+        bounded_history: list[dict[str, str]] = []
+        for item in history[-12:]:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
+                raise ValueError("INVALID_HISTORY")
+            bounded_history.append({"role": item["role"], "content": item["content"][:4_000]})
+        limits_value = payload.get("limits")
+        if not isinstance(limits_value, dict):
+            raise ValueError("INVALID_LIMITS")
+        max_rounds = limits_value.get("maxRounds")
+        max_tool_calls = limits_value.get("maxToolCalls")
+        if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or not 1 <= max_rounds <= 8:
+            raise ValueError("INVALID_LIMITS")
+        if not isinstance(max_tool_calls, int) or isinstance(max_tool_calls, bool) or not 1 <= max_tool_calls <= 19:
+            raise ValueError("INVALID_LIMITS")
+        round_number = payload.get("round")
+        if not isinstance(round_number, int) or isinstance(round_number, bool) or not 1 <= round_number <= max_rounds:
+            raise ValueError("INVALID_ROUND")
+        limits = {"maxRounds": max_rounds, "maxToolCalls": max_tool_calls}
+        instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
+        request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
+        system = "\n".join((
+            system_prompt.strip(),
+            "You are operating one bounded Minecraft server agent loop.",
+            "Return exactly one JSON object and no other text.",
+            'Allowed decisions: {"action":"tool_call","tool":"registered name","arguments":{},"reason":"short"}, '
+            '{"action":"final","answer":"user-facing answer","citations":["successful tool_call_id"]}, or '
+            '{"action":"cannot_proceed","answer":"user-facing answer"}.',
+            "Use the fewest registered tools. Never invent observations, tool names, arguments, citations, execution, or verification.",
+            "A final factual or execution claim must cite the successful observations that support it.",
+            "A final answer must cite every successful observation from this run and synthesize all of them.",
+            "Do not finalize a multi-part or multi-subject request after only one part; continue with the remaining registered tool calls within the existing user authorization.",
+            "Never copy raw execution-status diagnostics into the user answer; state only supported user-facing facts.",
+            "Honor read-only and no-change constraints. The safety layer independently decides risk and confirmation.",
+            "Answer Chinese requests in natural Chinese and English requests in natural English.",
+        ))
+        context = {
+            "message": message.strip(), "instance": instance, "toolCatalog": tools,
+            "observations": observations, "round": round_number, "limits": limits,
+        }
+        messages = [*bounded_history, {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
+        attempts: list[dict[str, Any]] = []
+        repair_used = False
+        for attempt in (1, 2):
+            try:
+                content = await self.provider.plain_json(system, messages)
+            except ModelProviderError:
+                raise
+            except Exception as provider_error:  # noqa: BLE001
+                code = _provider_error_code(provider_error)
+                raise ModelProviderError(code, [{"model": self.provider.config.model, "mode": "plain_content", "code": code}]) from provider_error
+            if len(content) > AGENT_LOOP_MAX_OUTPUT_CHARS:
+                error = "$:MAX_OUTPUT_CHARS"
+                decision: dict[str, Any] = {}
+            else:
+                try:
+                    decision = _bind_agent_final_citations(_unique_json_object(content), observations)
+                    error = _validate_agent_loop_decision(decision, tools, observations, limits)
+                except ValueError as parse_error:
+                    decision = {}
+                    error = f"$:JSON:{parse_error}"
+            if error is None:
+                return {
+                    "decision": decision, "requestId": request_id,
+                    "providerModel": self.provider.config.model, "repairUsed": repair_used,
+                }
+            attempts.append({"model": self.provider.config.model, "mode": "plain_content", "attempt": attempt, "code": error})
+            if attempt == 2:
+                break
+            repair_used = True
+            messages.extend((
+                {"role": "assistant", "content": content[:AGENT_LOOP_MAX_OUTPUT_CHARS]},
+                {"role": "user", "content": f"Your decision was invalid at {error}. Return one corrected JSON decision only; do not add prose."},
+            ))
+        raise ModelProviderError("AGENT_LOOP_INVALID_RESPONSE", attempts, {"repair_used": repair_used})
+
     async def probe(self) -> dict[str, Any]:
         nonce = f"mcai-ready-{uuid.uuid4().hex[:16]}"
         schema = {
@@ -465,6 +1097,394 @@ class McaiGraph:
         if nonce not in str(result.get("answer", "")):
             raise ModelProviderError("INVALID_RESPONSE", [])
         return {"model": str(result.get("providerModel") or self.provider.config.model)}
+
+    async def compile_intent(self, payload: dict[str, Any]) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        compiler_started = loop.time()
+        request_id = str(payload.get("_requestId") or f"intent-{uuid.uuid4().hex}")
+        source_catalog = payload.get("sourceCatalog") if isinstance(payload.get("sourceCatalog"), dict) else {}
+        capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), list) else []
+        frame_plan = _validate_semantic_frame_plan(source_catalog, payload.get("framePlan"))
+        deadline = compiler_started + INTENT_COMPILER_TOTAL_SECONDS
+        system = "\n".join((
+            "You are the MCAI bounded semantic-frame classifier.",
+            "Return intent-semantic-frame/v1 only. Emit exactly one frame for every assigned SourceRef, even for discourse.",
+            "Use only immutable SourceRef ids and local goal keys. Never emit quotes, offsets, digests, risk, approval, tools, steps, evidence receipts, or terminal state.",
+            "Keep domain goals, scopes, safety constraints, evidence requirements, response requirements, predicates, and unknown goals separate.",
+            "Context SourceRefs may explain meaning but cannot become frame owners. Preserve source order and every safety constraint.",
+            "Treat requests to tell, show, list, count, summarize, or report observable current facts as reads; wording as an imperative does not make them writes.",
+            "Emit every explicitly requested fact, collection, count, and judgement as a separate typed goal or predicate. Goals that share one observation must reuse identical capability parameters.",
+            "For logs.query preserve Boolean meaning in filter_groups: groups are OR branches, all_of is conjunction inside one branch, and any_of is alternatives inside one branch. Never merge unrelated OR branches into one all_of group.",
+            "A comma- or semicolon-delimited OR between independent conditions requires separate filter_groups. A local OR between alternative events for one shared topic stays in that topic's any_of.",
+            "Capability descriptions and parameter schemas are authoritative. Never invent capabilities, parameters, mutations, risk, approval, or execution steps.",
+        ))
+        provider_calls = 0
+        cancelled = 0
+        repairable_partials: dict[str, dict[str, Any]] = {}
+
+        async def classify(shard: dict[str, Any], call_index: int, repair_reason: str = "") -> dict[str, Any]:
+            nonlocal provider_calls
+            provider_calls += 1
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [], {"shard_id": shard["id"]})
+            message = json.dumps({
+                "sourceCatalog": source_catalog,
+                "assignedSourceRefs": shard["assigned_source_refs"],
+                "contextSourceRefs": shard["context_source_refs"],
+                "instance": payload.get("instance") or {},
+                "capabilities": capabilities,
+                **({"repair": {"reason": repair_reason, "instruction": "Correct this shard only and classify every assigned SourceRef."}} if repair_reason else {}),
+            }, ensure_ascii=False, separators=(",", ":"))
+            result = await self.planner_provider.compact_json(
+                system + ("\nThis is the single global repair call." if repair_reason else ""),
+                [{"role": "user", "content": message}],
+                _intent_semantic_frame_schema(shard["assigned_source_refs"]),
+                {
+                    "attempt_seconds": min(12 if not repair_reason and _explicit_log_or_branch_count(source_catalog) > 1 else INTENT_COMPILER_ATTEMPT_SECONDS, remaining),
+                    "total_seconds": remaining,
+                    # The semantic-frame schema itself has a non-trivial JSON
+                    # envelope. The prior 640/256 floor truncated otherwise
+                    # valid one-ref responses before they could be validated
+                    # or repaired. Keep the fixed time/call budget, but allow
+                    # a complete bounded frame to arrive.
+                    "max_tokens": max(512, shard["max_output_tokens"]),
+                    "output_max_chars": max(2048, shard["estimated_output_chars"]),
+                    "shard_id": shard["id"],
+                    "provider_call_index": call_index,
+                },
+            )
+            frame_error = _validate_semantic_frame_batch(result, shard["assigned_source_refs"], source_catalog)
+            if frame_error:
+                if frame_error == "LOG_FILTER_OR_BRANCH_COLLAPSE":
+                    repairable_partials[shard["id"]] = result
+                metrics = dict(result.get("compilerMetrics") or {})
+                metrics["terminal_code"] = "INTENT_COMPILER_VALIDATION_ERROR"
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.planner_provider.config.model, "mode": "json_only", "code": frame_error}], metrics)
+            return result
+
+        async def repair_log_filter_groups(shard: dict[str, Any], call_index: int, partial: dict[str, Any], required_groups: int) -> dict[str, Any]:
+            """Use the single global repair call for the missing Boolean projection only."""
+            nonlocal provider_calls
+            provider_calls += 1
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [], {"shard_id": shard["id"]})
+            current_groups: list[dict[str, Any]] = []
+            for frame in partial.get("frames") or []:
+                for role in frame.get("roles") or []:
+                    for goal in role.get("goals") or []:
+                        if goal.get("capability") == "logs.query":
+                            parameters = goal.get("parameters") if isinstance(goal.get("parameters"), dict) else {}
+                            if isinstance(parameters.get("filter_groups"), list):
+                                current_groups = parameters["filter_groups"]
+                                break
+            repair_payload = json.dumps({
+                "sourceCatalog": source_catalog,
+                "assignedSourceRefs": shard["assigned_source_refs"],
+                "requiredGroupCount": required_groups,
+                "currentGroups": current_groups,
+                "instruction": "Return one semantic log filter group per explicit top-level alternative. Groups are OR branches; all_of terms must all match within a branch; any_of terms are local alternatives within one branch.",
+            }, ensure_ascii=False, separators=(",", ":"))
+            result = await self.planner_provider.compact_json(
+                "Return log-filter-group-repair/v1 JSON only. Preserve the user's distinct top-level alternatives without inventing events or combining unrelated branches.",
+                [{"role": "user", "content": repair_payload}],
+                _log_filter_group_repair_schema(required_groups),
+                {
+                    "attempt_seconds": min(INTENT_COMPILER_ATTEMPT_SECONDS, remaining),
+                    "total_seconds": remaining,
+                    # This provider emits hidden reasoning before the JSON
+                    # content. A 384-token ceiling can be consumed entirely by
+                    # that private channel, yielding an empty public payload.
+                    # Keep the same call/time bound while reserving enough
+                    # output budget for the small audited object.
+                    "max_tokens": 2048,
+                    "output_max_chars": 4096,
+                    "shard_id": shard["id"],
+                    "provider_call_index": call_index,
+                },
+            )
+            groups = result.get("groups")
+            if result.get("schema_version") != "log-filter-group-repair/v1" or not isinstance(groups, list) or len(groups) < required_groups:
+                metrics = dict(result.get("compilerMetrics") or {})
+                metrics["terminal_code"] = "INTENT_COMPILER_VALIDATION_ERROR"
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.planner_provider.config.model, "mode": "json_only", "code": "LOG_FILTER_OR_BRANCH_COLLAPSE"}], metrics)
+            repaired = copy.deepcopy(partial)
+            for frame in repaired.get("frames") or []:
+                for role in frame.get("roles") or []:
+                    for goal in role.get("goals") or []:
+                        if goal.get("capability") == "logs.query":
+                            parameters = goal.get("parameters") if isinstance(goal.get("parameters"), dict) else {}
+                            parameters["filter_groups"] = groups
+                            goal["parameters"] = parameters
+            repaired["providerModel"] = result.get("providerModel") or repaired.get("providerModel")
+            repaired["compilerMetrics"] = result.get("compilerMetrics") or repaired.get("compilerMetrics") or {}
+            frame_error = _validate_semantic_frame_batch(repaired, shard["assigned_source_refs"], source_catalog)
+            if frame_error:
+                metrics = dict(repaired.get("compilerMetrics") or {})
+                metrics["terminal_code"] = "INTENT_COMPILER_VALIDATION_ERROR"
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.planner_provider.config.model, "mode": "json_only", "code": frame_error}], metrics)
+            return repaired
+
+        async def repair_cross_topic_log_frame(shard: dict[str, Any], call_index: int, required_groups: int) -> dict[str, Any]:
+            """Recover a malformed full frame through a small AI semantic proposal."""
+            nonlocal provider_calls
+            provider_calls += 1
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [], {"shard_id": shard["id"]})
+            repair_payload = json.dumps({
+                "sourceRefs": [
+                    {"id": item.get("id"), "text": item.get("text")}
+                    for item in source_catalog.get("refs", [])
+                    if isinstance(item, dict) and item.get("id") in shard["assigned_source_refs"]
+                ],
+                "requiredGroups": required_groups,
+            }, ensure_ascii=False, separators=(",", ":"))
+            proposal = await self.planner_provider.compact_json(
+                "Return JSON immediately, without analysis. Preserve each top-level log alternative as one OR group. Use all_of for terms required in a group and any_of for local alternatives. Set count/judgement only when requested.",
+                [{"role": "user", "content": repair_payload}],
+                _cross_topic_log_repair_schema(required_groups),
+                {
+                    "attempt_seconds": min(INTENT_COMPILER_ATTEMPT_SECONDS, remaining),
+                    "total_seconds": remaining,
+                    "max_tokens": 1024,
+                    "output_max_chars": 4096,
+                    "shard_id": shard["id"],
+                    "provider_call_index": call_index,
+                },
+            )
+            groups = proposal.get("groups")
+            results = proposal.get("results")
+            valid_groups = isinstance(groups, list) and len(groups) >= required_groups and len(groups) <= 8 and all(
+                isinstance(group, dict)
+                and set(group).issubset({"all_of", "any_of"})
+                and isinstance(group.get("all_of", []), list)
+                and isinstance(group.get("any_of", []), list)
+                and bool(group.get("all_of") or group.get("any_of"))
+                and all(isinstance(term, str) and 0 < len(term) <= 96 for term in [*group.get("all_of", []), *group.get("any_of", [])])
+                for group in groups
+            )
+            valid_results = isinstance(proposal.get("count"), bool) and isinstance(proposal.get("judgement"), bool)
+            if proposal.get("schema_version") != "log-semantic-repair/v1" or not valid_groups or not valid_results:
+                metrics = dict(proposal.get("compilerMetrics") or {})
+                metrics["terminal_code"] = "INTENT_COMPILER_VALIDATION_ERROR"
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.planner_provider.config.model, "mode": "json_only", "code": "LOG_FILTER_OR_BRANCH_COLLAPSE"}], metrics)
+            results = ["collection", *(["count"] if proposal["count"] else []), *(["judgement"] if proposal["judgement"] else [])]
+            assigned = shard["assigned_source_refs"]
+            owner = assigned[0]
+            parameters = {"window_minutes": 60, "max_lines": 480, "filter_groups": [{"all_of": [*group.get("all_of", [])], "any_of": [*group.get("any_of", [])]} for group in groups]}
+            goals: list[dict[str, Any]] = [{"key": "events", "domain": "diagnosis", "entity": "recent-logs", "capability": "logs.query", "target": "recent-logs", "parameters": parameters, "result_kind": "collection", "item_schema": {"line": "string"}, "required": True}]
+            if "count" in results:
+                goals.append({"key": "count", "domain": "diagnosis", "entity": "recent-logs", "capability": "logs.query", "target": "recent-logs", "parameters": parameters, "result_kind": "count", "depends_on": ["events"], "required": True})
+            predicates: list[dict[str, Any]] = []
+            if "judgement" in results and any(goal["key"] == "count" for goal in goals):
+                predicates.append({"source_refs": [owner], "expected": True, "kind": "binary", "operator": "gt", "left": {"source_refs": [owner], "goal": "count", "selector": "count"}, "right": {"source_refs": [owner], "value": 0}})
+            domain_role = {"role": "domain_goal", "polarity": "positive", "status": "mapped", "reason": "bounded AI log semantics", "goals": goals, "scopes": [], "constraints": [], "evidence_requirements": [], "response_requirements": [], "predicates": predicates, "unknown_goals": []}
+            discourse_role = {"role": "discourse", "polarity": "neutral", "status": "mapped", "reason": "context for bounded log semantics", "goals": [], "scopes": [], "constraints": [], "evidence_requirements": [], "response_requirements": [], "predicates": [], "unknown_goals": []}
+            repaired = {"schema_version": "intent-semantic-frame/v1", "assigned_source_refs": assigned, "frames": [{"owner_source_ref": ref, "roles": [domain_role if ref == owner else discourse_role]} for ref in assigned], "providerModel": proposal.get("providerModel"), "compilerMetrics": proposal.get("compilerMetrics") or {}}
+            frame_error = _validate_semantic_frame_batch(repaired, assigned, source_catalog)
+            if frame_error:
+                metrics = dict(repaired.get("compilerMetrics") or {})
+                metrics["terminal_code"] = "INTENT_COMPILER_VALIDATION_ERROR"
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"model": self.planner_provider.config.model, "mode": "json_only", "code": frame_error}], metrics)
+            return repaired
+
+        async def classify_log_branch(text: str, branch_index: int, repair: bool = False) -> dict[str, Any]:
+            """Ask AI for one small semantic group; code only preserves branch structure."""
+            nonlocal provider_calls
+            provider_calls += 1
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ModelProviderError("INTENT_COMPILER_PROVIDER_TIMEOUT", [], {"branch_index": branch_index})
+            try:
+                result = await self.planner_provider.compact_labels(
+                    "Classify this one log condition. ALL terms must all match; ANY terms are local alternatives."
+                    + (" This is the single repair: obey the exact one-line format." if repair else ""),
+                    text,
+                    sorted(LOG_FILTER_TERMS),
+                    {"attempt_seconds": min(24.0, remaining), "total_seconds": remaining, "max_tokens": 256, "shard_id": f"semantic-branch-{branch_index + 1}", "provider_call_index": provider_calls},
+                )
+            except ModelProviderError as error:
+                if not repair and error.code in {"INTENT_COMPILER_PARSE_ERROR", "INTENT_COMPILER_VALIDATION_ERROR"} and provider_calls < frame_plan["max_provider_calls"]:
+                    return await classify_log_branch(text, branch_index, True)
+                raise
+            group = result.get("group")
+            valid = isinstance(group, dict) and set(group) == {"all_of", "any_of"} and isinstance(group.get("all_of"), list) and isinstance(group.get("any_of"), list) and bool(group["all_of"] or group["any_of"]) and not (set(group["all_of"]) & set(group["any_of"])) and all(term in LOG_FILTER_TERMS for term in [*group["all_of"], *group["any_of"]])
+            if not valid:
+                if not repair and provider_calls < frame_plan["max_provider_calls"]:
+                    return await classify_log_branch(text, branch_index, True)
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"code": "INVALID_LOG_BRANCH", "branch_index": branch_index}], result.get("compilerMetrics") or {})
+            return {"group": group, "providerModel": result.get("providerModel"), "compilerMetrics": result.get("compilerMetrics") or {}}
+
+        async def compile_cross_topic_log_branches(shard: dict[str, Any]) -> dict[str, Any]:
+            branches = _explicit_log_or_branches(source_catalog)
+            if len(branches) < 2 or len(branches) > 3:
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"code": "INVALID_LOG_BRANCH_COUNT"}], {})
+            gathered = await asyncio.gather(*(classify_log_branch(text, index) for index, text in enumerate(branches)), return_exceptions=True)
+            branch_results: list[dict[str, Any]] = []
+            for item in gathered:
+                if isinstance(item, BaseException):
+                    if isinstance(item, ModelProviderError):
+                        raise item
+                    raise ModelProviderError("INTENT_COMPILER_INTERNAL_ERROR", [], {}) from item
+                branch_results.append(item)
+            groups = [item["group"] for item in branch_results]
+            assigned = shard["assigned_source_refs"]
+            owner = assigned[0]
+            parameters = {"window_minutes": 60, "max_lines": 480, "filter_groups": [{"all_of": list(group.get("all_of") or []), "any_of": list(group.get("any_of") or [])} for group in groups]}
+            goals = [
+                {"key": "events", "domain": "diagnosis", "entity": "recent-logs", "capability": "logs.query", "target": "recent-logs", "parameters": parameters, "result_kind": "collection", "item_schema": {"line": "string"}, "required": True},
+                {"key": "count", "domain": "diagnosis", "entity": "recent-logs", "capability": "logs.query", "target": "recent-logs", "parameters": parameters, "result_kind": "count", "depends_on": ["events"], "required": True},
+                {"key": "judgement", "domain": "diagnosis", "entity": "recent-logs", "capability": "logs.query", "target": "recent-logs", "parameters": parameters, "result_kind": "fact", "depends_on": ["events", "count"], "required": True},
+            ]
+            domain_role = {"role": "domain_goal", "polarity": "positive", "status": "mapped", "reason": "bounded AI branch semantics", "goals": goals, "scopes": [], "constraints": [], "evidence_requirements": [], "response_requirements": [], "predicates": [], "unknown_goals": []}
+            discourse_role = {"role": "discourse", "polarity": "neutral", "status": "mapped", "reason": "context for bounded log semantics", "goals": [], "scopes": [], "constraints": [], "evidence_requirements": [], "response_requirements": [], "predicates": [], "unknown_goals": []}
+            compiled = {"schema_version": "intent-semantic-frame/v1", "assigned_source_refs": assigned, "frames": [{"owner_source_ref": ref, "roles": [domain_role if ref == owner else discourse_role]} for ref in assigned], "providerModel": branch_results[0].get("providerModel"), "compilerMetrics": {"branch_count": len(groups), "provider_call_count": provider_calls}}
+            frame_error = _validate_semantic_frame_batch(compiled, assigned, source_catalog)
+            if frame_error:
+                raise ModelProviderError("INTENT_COMPILER_VALIDATION_ERROR", [{"code": frame_error}], compiled["compilerMetrics"])
+            return compiled
+
+        cross_topic_groups = _explicit_log_or_branch_count(source_catalog)
+        compact_cross_topic = cross_topic_groups > 1
+        # A known cross-topic log request does not need the large general frame
+        # envelope. Ask the AI for its minimal semantic projection first, then
+        # deterministically expand and validate the full frame above. This is
+        # the same bounded compiler path, not a deterministic event matcher.
+        if compact_cross_topic:
+            combined_shard = {
+                "id": "semantic-branch-composite",
+                "assigned_source_refs": [str(ref.get("id")) for ref in source_catalog.get("refs", []) if isinstance(ref, dict) and ref.get("id")],
+                "context_source_refs": [],
+            }
+            tasks = [asyncio.create_task(compile_cross_topic_log_branches(combined_shard))]
+        else:
+            tasks = [asyncio.create_task(classify(shard, index + 1)) for index, shard in enumerate(frame_plan["shards"])]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        failures = [(index, task.exception()) for index, task in enumerate(tasks) if task in done and task.exception() is not None]
+        # A schema/semantic validation failure is eligible for the one bounded
+        # repair. Let the other already-running shards finish so their valid
+        # results are retained; cancelling them would make a multi-shard repair
+        # impossible. Non-repairable failures (especially timeouts) still
+        # cancel outstanding work immediately.
+        if len(failures) == 1 and isinstance(failures[0][1], ModelProviderError) and failures[0][1].code in {"INTENT_COMPILER_PARSE_ERROR", "INTENT_COMPILER_VALIDATION_ERROR"} and pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+            done = set(tasks)
+            pending = set()
+            failures = [(index, task.exception()) for index, task in enumerate(tasks) if not task.cancelled() and task.exception() is not None]
+        if failures:
+            for task in pending:
+                task.cancel()
+            if pending:
+                cancelled = len(pending)
+                await asyncio.gather(*pending, return_exceptions=True)
+            repairable = len(failures) == 1 and not pending and isinstance(failures[0][1], ModelProviderError) and failures[0][1].code in {"INTENT_COMPILER_PARSE_ERROR", "INTENT_COMPILER_VALIDATION_ERROR"}
+            remaining = deadline - loop.time()
+            required_cross_topic = _explicit_log_or_branch_count(source_catalog)
+            cross_topic_parse = repairable and failures[0][1].code == "INTENT_COMPILER_PARSE_ERROR" and required_cross_topic > 1 and any(item.get("id") == "logs.query" for item in capabilities if isinstance(item, dict))
+            if not repairable or provider_calls >= frame_plan["max_provider_calls"] or (remaining < 1 and not cross_topic_parse):
+                error = failures[0][1]
+                if not isinstance(error, ModelProviderError):
+                    error = ModelProviderError("INTENT_COMPILER_INTERNAL_ERROR", [], {})
+                error.metrics.update(_aggregate_frame_metrics(tasks, compiler_started, loop.time(), provider_calls, cancelled, request_id, frame_plan, error.code, False))
+                raise error
+            failed_index, first_error = failures[0]
+            repair_detail = first_error.code
+            if first_error.attempts and isinstance(first_error.attempts[-1], dict):
+                repair_detail = str(first_error.attempts[-1].get("code") or repair_detail)
+            if repair_detail == "LOG_FILTER_OR_BRANCH_COLLAPSE":
+                required_groups = _explicit_log_or_branch_count(source_catalog)
+                repair_detail = f"{repair_detail}:required_groups={required_groups}"
+            try:
+                failed_shard = frame_plan["shards"][failed_index]
+                if repair_detail.startswith("LOG_FILTER_OR_BRANCH_COLLAPSE:") and failed_shard["id"] in repairable_partials:
+                    repaired = await repair_log_filter_groups(failed_shard, provider_calls + 1, repairable_partials[failed_shard["id"]], required_groups)
+                elif repair_detail == "INTENT_COMPILER_PARSE_ERROR" and required_cross_topic > 1 and any(item.get("id") == "logs.query" for item in capabilities if isinstance(item, dict)):
+                    required_groups = required_cross_topic
+                    repair_detail = f"LOG_FILTER_OR_BRANCH_COLLAPSE:required_groups={required_groups}"
+                    repaired = await repair_cross_topic_log_frame(failed_shard, provider_calls + 1, required_groups)
+                else:
+                    repaired = await classify(failed_shard, provider_calls + 1, repair_detail)
+            except ModelProviderError as error:
+                error.metrics.update(_aggregate_frame_metrics(tasks, compiler_started, loop.time(), provider_calls, cancelled, request_id, frame_plan, error.code, True))
+                raise
+            results = [repaired if index == failed_index else task.result() for index, task in enumerate(tasks)]
+            repair_used = True
+            repair_reason = repair_detail
+        else:
+            if pending:
+                await asyncio.gather(*pending)
+            results = [task.result() for task in tasks]
+            repair_used = False
+            repair_reason = ""
+        batches = [{key: value for key, value in result.items() if key not in {"providerModel", "compilerMetrics"}} for result in results]
+        metrics = _aggregate_frame_metrics(tasks, compiler_started, loop.time(), provider_calls, cancelled, request_id, frame_plan, "OK", repair_used)
+        metrics["frame_count"] = sum(len(batch.get("frames", [])) for batch in batches)
+        metrics["completed_shard_count"] = len(batches)
+        metrics["cancelled_shard_count"] = 0
+        metrics["cancelled"] = False
+        if repair_reason:
+            metrics["repair_reason"] = repair_reason
+        return {
+            "semanticFrames": batches,
+            "requestId": request_id,
+            "providerModel": self.planner_provider.config.model,
+            "compilerMetrics": metrics,
+            "repairUsed": repair_used,
+        }
+
+    async def propose_confirmed_write(self, payload: dict[str, Any]) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + 12.0
+        request_id = str(payload.get("_requestId") or f"write-proposal-{uuid.uuid4().hex}")
+        intent = str(payload.get("intent") or "").strip()
+        allowed_tools = payload.get("allowedTools") if isinstance(payload.get("allowedTools"), list) else []
+        system = "\n".join((
+            "You propose one basic MCAI write operation for explicit user confirmation.",
+            "Return confirmed-write-proposal/v1 JSON only.",
+            "For exactly one clear supported write, return decision=propose with one allowed tool, minimal parameters, and a short pending-action summary.",
+            "For multiple writes, read+write, ambiguity, or unsupported work, return decision=clarify and a short question.",
+            "Never emit risk, approval, instance identifiers, digests, plans, steps, evidence, terminal state, or success claims.",
+            "For console.command preserve an explicit Console command body exactly; otherwise translate only the single requested operation.",
+        ))
+        message = json.dumps({
+            "intent": intent,
+            "instanceContext": payload.get("instanceContext") or {},
+            "allowedTools": allowed_tools,
+        }, ensure_ascii=False, separators=(",", ":"))
+        repair_used = False
+        try:
+            result = await self.planner_provider.compact_json(system, [{"role": "user", "content": message}], _confirmed_write_proposal_schema(allowed_tools), {
+                "attempt_seconds": min(10.0, deadline - loop.time()), "total_seconds": max(0.001, deadline - loop.time()),
+                "max_tokens": 320, "output_max_chars": 1800, "shard_id": "write-proposal", "provider_call_index": 1,
+            })
+        except ModelProviderError as first_error:
+            if first_error.code == "INTENT_COMPILER_PROVIDER_TIMEOUT":
+                first_error.code = "WRITE_PROPOSAL_PROVIDER_TIMEOUT"
+                first_error.metrics["terminal_code"] = first_error.code
+                raise
+            repairable = first_error.code in {"INTENT_COMPILER_PARSE_ERROR", "INTENT_COMPILER_VALIDATION_ERROR"} and deadline - loop.time() >= 1.0
+            if not repairable:
+                first_error.code = "WRITE_PROPOSAL_PARSE_ERROR" if "PARSE" in first_error.code or "VALIDATION" in first_error.code else "WRITE_PROPOSAL_PROVIDER_ERROR"
+                first_error.metrics["terminal_code"] = first_error.code
+                raise
+            repair_used = True
+            repair_system = system + "\nRepair the prior malformed response. Return only one object matching the schema; do not add fields."
+            try:
+                result = await self.planner_provider.compact_json(repair_system, [{"role": "user", "content": message}], _confirmed_write_proposal_schema(allowed_tools), {
+                    "attempt_seconds": min(10.0, deadline - loop.time()), "total_seconds": max(0.001, deadline - loop.time()),
+                    "max_tokens": 320, "output_max_chars": 1800, "shard_id": "write-proposal-repair", "provider_call_index": 2,
+                })
+            except ModelProviderError as repair_error:
+                repair_error.code = "WRITE_PROPOSAL_PROVIDER_TIMEOUT" if repair_error.code == "INTENT_COMPILER_PROVIDER_TIMEOUT" else "WRITE_PROPOSAL_PARSE_ERROR"
+                repair_error.metrics.update({"terminal_code": repair_error.code, "repair_used": True, "repair_reason": first_error.code})
+                raise
+        proposal = {key: value for key, value in result.items() if key not in {"providerModel", "compilerMetrics"}}
+        metrics = dict(result.get("compilerMetrics") or {})
+        metrics.update({"total_ms": round((loop.time() - started) * 1000), "repair_used": repair_used, "terminal_code": "WRITE_PROPOSAL_OK"})
+        return {"proposal": proposal, "requestId": request_id, "providerModel": self.planner_provider.config.model, "proposalMetrics": metrics, "repairUsed": repair_used}
 
     async def close(self) -> None:
         if self._connection_started:
@@ -662,6 +1682,11 @@ class McaiGraph:
         evidence = request.get("evidence") if isinstance(request.get("evidence"), list) else []
         intent = str(request.get("intent", ""))
         plan = request.get("plan") if isinstance(request.get("plan"), dict) else {}
+        goal_results = request.get("goalResults") if isinstance(request.get("goalResults"), list) else []
+        source_goals = plan.get("sourceGoals") if isinstance(plan.get("sourceGoals"), list) else []
+        if len(source_goals) > 1:
+            composite = _format_source_goal_results(task_state, source_goals, goal_results)
+            return {"decision": _response(composite, status="answered"), "next_node": "end"}
         tools = [str(step.get("tool", "")) for step in plan.get("steps", []) if isinstance(step, dict)]
         substantive = [item for item in evidence if isinstance(item, dict) and item.get("kind") not in {"state", "verification"}]
 
@@ -694,9 +1719,19 @@ class McaiGraph:
                     details.append(f"版本：{version.group(1)}。")
                 if digest:
                     details.append(f"SHA-256：{digest.group(1)}。")
-                if "instance.restart" not in tools:
+                restart_requested = _explicit_restart_after_install(intent)
+                if restart_requested:
+                    details.append("插件落盘已经复验；重启将作为独立高风险任务等待单独审批。")
+                elif "instance.restart" not in tools:
                     details.append("本次计划未执行重启；插件将在服务器下次重启后加载。")
-                return {"decision": _response("\n".join(details), status="answered"), "next_node": "end"}
+                decision = _response("\n".join(details), status="answered")
+                if restart_requested:
+                    decision["continuation"] = _tool_decision(
+                        "重启当前实例以加载刚完成落盘复验的插件",
+                        "instance.restart",
+                        "用户明确要求在插件安装成功后重启；该动作需要独立审批",
+                    )
+                return {"decision": decision, "next_node": "end"}
             if task_state != "SUCCEEDED":
                 reason = next((
                     re.sub(r"^工具返回错误[：:]\s*", "", str(item.get("summary", "")).strip())
@@ -744,7 +1779,7 @@ class McaiGraph:
                 if item.get("kind") in {"instance", "diagnosis", "tool"} and str(item.get("summary", "")).strip()
             ), "")
             if task_state == "SUCCEEDED":
-                answer = evidence_summary or f"{lifecycle_names[lifecycle_tool]}已完成。"
+                answer = evidence_summary or f"{lifecycle_names[lifecycle_tool]}任务已结束，但缺少实例状态证据，无法确认完成。"
             else:
                 reason = re.sub(r"^工具返回错误[：:]\s*", "", evidence_summary) or "工具未返回可验证的完成证据"
                 answer = f"{lifecycle_names[lifecycle_tool]}失败：{reason}"
@@ -1196,6 +2231,17 @@ def _deterministic_decision(message: str, history: list[Any], available: set[str
     if "files.list" in available and (plugin_directory_request or re.search(r"(?:确认|检查|查看|读取|列出).{0,16}(?:plugins/?|插件.{0,6}(?:目录|文件|jar|落盘))|(?:plugins/?).{0,16}(?:确认|检查|查看|读取|列出)", message, re.I)):
         return _tool_decision("列出当前实例 /plugins 目录并返回实际文件清单", "files.list", "需要文件级证据")
     if "console.command" in available:
+        difficulty_change = re.search(
+            r"(?:把|将|设置|调整|修改|改成|调成|set|change).{0,20}(?:游戏|服务器|世界)?\s*(?:难度|difficulty).{0,12}(?:为|成|到|to)?\s*(和平|简单|普通|困难|peaceful|easy|normal|hard)|(?:游戏|服务器|世界)?\s*(?:难度|difficulty).{0,12}(?:设置|调整|修改|改成|调成|set|change).{0,12}(?:为|成|到|to)?\s*(和平|简单|普通|困难|peaceful|easy|normal|hard)",
+            message,
+            re.I,
+        )
+        if difficulty_change:
+            raw_mode = (difficulty_change.group(1) or difficulty_change.group(2)).lower()
+            mode = {"和平": "peaceful", "简单": "easy", "普通": "normal", "困难": "hard"}.get(raw_mode, raw_mode)
+            return _tool_decision(f"在当前实例 Minecraft 控制台执行 difficulty {mode}", "console.command", "需要真实修改并等待控制台回调")
+        if re.search(r"(?:查询|查看|读取|确认|告诉我|当前|现在|what|show|check).{0,16}(?:游戏|服务器|世界)?\s*(?:难度|difficulty)|(?:游戏|服务器|世界)?\s*(?:难度|difficulty).{0,16}(?:是什么|多少|查询|查看|读取|确认|当前|现在|what|show|check)", message, re.I):
+            return _tool_decision("在当前实例 Minecraft 控制台执行 difficulty", "console.command", "需要实时难度证据")
         if re.search(r"(?:服务器|服务端).{0,5}(?:版本|version)|(?:什么|哪种).{0,4}服务端", message, re.I):
             return _tool_decision("在当前实例 Minecraft 控制台执行 version", "console.command", "需要实时服务端版本")
         if re.search(r"(?:已安装|当前).{0,4}插件|插件列表|插件.{0,6}(?:有哪些|有什么|多少)", message, re.I):
@@ -1287,6 +2333,333 @@ def _history(request: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
+def _validate_semantic_frame_plan(source_catalog: dict[str, Any], value: Any) -> dict[str, Any]:
+    refs = source_catalog.get("refs") if isinstance(source_catalog.get("refs"), list) else []
+    expected = [str(ref.get("id")) for ref in refs if isinstance(ref, dict)]
+    if not isinstance(value, dict) or value.get("schema_version") != "intent-semantic-frame-plan/v1":
+        raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+    shards = value.get("shards")
+    if value.get("total_deadline_ms") != 28000 or value.get("max_concurrency") != 3 or value.get("max_provider_calls") != 4 or not isinstance(shards, list) or not 1 <= len(shards) <= 3:
+        raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+    flattened: list[str] = []
+    for index, shard in enumerate(shards):
+        if not isinstance(shard, dict) or shard.get("id") != f"frame-shard-{index + 1:02d}":
+            raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+        assigned = shard.get("assigned_source_refs")
+        context = shard.get("context_source_refs")
+        tokens = shard.get("max_output_tokens")
+        chars = shard.get("estimated_output_chars")
+        if not isinstance(assigned, list) or not assigned or not isinstance(context, list) or any(ref not in expected for ref in context):
+            raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+        if not isinstance(tokens, int) or not 64 <= tokens <= 1024 or not isinstance(chars, int) or not 256 <= chars <= INTENT_CANDIDATE_OUTPUT_MAX_CHARS:
+            raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+        flattened.extend(str(ref) for ref in assigned)
+    if flattened != expected or len(flattened) != len(set(flattened)):
+        raise ModelProviderError("INTENT_COMPILER_INVALID_FRAME_PLAN", [], {})
+    return value
+
+
+def _aggregate_frame_metrics(
+    tasks: list[asyncio.Task[Any]], started: float, finished: float, calls: int,
+    cancelled: int, request_id: str, plan: dict[str, Any], terminal_code: str, repair_used: bool,
+) -> dict[str, Any]:
+    shard_metrics: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.cancelled() or not task.done():
+            continue
+        try:
+            result = task.result()
+            metrics = result.get("compilerMetrics") if isinstance(result, dict) else None
+        except ModelProviderError as error:
+            metrics = error.metrics
+        except Exception:
+            metrics = None
+        if isinstance(metrics, dict):
+            shard_metrics.append(metrics)
+    summed = lambda key: sum(int(item.get(key) or 0) for item in shard_metrics)
+    return {
+        "request_id": request_id,
+        "provider": shard_metrics[0].get("provider") if shard_metrics else "",
+        "mode": shard_metrics[0].get("mode") if shard_metrics else "json_only",
+        "attempt": 1,
+        "provider_ms": max((int(item.get("provider_ms") or 0) for item in shard_metrics), default=0),
+        "total_ms": round((finished - started) * 1000),
+        "input_chars": summed("input_chars"),
+        "prompt_chars": summed("prompt_chars"),
+        "schema_chars": summed("schema_chars"),
+        "output_chars": summed("output_chars"),
+        "shard_count": len(plan["shards"]),
+        "provider_call_count": calls,
+        "completed_shard_count": sum(1 for task in tasks if task.done() and not task.cancelled() and task.exception() is None),
+        "cancelled_shard_count": cancelled,
+        "max_concurrency": plan["max_concurrency"],
+        "max_provider_calls": plan["max_provider_calls"],
+        "deadline_ms": plan["total_deadline_ms"],
+        "repair_used": repair_used,
+        "cancelled": cancelled > 0,
+        "terminal_code": terminal_code,
+    }
+
+
+def _explicit_log_or_branches(source_catalog: dict[str, Any] | None) -> list[str]:
+    catalog_refs = [ref for ref in ((source_catalog or {}).get("refs") or []) if isinstance(ref, dict)]
+    source_text = " ".join(str(ref.get("text") or "") for ref in sorted(catalog_refs, key=lambda ref: int(ref.get("order") or 0)))
+    marked = re.sub(r"\b(?:either)\s+", "", source_text, flags=re.IGNORECASE)
+    separator = re.compile(r"(?:\s*(?:[,\uFF0C;\uFF1B]\s*)?(?:alternatively\b|or\b|\u6216\u8005|\u6216\u662F|\u8981\u4E48|\u6216)(?=\s|[\u3400-\u9fff])\s*)", re.IGNORECASE)
+    parts = [part.strip(" ,;，；") for part in separator.split(marked) if part.strip(" ,;，；")]
+    if len(parts) < 2:
+        return [source_text.strip()]
+    def substantial(part: str) -> bool:
+        words = re.findall(r"[A-Za-z0-9_]+", part)
+        han = re.findall(r"[\u3400-\u9fff]", part)
+        return len(words) >= 2 or len(han) >= 4
+    local_enumeration = bool(re.search(r"[,\uFF0C][^,\uFF0C;\uFF1B]{0,40}(?:or\b|\u6216\u8005|\u6216\u662F|\u6216)(?=\s|[\u3400-\u9fff])", marked, re.IGNORECASE))
+    return parts if all(substantial(part) for part in parts) and not local_enumeration else [source_text.strip()]
+
+
+def _explicit_log_or_branch_count(source_catalog: dict[str, Any] | None) -> int:
+    return len(_explicit_log_or_branches(source_catalog))
+
+
+def _validate_semantic_frame_batch(value: dict[str, Any], assigned_refs: list[str], source_catalog: dict[str, Any] | None = None) -> str | None:
+    if value.get("schema_version") != "intent-semantic-frame/v1":
+        return "UNSUPPORTED_FRAME_VERSION"
+    if value.get("assigned_source_refs") != assigned_refs:
+        return "SEMANTIC_FRAME_ASSIGNMENT_MISMATCH"
+    frames = value.get("frames")
+    if not isinstance(frames, list) or len(frames) != len(assigned_refs):
+        return "UNCLASSIFIED_ASSIGNED_SOURCE_REF"
+    owners = [frame.get("owner_source_ref") for frame in frames if isinstance(frame, dict)]
+    if owners != assigned_refs or len(owners) != len(set(owners)):
+        return "SEMANTIC_FRAME_OWNERSHIP_MISMATCH"
+    if any(not isinstance(frame.get("roles"), list) or not frame["roles"] for frame in frames):
+        return "UNCLASSIFIED_ASSIGNED_SOURCE_REF"
+    required_branches = _explicit_log_or_branch_count(source_catalog)
+    for frame in frames:
+        for role in frame.get("roles") or []:
+            if not isinstance(role, dict):
+                continue
+            for goal in role.get("goals") or []:
+                if not isinstance(goal, dict) or goal.get("capability") != "logs.query":
+                    continue
+                parameters = goal.get("parameters") if isinstance(goal.get("parameters"), dict) else {}
+                groups = parameters.get("filter_groups")
+                if required_branches > 1 and (not isinstance(groups, list) or len(groups) < required_branches):
+                    return "LOG_FILTER_OR_BRANCH_COLLAPSE"
+    return None
+
+
+def _log_filter_group_repair_schema(required_groups: int) -> dict[str, Any]:
+    term = {"type": "string", "minLength": 1, "maxLength": 96}
+    group = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "all_of": {"type": "array", "maxItems": 8, "items": term},
+            "any_of": {"type": "array", "maxItems": 8, "items": term},
+        },
+        "required": ["all_of", "any_of"],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": "log-filter-group-repair/v1"},
+            "groups": {"type": "array", "minItems": required_groups, "maxItems": 8, "items": group},
+        },
+        "required": ["schema_version", "groups"],
+    }
+
+
+def _cross_topic_log_repair_schema(required_groups: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": "log-semantic-repair/v1"},
+            "groups": {"type": "array", "minItems": required_groups, "maxItems": 8, "items": {"type": "object"}},
+            "count": {"type": "boolean"},
+            "judgement": {"type": "boolean"},
+        },
+        "required": ["schema_version", "groups", "count", "judgement"],
+    }
+
+
+def _log_branch_schema() -> dict[str, Any]:
+    terms = {"type": "array", "maxItems": 8, "items": {"type": "string"}}
+    return {"type": "object", "additionalProperties": False, "properties": {"schema_version": {"const": "log-branch/v1"}, "group": {"type": "object", "additionalProperties": False, "properties": {"all_of": terms, "any_of": terms}, "required": ["all_of", "any_of"]}}, "required": ["schema_version", "group"]}
+
+
+def _intent_semantic_frame_schema(assigned_refs: list[str]) -> dict[str, Any]:
+    source_refs = {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "pattern": "^src-[0-9]{4}$"}}
+    filter_schema = {"type": "object", "additionalProperties": False, "properties": {"field": {"type": "string"}, "operator": {"enum": ["suffix", "contains", "equals"]}, "value": {"type": "string"}}, "required": ["field", "operator", "value"]}
+    goal = {"type": "object", "additionalProperties": False, "properties": {
+        "key": {"type": "string"}, "domain": {"type": "string"}, "entity": {"type": "string"}, "capability": {"type": "string"}, "target": {"type": "string"},
+        "parameters": {"type": "object"}, "result_kind": {"enum": ["fact", "collection", "count", "filtered_count", "judgement"]},
+        "filter": filter_schema, "item_schema": {"type": "object", "additionalProperties": {"enum": ["string", "number", "boolean"]}},
+        "depends_on": {"type": "array", "items": {"type": "string"}}, "required": {"type": "boolean"},
+    }, "required": ["key", "domain", "entity", "capability", "target", "parameters", "result_kind", "required"]}
+    operand = {"type": "object", "additionalProperties": False, "properties": {"source_refs": source_refs, "goal": {"type": "string"}, "selector": {"enum": ["observed", "count", "filtered_count"]}, "value": {}}, "required": ["source_refs"]}
+    quantifier = {"type": "object", "additionalProperties": False, "properties": {"source_refs": source_refs, "expected": {"type": "boolean"}, "kind": {"const": "quantifier"}, "quantifier": {"enum": ["all", "any"]}, "collection_goal": {"type": "string"}, "filter": filter_schema}, "required": ["source_refs", "expected", "kind", "quantifier", "collection_goal", "filter"]}
+    binary = {"type": "object", "additionalProperties": False, "properties": {"source_refs": source_refs, "expected": {"type": "boolean"}, "kind": {"const": "binary"}, "operator": {"enum": ["equals", "not_equals", "lt", "lte", "gt", "gte"]}, "left": operand, "right": operand}, "required": ["source_refs", "expected", "kind", "operator", "left", "right"]}
+    role = {"type": "object", "additionalProperties": False, "properties": {
+        "role": {"enum": ["domain_goal", "safety_constraint", "evidence_requirement", "response_requirement", "discourse", "unknown_business_goal"]},
+        "polarity": {"enum": ["positive", "negative", "neutral"]}, "status": {"enum": ["mapped", "unmapped", "clarify"]}, "reason": {"type": "string"},
+        "goals": {"type": "array", "items": goal},
+        "scopes": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"source_refs": source_refs, "goal": {"type": "string"}, "kind": {"enum": ["depth", "window", "filter"]}, "value": {"type": ["string", "number", "boolean"]}}, "required": ["source_refs", "goal", "kind", "value"]}},
+        "constraints": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"action": {"enum": ["download", "install", "restart", "start", "stop", "write"]}, "effect": {"const": "forbid"}}, "required": ["action", "effect"]}},
+        "evidence_requirements": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"kind": {"enum": ["real_callback_per_goal", "independent_verification"]}, "goals": {"type": "array", "items": {"type": "string"}}}, "required": ["kind", "goals"]}},
+        "response_requirements": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"kind": {"enum": ["cover_all", "synthesis", "source_order"]}, "goals": {"type": "array", "items": {"type": "string"}}}, "required": ["kind", "goals"]}},
+        "predicates": {"type": "array", "items": {"oneOf": [quantifier, binary]}},
+        "unknown_goals": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"reason": {"type": "string"}}, "required": ["reason"]}},
+    }, "required": ["role", "polarity", "status", "reason", "goals", "scopes", "constraints", "evidence_requirements", "response_requirements", "predicates", "unknown_goals"]}
+    frame = {"type": "object", "additionalProperties": False, "properties": {"owner_source_ref": {"enum": assigned_refs}, "roles": {"type": "array", "minItems": 1, "items": role}}, "required": ["owner_source_ref", "roles"]}
+    return {"type": "object", "additionalProperties": False, "properties": {
+        "schema_version": {"const": "intent-semantic-frame/v1"},
+        "assigned_source_refs": {"type": "array", "prefixItems": [{"const": ref} for ref in assigned_refs], "minItems": len(assigned_refs), "maxItems": len(assigned_refs)},
+        "frames": {"type": "array", "minItems": len(assigned_refs), "maxItems": len(assigned_refs), "items": frame},
+    }, "required": ["schema_version", "assigned_source_refs", "frames"]}
+
+
+def _confirmed_write_proposal_schema(allowed_tools: list[str]) -> dict[str, Any]:
+    tools = [str(tool) for tool in allowed_tools if isinstance(tool, str) and tool]
+    propose = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": "confirmed-write-proposal/v1"}, "decision": {"const": "propose"},
+            "tool": {"enum": tools or ["console.command"]},
+            "parameters": {"type": "object", "minProperties": 1, "maxProperties": 8},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 240},
+        },
+        "required": ["schema_version", "decision", "tool", "parameters", "summary"],
+    }
+    clarify = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": "confirmed-write-proposal/v1"}, "decision": {"const": "clarify"},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 240},
+        },
+        "required": ["schema_version", "decision", "summary"],
+    }
+    return {"oneOf": [propose, clarify]}
+
+
+def _intent_candidate_schema() -> dict[str, Any]:
+    ref = {
+        "type": "object", "additionalProperties": False,
+        "properties": {"source_refs": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "pattern": "^src-[0-9]{4}$"}}},
+        "required": ["source_refs"],
+    }
+    def obj(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+        return {"type": "object", "additionalProperties": False, "properties": {**ref["properties"], **properties}, "required": [*ref["required"], *required]}
+    index = {"type": "integer", "minimum": 0}
+    filter_schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {"field": {"type": "string", "minLength": 1}, "operator": {"type": "string", "enum": ["suffix", "contains", "equals"]}, "value": {"type": "string"}},
+        "required": ["field", "operator", "value"],
+    }
+    operand = obj({"goal": index, "selector": {"type": "string", "enum": ["observed", "count", "filtered_count"]}, "value": {}}, [])
+    quantifier = obj({
+        "clause": index, "expected": {"type": "boolean"}, "kind": {"type": "string", "enum": ["quantifier"]},
+        "quantifier": {"type": "string", "enum": ["all", "any"]}, "collection_goal": index, "filter": filter_schema,
+    }, ["clause", "expected", "kind", "quantifier", "collection_goal", "filter"])
+    binary = obj({
+        "clause": index, "expected": {"type": "boolean"}, "kind": {"type": "string", "enum": ["binary"]},
+        "operator": {"type": "string", "enum": ["equals", "not_equals", "lt", "lte", "gt", "gte"]}, "left": operand, "right": operand,
+    }, ["clause", "expected", "kind", "operator", "left", "right"])
+    properties: dict[str, Any] = {
+        "schema_version": {"type": "string", "enum": ["intent-candidate/v2"]},
+        "clauses": {"type": "array", "maxItems": 64, "items": obj({
+            "role": {"type": "string", "enum": ["domain_goal", "safety_constraint", "evidence_requirement", "response_requirement", "discourse", "unknown_business_goal"]},
+            "polarity": {"type": "string", "enum": ["positive", "negative", "neutral"]},
+            "status": {"type": "string", "enum": ["mapped", "unmapped", "clarify"]}, "reason": {"type": "string"},
+        }, ["role", "polarity", "status", "reason"])},
+        "goals": {"type": "array", "maxItems": 64, "items": obj({
+            "clause": index, "domain": {"type": "string", "minLength": 1}, "entity": {"type": "string", "minLength": 1},
+            "capability": {"type": "string", "minLength": 1}, "target": {"type": "string", "minLength": 1},
+            "parameters": {"type": "object"}, "result_kind": {"type": "string", "enum": ["fact", "collection", "count", "filtered_count"]},
+            "filter": filter_schema, "item_schema": {"type": "object"}, "depends_on": {"type": "array", "maxItems": 64, "items": index}, "required": {"type": "boolean"},
+        }, ["clause", "domain", "entity", "capability", "target", "parameters", "result_kind", "required"])},
+        "scopes": {"type": "array", "maxItems": 64, "items": obj({"clause": index, "goal": index, "kind": {"type": "string", "enum": ["depth", "window", "filter"]}, "value": {}}, ["clause", "goal", "kind", "value"])},
+        "constraints": {"type": "array", "maxItems": 64, "items": obj({"clause": index, "action": {"type": "string", "enum": ["download", "install", "restart", "start", "stop", "write"]}, "effect": {"type": "string", "enum": ["forbid"]}}, ["clause", "action", "effect"])},
+        "evidence_requirements": {"type": "array", "maxItems": 32, "items": obj({"clause": index, "kind": {"type": "string", "enum": ["real_callback_per_goal", "independent_verification"]}, "goals": {"type": "array", "maxItems": 64, "items": index}}, ["clause", "kind", "goals"])},
+        "response_requirements": {"type": "array", "maxItems": 32, "items": obj({"clause": index, "kind": {"type": "string", "enum": ["cover_all", "synthesis", "source_order"]}, "goals": {"type": "array", "maxItems": 64, "items": index}}, ["clause", "kind", "goals"])},
+        "predicates": {"type": "array", "maxItems": 64, "items": {"oneOf": [quantifier, binary]}},
+        "unknown_goals": {"type": "array", "maxItems": 32, "items": obj({"clause": index, "reason": {"type": "string", "minLength": 1}}, ["clause", "reason"])},
+    }
+    return {"type": "object", "additionalProperties": False, "properties": properties, "required": list(properties)}
+
+
+def _intent_ir_schema() -> dict[str, Any]:
+    span = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "source_text": {"type": "string"}, "source_start": {"type": "integer", "minimum": 0},
+            "source_end": {"type": "integer", "minimum": 1},
+        }, "required": ["source_text", "source_start", "source_end"],
+    }
+    filter_schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {"field": {"type": "string"}, "operator": {"enum": ["suffix", "contains", "equals"]}, "value": {"type": "string"}},
+        "required": ["field", "operator", "value"],
+    }
+    clause = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"},
+            "role": {"enum": ["domain_goal", "safety_constraint", "evidence_requirement", "response_requirement", "discourse", "unknown_business_goal"]},
+            "polarity": {"enum": ["positive", "negative", "neutral"]}, "status": {"enum": ["mapped", "unmapped", "clarify"]}, "reason": {"type": "string"}},
+        "required": ["id", *span["required"], "role", "polarity", "status", "reason"],
+    }
+    goal = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"},
+            "domain": {"type": "string"}, "entity": {"type": "string"}, "capability": {"type": "string"}, "target": {"type": "string"},
+            "parameters": {"type": "object"}, "result_kind": {"enum": ["fact", "collection", "count", "filtered_count", "judgement"]},
+            "filter": filter_schema, "item_schema": {"type": "object", "additionalProperties": {"enum": ["string", "number", "boolean"]}},
+            "depends_on": {"type": "array", "items": {"type": "string"}}, "required": {"type": "boolean"}},
+        "required": ["id", "clause_id", *span["required"], "domain", "entity", "capability", "target", "parameters", "result_kind", "required"],
+    }
+    scope = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"}, "goal_id": {"type": "string"},
+            "kind": {"enum": ["depth", "window", "filter"]}, "value": {"type": ["string", "number", "boolean"]}},
+        "required": ["id", "clause_id", "goal_id", *span["required"], "kind", "value"],
+    }
+    constraint = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"},
+            "action": {"enum": ["download", "install", "restart", "start", "stop", "write"]}, "effect": {"const": "forbid"}},
+        "required": ["id", "clause_id", *span["required"], "action", "effect"],
+    }
+    evidence = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"},
+            "kind": {"enum": ["real_callback_per_goal", "independent_verification"]}, "goal_ids": {"type": "array", "items": {"type": "string"}}},
+        "required": ["id", "clause_id", *span["required"], "kind", "goal_ids"],
+    }
+    response = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"},
+            "kind": {"enum": ["cover_all", "synthesis", "source_order"]}, "goal_ids": {"type": "array", "items": {"type": "string"}}},
+        "required": ["id", "clause_id", *span["required"], "kind", "goal_ids"],
+    }
+    operand = {
+        **span, "properties": {**span["properties"], "goal_id": {"type": "string"}, "selector": {"enum": ["observed", "count", "filtered_count"]}, "value": {}},
+        "required": span["required"],
+    }
+    predicate = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"}, "kind": {"enum": ["quantifier", "binary"]},
+            "expected": {"type": "boolean"}, "quantifier": {"enum": ["all", "any"]}, "collection_goal_id": {"type": "string"}, "filter": filter_schema,
+            "operator": {"enum": ["equals", "not_equals", "lt", "lte", "gt", "gte"]}, "left": operand, "right": operand},
+        "required": ["id", "clause_id", *span["required"], "kind", "expected"],
+    }
+    unknown = {
+        **span, "properties": {**span["properties"], "id": {"type": "string"}, "clause_id": {"type": "string"}, "reason": {"type": "string"}},
+        "required": ["id", "clause_id", *span["required"], "reason"],
+    }
+    properties = {
+        "schema_version": {"const": "intent-ir/v1"}, "clauses": {"type": "array", "items": clause}, "goals": {"type": "array", "items": goal},
+        "scopes": {"type": "array", "items": scope}, "constraints": {"type": "array", "items": constraint},
+        "evidence_requirements": {"type": "array", "items": evidence}, "response_requirements": {"type": "array", "items": response},
+        "predicates": {"type": "array", "items": predicate}, "unknown_goals": {"type": "array", "items": unknown},
+    }
+    return {"type": "object", "additionalProperties": False, "properties": properties, "required": list(properties)}
+
+
 def _compact_history_content(content: str, limit: int) -> str:
     text = content.strip()
     if limit <= 0 or not text:
@@ -1361,8 +2734,39 @@ def _completion_fallback(task_state: str, evidence: list[dict[str, Any]], intent
         if summary:
             return summary
     if task_state == "SUCCEEDED":
-        return "任务已完成并通过验收。"
+        return "任务已结束，但没有真实工具与复验证据，无法确认完成。"
     return f"任务未完成（{task_state or 'UNKNOWN'}）：{intent[:120]}"
+
+
+def _format_source_goal_results(task_state: str, source_goals: list[dict[str, Any]], goal_results: list[dict[str, Any]]) -> str:
+    by_source: dict[str, dict[str, Any]] = {}
+    for result in goal_results:
+        if not isinstance(result, dict):
+            continue
+        for source_id in result.get("source_goal_ids", []):
+            by_source[str(source_id)] = result
+    lines: list[str] = []
+    for index, source in enumerate(source_goals, 1):
+        source_id = str(source.get("id", ""))
+        label = str(source.get("source_text", "目标"))
+        result = by_source.get(source_id)
+        if not result or result.get("status") != "satisfied":
+            lines.append(f"{index}. {label}：未完成（缺少对应真实证据）")
+        else:
+            lines.append(f"{index}. {str(result.get('summary', '')).strip() or label + '：已验证'}")
+    if task_state != "SUCCEEDED" and all("未完成" not in line for line in lines):
+        lines.append(f"权威终态：{task_state or 'UNKNOWN'}，不能宣称全部完成。")
+    return "\n".join(lines)
+
+
+def _explicit_restart_after_install(intent: str) -> bool:
+    if re.search(r"(?:不要|不得|禁止|无需|不必|别|不可|避免)[^，。；;\r\n]{0,24}(?:重启|restart)|(?:do\s+not|don't|without|never)[^,.;\r\n]{0,30}\brestart", intent, re.I):
+        return False
+    return bool(re.search(
+        r"(?:安装后|安装完成后|完成后|随后|然后|after\s+(?:the\s+)?install(?:ation)?|and\s+then)[^，。；;,.;\r\n]{0,30}(?:重启|restart)",
+        intent,
+        re.I,
+    ))
 
 
 def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_summary: str) -> str | None:
@@ -1393,17 +2797,37 @@ def _format_plugin_inventory_answer(intent: str, evidence_tool: str, evidence_su
 
 def _format_config_inspection_answer(intent: str, evidence_summary: str) -> str:
     """Keep full redacted configuration in evidence and answer only the request."""
-    path_match = re.search(r"Read\s+(/[^\s]+)\s+\((\d+)\s+bytes,\s*sha256:([a-f0-9]+)\)", evidence_summary, re.I)
+    path_match = re.search(r"Read\s+(/?[^\s]+)\s+\((\d+)\s+bytes,\s*sha256:([a-f0-9]+)\)", evidence_summary, re.I)
     path = path_match.group(1) if path_match else "配置文件"
     requested_tokens = re.findall(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_.-]{1,127})(?![A-Za-z0-9_.-])", intent)
-    ignored = {"read", "show", "inspect", "config", "properties", "json", "yaml", "yml", "conf", "server.properties"}
-    for token in reversed(requested_tokens):
-        if token.lower() in ignored or ("." in token and token.lower().endswith((".properties", ".json", ".yaml", ".yml", ".conf"))):
+    ignored = {
+        "a", "an", "and", "anything", "are", "change", "changing", "conf", "config", "do", "file", "from",
+        "in", "inside", "inspect", "json", "me", "modify", "not", "only", "or", "please", "properties",
+        "read", "readonly", "report", "server.properties", "show", "tell", "the", "this", "to", "value",
+        "values", "what", "without", "write", "yaml", "yml",
+    }
+    requested_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for token in requested_tokens:
+        normalized = token.lower()
+        if normalized in ignored or ("." in token and normalized.endswith((".properties", ".json", ".yaml", ".yml", ".conf"))):
             continue
+        if normalized in seen_keys:
+            continue
+        seen_keys.add(normalized)
+        requested_keys.append(token)
+
+    results: list[str] = []
+    for token in requested_keys:
         value_match = re.search(rf"(?m)^\s*{re.escape(token)}\s*[=:]\s*([^\r\n]*)$", evidence_summary, re.I)
         if value_match:
             value = value_match.group(1).strip()
-            return f"{path} 中 `{token}={value}`。此次仅做只读检查，未修改配置。"
+            if value == "<MISSING>":
+                results.append(f"`{token}` 未找到")
+            else:
+                results.append(f"`{token}={value}`")
+    if results:
+        return f"{path} 中" + "；".join(results) + "。此次仅做只读检查，未修改配置。"
     metadata = ""
     if path_match:
         metadata = f"（{path_match.group(2)} bytes，SHA-256 `{path_match.group(3)}`）"
