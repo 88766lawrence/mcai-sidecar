@@ -914,6 +914,50 @@ async def test_native_final_with_uncovered_evidence_uses_bounded_editor():
     assert len(provider.answer_calls) == 1
 
 
+async def test_named_plugin_check_repairs_root_listing_to_plugins_directory():
+    provider = FakeNativeProvider([
+        {"content": None, "tool_calls": [{"id": "call-root", "type": "function", "function": {
+            "name": "files.list", "arguments": '{"path":"."}',
+        }}]},
+        {"content": None, "tool_calls": [{"id": "call-plugins", "type": "function", "function": {
+            "name": "files.list", "arguments": '{"path":"plugins"}',
+        }}]},
+    ])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("确认 EssentialsX 是否真的安装好了，不要修改文件")
+    request["toolCatalog"] = [*TOOLS, {
+        "name": "files.list", "description": "List files in one directory.",
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    }]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["action"] == "tool_call"
+    assert result["decision"]["tool"] == "files.list"
+    assert result["decision"]["arguments"] == {"path": "plugins"}
+    assert result["repairUsed"] is True
+    assert "PLUGIN_DIRECTORY_REQUIRED" in provider.seen_messages[1][-1]["content"]
+
+
+async def test_bound_instance_metadata_answers_without_model_or_internal_ids():
+    provider = FakeNativeProvider([])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    base = payload("当前选中的实例叫什么？")
+    base["instance"] = {
+        "id": "mcs:daemon:aabbccddeeff00112233445566778899",
+        "name": "测试", "state": "stopped",
+    }
+    name = await graph.decide_agent_loop(base)
+    state = await graph.decide_agent_loop({**base, "message": "当前实例正在运行吗？"})
+
+    assert name["decision"] == {"action": "final", "answer": "当前选中的实例叫「测试」。", "citations": []}
+    assert state["decision"] == {"action": "final", "answer": "当前实例「测试」已停止，未在运行。", "citations": []}
+    assert provider.seen_tool_sets == []
+
+
 async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
@@ -940,6 +984,8 @@ async def main():
         test_invalid_terminal_revision_fails_closed_without_reopening_tools,
         test_listing_transcription_error_gets_one_fact_only_repair_without_reopening_tools,
         test_native_final_with_uncovered_evidence_uses_bounded_editor,
+        test_named_plugin_check_repairs_root_listing_to_plugins_directory,
+        test_bound_instance_metadata_answers_without_model_or_internal_ids,
     ]
     for test in tests:
         await test()
