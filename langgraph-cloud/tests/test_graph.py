@@ -101,180 +101,20 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision["trace"][0]["result"], "files.list")
         self.assertIn("/plugins", decision["toolIntent"])
 
-    async def test_agent_loop_accepts_one_plain_content_tool_decision_and_validates_catalog_schema(self):
-        class LoopProvider(FakeProvider):
-            def __init__(self): self.calls = []
-            async def plain_json(self, system, messages, max_tokens=0):
-                self.calls.append((system, messages, max_tokens))
-                return 'decision: {"action":"tool_call","tool":"files.list","arguments":{"path":"/plugins"},"reason":"inspect files"}'
+    async def test_native_terminal_coverage_is_repaired_without_reopening_tools(self):
+        from test_native_autonomous_tools import test_answer_coverage_omission_is_corrected_without_reopening_tools
 
-        provider = LoopProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop.sqlite3")
-        try:
-            result = await graph.decide_agent_loop({
-                "message": "List plugin jars", "systemPrompt": "Operate safely.", "history": [], "instance": {"id": "instance-1"},
-                "toolCatalog": [{"name": "files.list", "description": "List a safe directory.", "input_schema": {
-                    "type": "object", "additionalProperties": False, "properties": {"path": {"type": "string", "minLength": 1}}, "required": ["path"],
-                }}],
-                "observations": [], "round": 1, "limits": {"maxRounds": 8, "maxToolCalls": 19},
-            })
-            self.assertEqual(result["decision"]["tool"], "files.list")
-            self.assertEqual(result["decision"]["arguments"], {"path": "/plugins"})
-            self.assertFalse(result["repairUsed"])
-            self.assertIn('"toolCatalog"', provider.calls[0][1][-1]["content"])
-        finally:
-            await graph.close()
+        await test_answer_coverage_omission_is_corrected_without_reopening_tools()
 
-    async def test_agent_loop_repairs_once_after_unknown_tool_or_invalid_arguments(self):
-        class RepairProvider(FakeProvider):
-            def __init__(self): self.calls = []
-            async def plain_json(self, _system, messages, max_tokens=0):
-                self.calls.append(messages)
-                if len(self.calls) == 1:
-                    return '{"action":"tool_call","tool":"shell.exec","arguments":{"command":"ls"},"reason":"inspect"}'
-                return '{"action":"tool_call","tool":"config.inspect","arguments":{"path":"server.properties","keys":["motd"]},"reason":"read requested key"}'
+    async def test_native_invalid_terminal_revision_fails_closed(self):
+        from test_native_autonomous_tools import test_invalid_terminal_revision_fails_closed_without_reopening_tools
 
-        provider = RepairProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-repair.sqlite3")
-        catalog = [{"name": "config.inspect", "description": "Read exact keys.", "input_schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {"path": {"type": "string"}, "keys": {"type": "array", "minItems": 1, "items": {"type": "string"}}},
-            "required": ["path", "keys"],
-        }}]
-        try:
-            result = await graph.decide_agent_loop({"message": "Read motd", "systemPrompt": "Safe agent.", "history": [], "instance": {}, "toolCatalog": catalog, "observations": [], "round": 1, "limits": {"maxRounds": 8, "maxToolCalls": 19}})
-            self.assertEqual(result["decision"]["tool"], "config.inspect")
-            self.assertTrue(result["repairUsed"])
-            self.assertEqual(len(provider.calls), 2)
-            self.assertIn("invalid", provider.calls[1][-1]["content"])
-        finally:
-            await graph.close()
+        await test_invalid_terminal_revision_fails_closed_without_reopening_tools()
 
-    async def test_agent_loop_rejects_final_citation_without_successful_observation_after_one_repair(self):
-        class InvalidProvider(FakeProvider):
-            def __init__(self): self.calls = 0
-            async def plain_json(self, *_args, **_kwargs):
-                self.calls += 1
-                return '{"action":"final","answer":"Done","citations":["call-failed"]}'
+    async def test_native_listing_transcription_is_repaired_without_reopening_tools(self):
+        from test_native_autonomous_tools import test_listing_transcription_error_gets_one_fact_only_repair_without_reopening_tools
 
-        provider = InvalidProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-evidence.sqlite3")
-        try:
-            with self.assertRaises(ModelProviderError) as caught:
-                await graph.decide_agent_loop({
-                    "message": "Did it finish?", "systemPrompt": "Safe agent.", "history": [], "instance": {},
-                    "toolCatalog": [{"name": "files.list", "description": "List files.", "input_schema": {"type": "object", "additionalProperties": False, "properties": {"path": {"type": "string"}}, "required": ["path"]}}],
-                    "observations": [{"tool_call_id": "call-failed", "tool": "files.list", "status": "failed", "evidence": {"ids": [], "summaries": []}}],
-                    "round": 2, "limits": {"maxRounds": 8, "maxToolCalls": 19},
-                })
-            self.assertEqual(caught.exception.code, "AGENT_LOOP_INVALID_RESPONSE")
-            self.assertEqual(provider.calls, 2)
-        finally:
-            await graph.close()
-
-    async def test_agent_loop_protocol_binds_all_successful_observations_to_final(self):
-        class FinalProvider(FakeProvider):
-            async def plain_json(self, *_args, **_kwargs):
-                return '{"action":"final","answer":"Both results are available.","citations":["call-2"]}'
-        provider = FinalProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-citations.sqlite3")
-        try:
-            result = await graph.decide_agent_loop({
-                "message":"Compare both", "systemPrompt":"Safe agent.", "history":[], "instance":{}, "toolCatalog":[{"name":"plugin.resolve","description":"Resolve metadata.","input_schema":{"type":"object","additionalProperties":False,"properties":{"project":{"type":"string"}},"required":["project"]}}],
-                "observations":[
-                    {"tool_call_id":"call-1","tool":"plugin.resolve","status":"succeeded","evidence":{"ids":["e1"],"summaries":["one"]}},
-                    {"tool_call_id":"call-2","tool":"plugin.resolve","status":"succeeded","evidence":{"ids":["e2"],"summaries":["two"]}},
-                ], "round":3, "limits":{"maxRounds":8,"maxToolCalls":19},
-            })
-            self.assertEqual(result["decision"]["citations"], ["call-1", "call-2"])
-        finally:
-            await graph.close()
-
-    async def test_agent_loop_repairs_partial_final_into_remaining_tool_call(self):
-        class PartialProvider(FakeProvider):
-            def __init__(self): self.calls = 0
-            async def plain_json(self, *_args, **_kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    return '{"action":"final","answer":"ViaVersion 尚未拉取，如需继续请确认。","citations":["call-1"]}'
-                return '{"action":"tool_call","tool":"plugin.resolve","arguments":{"project":"viaversion"},"reason":"Resolve the remaining subject."}'
-        provider=PartialProvider();graph=McaiGraph(provider,Path(self.temp.name)/"agent-loop-partial.sqlite3")
-        try:
-            result=await graph.decide_agent_loop({"message":"Compare both","systemPrompt":"Safe agent.","history":[],"instance":{},"toolCatalog":[{"name":"plugin.resolve","description":"Resolve metadata.","input_schema":{"type":"object","additionalProperties":False,"properties":{"project":{"type":"string"}},"required":["project"]}}],"observations":[{"tool_call_id":"call-1","tool":"plugin.resolve","status":"succeeded","evidence":{"ids":["e1"],"summaries":["one"]}}],"round":2,"limits":{"maxRounds":8,"maxToolCalls":19}})
-            self.assertEqual(result["decision"]["action"],"tool_call");self.assertTrue(result["repairUsed"]);self.assertEqual(provider.calls,2)
-        finally: await graph.close()
-
-    async def test_agent_loop_repairs_a_final_that_promises_another_tool_call(self):
-        class RepairProvider(FakeProvider):
-            def __init__(self): self.calls = 0
-            async def plain_json(self, *_args, **_kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    return '{"action":"final","answer":"下面改用只读命令获取插件。","citations":["call-1"]}'
-                return '{"action":"tool_call","tool":"console.command","arguments":{"command":"plugins"},"reason":"Read the loaded plugin list."}'
-
-        provider = RepairProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-terminal-repair.sqlite3")
-        try:
-            result = await graph.decide_agent_loop({
-                "message": "Recover safely", "systemPrompt": "Safe agent.", "history": [], "instance": {},
-                "toolCatalog": [{"name": "console.command", "description": "Run a console read.", "input_schema": {"type": "object", "additionalProperties": False, "properties": {"command": {"type": "string"}}, "required": ["command"]}}],
-                "observations": [{"tool_call_id": "call-1", "tool": "files.list", "status": "succeeded", "evidence": {"ids": ["e1"], "summaries": ["path missing"]}}],
-                "round": 2, "limits": {"maxRounds": 8, "maxToolCalls": 19},
-            })
-            self.assertEqual(result["decision"]["action"], "tool_call")
-            self.assertTrue(result["repairUsed"])
-            self.assertEqual(provider.calls, 2)
-        finally:
-            await graph.close()
-
-    async def test_agent_loop_repairs_a_final_that_leaks_infrastructure_details(self):
-        class RepairProvider(FakeProvider):
-            def __init__(self): self.calls = 0
-            async def plain_json(self, *_args, **_kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    return '{"action":"final","answer":"结果来自实例 mcs:daemon:8a54968e5a944f40b50b6cbefdec3e4f。","citations":["call-1"]}'
-                return '{"action":"final","answer":"当前服务器运行正常。","citations":["call-1"]}'
-
-        provider = RepairProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-detail-repair.sqlite3")
-        try:
-            result = await graph.decide_agent_loop({
-                "message": "Check server", "systemPrompt": "Safe agent.", "history": [], "instance": {},
-                "toolCatalog": [{"name": "console.command", "description": "read", "input_schema": {"type": "object", "additionalProperties": False, "properties": {"command": {"type": "string"}}, "required": ["command"]}}],
-                "observations": [{"tool_call_id": "call-1", "tool": "console.command", "status": "succeeded", "evidence": {"ids": ["e1"], "summaries": ["Paper is running"]}}],
-                "round": 2, "limits": {"maxRounds": 8, "maxToolCalls": 19},
-            })
-            self.assertEqual(result["decision"]["answer"], "当前服务器运行正常。")
-            self.assertTrue(result["repairUsed"])
-            self.assertEqual(provider.calls, 2)
-        finally:
-            await graph.close()
-
-    async def test_agent_loop_repairs_a_final_that_copies_execution_diagnostics(self):
-        class RepairProvider(FakeProvider):
-            def __init__(self): self.calls = 0
-            async def plain_json(self, *_args, **_kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    return '{"action":"final","answer":"ViaVersion is compatible. Executed successfully; not independently verified.","citations":["call-1"]}'
-                return '{"action":"final","answer":"ViaVersion is compatible with Paper 1.21.1.","citations":["call-1"]}'
-
-        provider = RepairProvider()
-        graph = McaiGraph(provider, Path(self.temp.name) / "agent-loop-status-leak-repair.sqlite3")
-        try:
-            result = await graph.decide_agent_loop({
-                "message": "Check compatibility", "systemPrompt": "Safe agent.", "history": [], "instance": {},
-                "toolCatalog": [{"name": "plugin.resolve", "description": "read", "input_schema": {"type": "object", "additionalProperties": False, "properties": {"project": {"type": "string"}}, "required": ["project"]}}],
-                "observations": [{"tool_call_id": "call-1", "tool": "plugin.resolve", "status": "succeeded", "evidence": {"ids": ["e1"], "summaries": ["compatible"]}}],
-                "round": 2, "limits": {"maxRounds": 8, "maxToolCalls": 19},
-            })
-            self.assertEqual(result["decision"]["answer"], "ViaVersion is compatible with Paper 1.21.1.")
-            self.assertTrue(result["repairUsed"])
-            self.assertEqual(provider.calls, 2)
-        finally:
-            await graph.close()
+        await test_listing_transcription_error_gets_one_fact_only_repair_without_reopening_tools()
 
     def test_agent_loop_unique_json_extractor_accepts_one_object_and_rejects_multiple(self):
         self.assertEqual(_unique_json_object('short preface {"action":"cannot_proceed","answer":"Need a target"}'), {"action": "cannot_proceed", "answer": "Need a target"})
