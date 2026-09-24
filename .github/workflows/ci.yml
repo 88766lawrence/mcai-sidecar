@@ -37,3 +37,7 @@ jobs:
       - run: python -m unittest discover -s langgraph-cloud/tests -v
         env:
           PYTHONPATH: langgraph-cloud
+
+      - run: python langgraph-cloud/tests/test_native_autonomous_tools.py
+        env:
+          PYTHONPATH: langgraph-cloud
