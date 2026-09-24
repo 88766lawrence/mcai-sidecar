@@ -24,6 +24,8 @@ SUPPORTED_OPERATIONS = (
     "config.patch",
     "plugin.resolve",
     "plugin.install",
+    "web.search",
+    "file.download",
     "console.command",
     "instance.start",
     "instance.stop",
@@ -41,6 +43,7 @@ MODEL_HISTORY_TOTAL_CHARS = 6_000
 AGENT_LOOP_MAX_PROVIDER_TOKENS = 768
 AGENT_LOOP_MAX_OUTPUT_CHARS = 12_000
 AGENT_LOOP_MAX_TOOLS = 64
+AGENT_LOOP_TOTAL_SECONDS = 28
 INTENT_CANDIDATE_OUTPUT_MAX_CHARS = 24_000
 INTENT_COMPILER_INPUT_MAX_CHARS = 16_000
 INTENT_COMPILER_PROMPT_MAX_CHARS = 24_000
@@ -113,9 +116,14 @@ class ModelProvider:
         messages: list[dict[str, str]],
         schema: dict[str, Any],
         timeout_seconds: float = MODEL_PROVIDER_TIMEOUT_SECONDS,
+        prefer_fast: bool = False,
     ) -> dict[str, Any]:
         attempts: list[dict[str, str]] = []
         models = tuple(dict.fromkeys((self.config.model, *self.config.fallback_models)))
+        if prefer_fast:
+            fast = next((model for model in reversed(models) if "highspeed" in model.lower()), None)
+            if fast:
+                models = tuple(dict.fromkeys((fast, self.config.model, *models)))
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         answer_only = {str(item) for item in schema.get("required", [])} == {"answer"}
         # A sub-agent produces prose, not an executable routing decision.  The
@@ -178,6 +186,76 @@ class ModelProvider:
                 attempts.append({"model": model, "mode": "plain_content", "code": "EMPTY_RESPONSE"})
             except Exception as error:  # noqa: BLE001
                 attempts.append({"model": model, "mode": "plain_content", "code": _provider_error_code(error)})
+        raise ModelProviderError(_dominant_provider_error(attempts), attempts)
+
+    async def native_tool_turn(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int = AGENT_LOOP_MAX_PROVIDER_TOKENS,
+        prefer_fast: bool = False,
+    ) -> dict[str, Any]:
+        """Let the model autonomously select one registered application function."""
+        endpoint = self.config.base_url.rstrip("/") + "/chat/completions"
+        provider_tools = [{
+            "type": "function",
+            "function": {
+                "name": item["name"],
+                "description": item["description"],
+                "parameters": item["input_schema"],
+            },
+        } for item in tools]
+        attempts: list[dict[str, Any]] = []
+        models = tuple(dict.fromkeys((self.config.model, *self.config.fallback_models)))
+        if prefer_fast:
+            fast = next((model for model in reversed(models) if "highspeed" in model.lower()), None)
+            if fast:
+                models = tuple(dict.fromkeys((fast, self.config.model, *models)))
+        deadline = asyncio.get_running_loop().time() + MODEL_ANSWER_REQUEST_TIMEOUT_SECONDS
+        for model_index, model in enumerate(models[:2]):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            body = {
+                "model": model,
+                "temperature": 0.01,
+                "max_completion_tokens": max(64, min(2_048, max_tokens)),
+                "messages": [{"role": "system", "content": system}, *messages],
+                "tools": provider_tools,
+                "tool_choice": "auto",
+            }
+            try:
+                attempt_timeout = remaining if prefer_fast and model_index == 0 else (
+                    min(14.0, remaining) if model_index == 0 and len(models) > 1 else remaining
+                )
+                async with asyncio.timeout(attempt_timeout):
+                    async with httpx.AsyncClient(timeout=attempt_timeout) as client:
+                        response = await client.post(
+                            endpoint,
+                            headers={"authorization": f"Bearer {self.config.api_key}"},
+                            json=body,
+                        )
+                if response.status_code >= 400:
+                    attempts.append({"model": model, "mode": "native_tools", "code": f"HTTP_{response.status_code}"})
+                    # Some compatible gateways return a model-specific 400
+                    # for a request shape that another configured model accepts.
+                    # Authentication and semantic client errors still stop.
+                    if response.status_code not in {400, 502, 503, 504}:
+                        break
+                    continue
+                message = _provider_message(response.json())
+                if message is not None:
+                    public_content = _compatibility_text(message.get("content"))
+                    public_tool_calls = message.get("tool_calls")
+                    if public_content or (isinstance(public_tool_calls, list) and public_tool_calls):
+                        return {"message": message, "providerModel": model}
+                attempts.append({"model": model, "mode": "native_tools", "code": "EMPTY_RESPONSE"})
+            except Exception as error:  # noqa: BLE001
+                code = _provider_error_code(error)
+                attempts.append({"model": model, "mode": "native_tools", "code": code})
+                if code not in {"TIMEOUT", "NETWORK", "UNAVAILABLE"}:
+                    break
         raise ModelProviderError(_dominant_provider_error(attempts), attempts)
 
     async def compact_json(
@@ -567,7 +645,8 @@ def _validate_json_shape(value: Any, schema: dict[str, Any], path: str = "$") ->
     elif expected == "array":
         if not isinstance(value, list): return f"{path}:TYPE"
         if len(value) < int(schema.get("minItems", 0)): return f"{path}:MIN_ITEMS"
-        if len(value) > int(schema.get("maxItems", 10_000)): return f"{path}:MAX_ITEMS"
+        max_items = int(schema.get("maxItems", 10_000))
+        if len(value) > max_items: return f"{path}:MAX_ITEMS={max_items}"
         for index, item in enumerate(value):
             error = _validate_json_shape(item, schema.get("items") or {}, f"{path}[{index}]")
             if error: return error
@@ -609,6 +688,21 @@ def _agent_loop_tool_catalog(value: Any) -> list[dict[str, Any]]:
     return tools
 
 
+def _agent_loop_tools_available_for_instance(
+    tools: list[dict[str, Any]], instance: dict[str, Any],
+) -> list[dict[str, Any]]:
+    state = str(instance.get("state") or "").strip().lower()
+    unavailable: set[str] = set()
+    if state == "stopped":
+        unavailable = {
+            "console.command", "instance.metrics", "players.inspect",
+            "instance.stop", "instance.restart",
+        }
+    elif state == "running":
+        unavailable = {"instance.start"}
+    return [item for item in tools if item["name"] not in unavailable]
+
+
 def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
     return {
         "oneOf": [
@@ -635,6 +729,532 @@ def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
             },
         ],
     }
+
+
+def _terminal_review_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    remaining_chars = 5_000
+    for item in observations:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        summaries = evidence.get("summaries") if isinstance(evidence.get("summaries"), list) else []
+        structured = item.get("observed", item.get("data", item.get("output")))
+        try:
+            structured_text = json.dumps(structured, ensure_ascii=False, separators=(",", ":")) if structured is not None else ""
+        except (TypeError, ValueError):
+            structured_text = ""
+        succeeded = item.get("status") == "succeeded"
+        error = item.get("error") if isinstance(item.get("error"), dict) else {}
+        summary_texts = [str(value) for value in summaries]
+        selected_summaries = (
+            summary_texts[:2]
+            if succeeded
+            else list(dict.fromkeys([*summary_texts[:1], *summary_texts[-2:]]))
+        )
+        projection = {
+            "tool_call_id": str(item.get("tool_call_id") or "")[:128],
+            "tool": str(item.get("tool") or "")[:64],
+            "status": str(item.get("status") or "")[:32],
+            "retryable": item.get("retryable") is True,
+            "side_effect": str(item.get("side_effect") or "")[:32],
+            "error": str(error.get("code") or "")[:96],
+            "error_message": str(error.get("message") or "")[:320],
+            "summaries": [str(value)[:320] for value in selected_summaries],
+            "structured_result": structured_text[:900] if succeeded else "",
+        }
+        encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > remaining_chars:
+            projection["summaries"] = [str(value)[:160] for value in selected_summaries[-1:]]
+            projection["error_message"] = str(error.get("message") or "")[:160]
+            projection["structured_result"] = structured_text[:400] if succeeded else ""
+            encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > remaining_chars:
+            projection["summaries"] = []
+            encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > remaining_chars:
+            raise ValueError("TERMINAL_REVIEW_OBSERVATION_BUDGET")
+        projected.append(projection)
+        remaining_chars -= len(encoded)
+    return projected
+
+
+def _evidence_routing_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep unresolved attempts while folding older failures recovered by newer success."""
+    projected = _terminal_review_observations(observations)
+    succeeded_tools: set[str] = set()
+    current: list[dict[str, Any]] = []
+    for item in projected:
+        tool = str(item.get("tool") or "")
+        status = str(item.get("status") or "")
+        if status != "succeeded" and tool in succeeded_tools:
+            continue
+        current.append(item)
+        if status == "succeeded":
+            succeeded_tools.add(tool)
+    return current
+
+
+def _safe_failure_fact(observations: list[dict[str, Any]]) -> str:
+    """Select one producer-owned, user-safe concrete fact from failed observations."""
+    candidates: list[tuple[str, int]] = []
+    for item in reversed(_terminal_review_observations(observations)):
+        if item.get("status") not in {"failed", "indeterminate"}:
+            continue
+        error_message = str(item.get("error_message") or "").strip()
+        if error_message:
+            candidates.append((error_message, 4))
+        summaries = item.get("summaries") if isinstance(item.get("summaries"), list) else []
+        candidates.extend((str(value).strip(), 0) for value in reversed(summaries) if str(value).strip())
+
+    def sanitize(value: str) -> str:
+        text = re.sub(
+            r"(?i)(api[_ -]?key|token|secret|password)\s*[:=]\s*\S+",
+            r"\1=[REDACTED]",
+            value,
+        )
+        text = re.sub(r"https?://\S+|\bmcs:[A-Za-z0-9:_-]{12,}\b|\b(?:task|call)_[a-z0-9-]{8,}\b", "", text, flags=re.I)
+        for operation in SUPPORTED_OPERATIONS:
+            text = re.sub(rf"\b{re.escape(operation)}\b", "requested operation", text, flags=re.I)
+        text = re.sub(
+            r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+            lambda match: match.group(0).replace("_", " "),
+            text,
+            flags=re.I,
+        )
+        return re.sub(r"\s+", " ", text).strip(" ;,，。\n\r\t")[:320]
+
+    def score(value: str) -> int:
+        points = 0
+        if re.search(r"\b(?:HTTP\s*)?[45]\d\d\b", value, re.I):
+            points += 8
+        if re.search(r"不存在|未找到|拒绝|超时|不可用|错误|失败|not found|no exact|denied|timeout|unavailable|error|fail", value, re.I):
+            points += 4
+        if re.search(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b", value):
+            points += 3
+        if re.search(r"Tool registry and policy checks passed|Read-only task requires no mutable snapshot|Execution started after local policy checks", value, re.I):
+            points -= 20
+        return points
+
+    safe = [(sanitize(value), source_weight) for value, source_weight in candidates]
+    safe = [(value, source_weight) for value, source_weight in safe if value]
+    if not safe:
+        return ""
+    best, source_weight = max(safe, key=lambda item: (score(item[0]) + item[1], len(item[0])))
+    return best if score(best) + source_weight > 0 else ""
+
+
+def _ensure_cannot_proceed_failure_fact(answer: str, observations: list[dict[str, Any]]) -> str:
+    fact = _safe_failure_fact(observations)
+    answer = answer.strip()
+    if not fact:
+        return answer
+    normalized_answer = re.sub(r"\s+", "", answer).casefold()
+    normalized_fact = re.sub(r"\s+", "", fact).casefold()
+    anchors = [
+        value.casefold()
+        for value in re.findall(r"(?:HTTP\s*)?[45]\d\d|[\u3400-\u9fff]{4,}|[A-Za-z][A-Za-z0-9.-]{4,}", fact, re.I)
+        if value.casefold() not in {"requested", "operation", "failed", "failure", "error"}
+    ]
+    if normalized_fact in normalized_answer or any(anchor in normalized_answer for anchor in anchors):
+        return answer
+    chinese = bool(re.search(r"[\u3400-\u9fff]", answer))
+    punctuation = "" if re.search(r"[。.!！?？]$", answer) else ("。" if chinese else ".")
+    suffix = ("具体失败原因：" if chinese else "Concrete failure: ") + fact
+    if chinese and not re.search(r"[。！!?？]$", suffix):
+        suffix += "。"
+    elif not chinese and not re.search(r"[.!?]$", suffix):
+        suffix += "."
+    prefix = answer[:max(0, 4_000 - len(punctuation) - len(suffix))].rstrip()
+    return prefix + punctuation + suffix
+
+
+def _answer_admits_request_incomplete(answer: str) -> bool:
+    return bool(re.search(
+        r"(?:无法|不能|未能|没有办法)[^。.!！\n]{0,36}(?:继续|安全完成|完成(?:这|该|当前)?(?:条)?请求|完成(?:这|该|当前)?(?:个)?目标)"
+        r"|\b(?:cannot|can't|unable to|could not)\b[^.!?\n]{0,48}\b(?:continue|complete (?:the |this )?(?:request|goal|task))\b",
+        answer,
+        re.I,
+    ))
+
+
+def _sanitize_terminal_answer_text(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s*\(\s*\d+\s+bytes\s*,\s*sha-?256\s*:[^)]+\)", "", text, flags=re.I)
+    text = re.sub(r"(?:^|[;,；，]\s*)(?:sha-?256|query[_ -]?digest)\s*[:=]\s*[a-f0-9]{8,}", "", text, flags=re.I)
+    text = re.sub(r"(?:^|[;；\-]\s*)filters\s*[:=]\s*[a-z0-9_|.-]+", "", text, flags=re.I | re.M)
+    text = re.sub(r"\b(?:task|call)_[a-z0-9-]{8,}\b", "", text, flags=re.I)
+    for operation in SUPPORTED_OPERATIONS:
+        text = re.sub(rf"\b{re.escape(operation)}\b", "the successful operation", text, flags=re.I)
+    text = re.sub(
+        r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+        lambda match: match.group(0).replace("_", " "),
+        text,
+        flags=re.I,
+    )
+    return re.sub(r"[ \t]+", " ", text).strip(" ;,\n\r\t")
+
+
+def _terminal_answer_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project successful observations into user facts, not execution protocol."""
+    projected: list[dict[str, Any]] = []
+    seen_facts: set[str] = set()
+    remaining_chars = 5_000
+    specific_listing_available = any(
+        item.get("status") == "succeeded"
+        and str(item.get("tool") or "") == "files.list"
+        and any(
+            re.search(r"(?:实例目录|directory)\s+(?!\.(?:\s|[：:]))\S+", str(summary or ""), re.I)
+            for summary in (
+                item.get("evidence", {}).get("summaries", [])
+                if isinstance(item.get("evidence"), dict) else []
+            )
+        )
+        for item in observations
+    )
+    boilerplate = re.compile(
+        r"^(?:Tool registry and policy checks passed|Read-only task requires no mutable snapshot|"
+        r"Execution started after local policy checks|Executed successfully; not independently verified)\.?$",
+        re.I,
+    )
+
+    def naturalize(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text or boilerplate.fullmatch(text):
+            return ""
+        query_values = {
+            key: re.search(rf"(?:^|[;\s]){key}=([0-9]+)(?=;|\s|$)", text, re.I)
+            for key in ("matches", "window_minutes", "scanned_lines", "sample_count")
+        }
+        if all(match is not None for match in query_values.values()):
+            match_count = int(query_values["matches"].group(1))
+            sample_count = int(query_values["sample_count"].group(1))
+            text = (
+                "Bounded query facts: "
+                f"time window {query_values['window_minutes'].group(1)} minutes; "
+                f"lines examined {query_values['scanned_lines'].group(1)}; "
+                f"matches {match_count}; "
+                f"samples {sample_count}."
+            )
+            sample_section = re.search(r"Matched samples\s*:\s*(.*)$", str(value or ""), re.I | re.S)
+            if match_count > 0 and sample_section:
+                raw_lines = [line.strip() for line in sample_section.group(1).splitlines() if line.strip()]
+                levels = [
+                    match.group(1).upper()
+                    for line in raw_lines
+                    if (match := re.search(r"(?:/|\[)\s*(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s*\]", line, re.I))
+                ]
+                homogeneous_level_samples = (
+                    len(raw_lines) == sample_count
+                    and len(levels) == sample_count
+                    and len(set(levels)) == 1
+                )
+                homogeneous_save_samples = homogeneous_level_samples and all(
+                    re.search(r"\b(?:save|saved|saving)\b", line, re.I) for line in raw_lines
+                )
+                if homogeneous_save_samples:
+                    text += f" The {sample_count} shown sample lines are all {levels[0]}-level save records."
+                elif homogeneous_level_samples:
+                    first_sample = _sanitize_terminal_answer_text(raw_lines[0])[:240]
+                    text += f" The {sample_count} shown sample lines are all {levels[0]}-level records."
+                    if first_sample:
+                        text += " First shown sample: " + first_sample
+                else:
+                    samples = _sanitize_terminal_answer_text(sample_section.group(1))
+                    if samples and samples.lower() != "<none>":
+                        text += " Returned sample lines (a bounded subset, not all matches):\n" + samples[:900]
+                if match_count > sample_count:
+                    text += (
+                        f" The other {match_count - sample_count} matches were not shown or reviewed; "
+                        "the samples do not support a claim that requested signals were absent or a conclusion about all matches or the whole instance."
+                    )
+        else:
+            text = _sanitize_terminal_answer_text(text)
+        return text
+
+    for item in observations:
+        if item.get("status") != "succeeded":
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        summaries = evidence.get("summaries") if isinstance(evidence.get("summaries"), list) else []
+        facts: list[str] = []
+        download_fact = _verified_download_fact(item)
+        if download_fact:
+            facts.append(download_fact)
+        for summary in summaries:
+            if (
+                specific_listing_available
+                and str(item.get("tool") or "") == "files.list"
+                and re.search(r"(?:实例目录|directory)\s+\.\s*[：:]", str(summary or ""), re.I)
+            ):
+                continue
+            fact = naturalize(summary)
+            if fact and fact not in facts and fact not in seen_facts:
+                facts.append(fact[:1_200])
+        if not facts:
+            continue
+        projection = {"facts": facts}
+        encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        while facts and len(encoded) > remaining_chars:
+            facts.pop()
+            encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if not facts:
+            break
+        projected.append(projection)
+        seen_facts.update(facts)
+        remaining_chars -= len(encoded)
+    return projected
+
+
+def _verified_download_fact(item: dict[str, Any]) -> str:
+    """Render only a producer-verified, byte-bound download result."""
+    if item.get("tool") != "file.download" or item.get("status") != "succeeded":
+        return ""
+    data = item.get("data")
+    observations = data.get("observations") if isinstance(data, dict) else None
+    if not isinstance(observations, list):
+        return ""
+    by_kind: dict[str, dict[str, Any]] = {}
+    for entry in observations:
+        if not isinstance(entry, dict) or entry.get("kind") not in {"download", "verification.download"}:
+            continue
+        observed = entry.get("observed")
+        if entry.get("result") == "match" and isinstance(observed, dict):
+            by_kind[str(entry["kind"])] = observed
+    created = by_kind.get("download")
+    verified = by_kind.get("verification.download")
+    if created is None or verified is None or created != verified:
+        return ""
+    if set(created) != {"schema_version", "target", "size_bytes", "sha256", "source_url_sha256", "created"}:
+        return ""
+    target, size, checksum = created.get("target"), created.get("size_bytes"), created.get("sha256")
+    source_hash = created.get("source_url_sha256")
+    if (created.get("schema_version") != "file-download-result/v1" or created.get("created") is not True
+            or not isinstance(target, str) or not re.fullmatch(r'downloads/[^/\\<>"|?*;:\x00-\x1f]{1,160}', target)
+            or not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= 64 * 1024 * 1024
+            or not isinstance(checksum, str) or not re.fullmatch(r"[a-f0-9]{64}", checksum)
+            or not isinstance(source_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", source_hash)):
+        return ""
+    return f"Created and byte-exactly verified {target}: {size} bytes; SHA-256 {checksum}."
+
+
+def _terminal_review_semantic_error(answer: str, observations: list[dict[str, Any]]) -> str | None:
+    """Reject reviewer prose that assigns meanings not present in successful facts."""
+    successful_summaries: list[tuple[str, str]] = []
+    for item in observations:
+        if item.get("status") != "succeeded":
+            continue
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        summaries = evidence.get("summaries") if isinstance(evidence.get("summaries"), list) else []
+        successful_summaries.extend((str(item.get("tool") or ""), str(summary or "")) for summary in summaries)
+
+    specific_listing_available = any(
+        tool == "files.list"
+        and re.search(r"(?:实例目录|directory)\s+(?!\.(?:\s|[：:]))\S+", summary, re.I)
+        for tool, summary in successful_summaries
+    )
+    active_listing_summaries = {
+        summary for tool, summary in successful_summaries
+        if tool == "files.list"
+        and re.search(r"共\s*\d+\s*项\s*[：:]", summary, re.I)
+        and not (
+            specific_listing_available
+            and re.search(r"(?:实例目录|directory)\s+\.(?:\s|[：:])", summary, re.I)
+        )
+    }
+
+    for tool, summary in successful_summaries:
+        if tool != "files.list":
+            continue
+        if summary not in active_listing_summaries:
+            continue
+        listing = re.search(r"共\s*\d+\s*项\s*[：:]\s*(.+)$", summary, re.I | re.S)
+        if not listing:
+            continue
+        entries = [entry.strip() for entry in listing.group(1).split("、") if entry.strip()]
+        total_match = re.search(r"共\s*(\d+)\s*项", summary, re.I)
+        if total_match:
+            total_count = int(total_match.group(1))
+            count_contexts = [answer]
+            if len(active_listing_summaries) > 1:
+                count_contexts = [
+                    clause for clause in re.split(r"[。.!！；;\n]+", answer)
+                    if any(entry and entry in clause for entry in entries)
+                ]
+            nearby_counts = (
+                count_match
+                for context in count_contexts
+                for count_match in re.finditer(
+                r"(?:(?<!\d)(\d+)\s*项[^。.!！；;\n]{0,16}(?:插件|清单|条目)|"
+                r"(?:插件|清单|目录|条目)[^。.!！；;\n]{0,16}?(?<!\d)(\d+)\s*项)",
+                    context, re.I,
+                )
+            )
+            for count_match in nearby_counts:
+                stated_count = int(count_match.group(1) or count_match.group(2))
+                if stated_count != total_count:
+                    return "LISTING_COUNT_INFERENCE"
+        for entry in entries:
+            escaped = re.escape(entry)
+            exact_entry = re.search(
+                rf"(?<![A-Za-z0-9_.-]){escaped}(?![A-Za-z0-9_.-])",
+                answer,
+            )
+            if not exact_entry:
+                return "LISTING_ENTRY_OMITTED"
+            if re.search(
+                rf"{escaped}\s*(?:[（(：:][^）)\n]{{1,60}}[）)]|"
+                rf"(?:为|是|属于|对应|用于|负责|提供)[^。.!！；;\n]{{0,60}}|"
+                rf"(?:\d+\s*个)?(?:目录|文件|插件|缓存|组件|版本))",
+                answer, re.I,
+            ):
+                return "LISTING_ENTRY_INFERENCE"
+
+    raw_note = re.compile(
+        r"(?:原始值|原值|未作解读|不作解读|未解读|不解读|raw values?|not interpreted|without interpretation)",
+        re.I,
+    )
+    for tool, summary in successful_summaries:
+        if tool != "config.inspect":
+            continue
+        for key, value in re.findall(r"^([A-Za-z][\w.-]*)=([^\r\n]+)$", summary, re.M):
+            fact = _sanitize_terminal_answer_text(f"{key}={value.strip()}")
+            if fact not in answer:
+                return "CONFIG_VALUE_OMITTED"
+            expansion = re.search(rf"{re.escape(fact)}\s*[（(：:]([^）)\n]{{1,80}})", answer)
+            if expansion and not raw_note.search(expansion.group(1)):
+                return "CONFIG_VALUE_INFERENCE"
+
+    risk_terms = r"(?:内存故障|内存耗尽|堆耗尽|卡顿|组件加载失败|加载失败|崩溃|异常|memory fault|memory exhaustion|lag|load failure|crash|anomaly)"
+    affirmative = r"(?:存在|出现|观察到|被观察到|发现|证实|表明|意味着|说明|优先|应(?:当)?(?:关注|处理)|需(?:要)?(?:关注|处理)|风险(?:正在|较高|很高|高))"
+    negated = re.compile(
+        r"(?:不能|无法|不可|不足以|不代表|未能确定|无法判断|"
+        r"未[^，,。.!！；;\n]{0,16}(?:发现|观察到|见到|检出)|"
+        r"cannot|can't|insufficient|does not)",
+        re.I,
+    )
+    for clause in re.split(r"[，,。.!！；;\n]+", answer):
+        if not re.search(risk_terms, clause, re.I) or negated.search(clause):
+            continue
+        if re.search(rf"(?:{affirmative})[^，,。.!！；;\n]{{0,36}}{risk_terms}|{risk_terms}[^，,。.!！；;\n]{{0,24}}(?:{affirmative})", clause, re.I):
+            return "UNSUPPORTED_RISK_INFERENCE"
+        absence = re.search(r"(?:未见|未观察到|未发现|没有|无)(?:任何)?[^，,。.!！；;\n]{0,28}(?:证据|记录|信号|迹象)", clause, re.I)
+        explicit_shown_scope = re.search(r"(?:展示|返回|所给)[^，,。.!！；;\n]{0,20}(?:样本|\d+\s*行)|样本[^，,。.!！；;\n]{0,16}(?:中|内)", clause, re.I)
+        if absence and (re.search(r"(?:展示|样本)外", clause, re.I) or not explicit_shown_scope):
+            return "UNSUPPORTED_RISK_ABSENCE"
+
+    bounded_records: list[tuple[int, int, str | None, tuple[str, ...]]] = []
+    for tool, summary in successful_summaries:
+        if tool != "logs.query":
+            continue
+        matched = re.search(r"(?:^|[;:])\s*matches=(\d+)", summary, re.I)
+        sampled = re.search(r"(?:^|[;:])\s*sample_count=(\d+)", summary, re.I)
+        sample_section = re.search(r"Matched samples\s*:\s*(.*)$", summary, re.I | re.S)
+        if not matched or not sampled:
+            continue
+        sample_text = "" if not sample_section else sample_section.group(1)
+        levels = [] if not sample_section else [
+            match.group(1).upper()
+            for line in sample_text.splitlines()
+            if (match := re.search(r"(?:/|\[)\s*(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s*\]", line, re.I))
+        ]
+        level = levels[0] if levels and len(set(levels)) == 1 else None
+        sample_markers: list[str] = []
+        if re.search(r"(?:\bsav(?:e|ed|ing)\b|保存|存档)", sample_text, re.I):
+            sample_markers.extend(("保存", "存档", "save", "saved"))
+        if re.search(r"Paper\s+Watchdog|Watchdog\s+Thread", sample_text, re.I):
+            sample_markers.append("Watchdog")
+        if re.search(r"ForkJoinPool", sample_text, re.I):
+            sample_markers.append("ForkJoinPool")
+        record = (int(matched.group(1)), int(sampled.group(1)), level, tuple(sample_markers))
+        if record not in bounded_records:
+            bounded_records.append(record)
+    for match_count, sample_count, level, sample_markers in bounded_records:
+        exact_match_count = re.compile(
+            rf"(?:{match_count}\s*(?:条|个|行)?\s*(?:匹配|命中)|(?:匹配|命中)[^。.!！\n]{{0,16}}{match_count})",
+            re.I,
+        )
+        if match_count > 0 and not exact_match_count.search(answer):
+            return "LOG_MATCH_COUNT_OMITTED"
+        if match_count > sample_count:
+            exact_sample_count = re.compile(
+                rf"(?:{sample_count}\s*(?:条|个|行)?[^。.!！\n]{{0,12}}(?:样本|展示|返回)|"
+                rf"(?:样本|展示|返回|所给)[^。.!！\n]{{0,12}}{sample_count})",
+                re.I,
+            )
+            exact_remainder = re.compile(
+                rf"{match_count - sample_count}\s*(?:条|个|行)?[^。.!！\n]{{0,20}}(?:未展示|未呈现|未审阅|未审查|未复核|未检查|未查看|未查阅|未检视|not shown|not reviewed)",
+                re.I,
+            )
+            if not exact_sample_count.search(answer):
+                return "LOG_SAMPLE_COUNT_OMITTED"
+            if not exact_remainder.search(answer):
+                return "LOG_REMAINDER_OMITTED"
+            descriptors = tuple(dict.fromkeys(([level] if level else []) + list(sample_markers)))
+            if descriptors:
+                descriptor_pattern = "|".join(re.escape(item) for item in descriptors)
+                if re.search(
+                    rf"{match_count - sample_count}\s*(?:条|个|行)?\s*(?:{descriptor_pattern})",
+                    answer, re.I,
+                ):
+                    return "LOG_SAMPLE_SCOPE_INFERENCE"
+        if not level or match_count <= sample_count:
+            continue
+        if re.search(r"(?:错误|保存|存档|内存|卡顿|崩溃|ERROR|INFO)[^，,。.!！；;\n]{0,6}查询", answer, re.I):
+            return "LOG_QUERY_LABEL_INFERENCE"
+        for clause in re.split(r"[，,。.!！；;\n]+", answer):
+            if not re.search(level, clause, re.I):
+                continue
+            sample_scoped = re.search(r"(?:展示|返回|所给)[^，,。.!！；;\n]{0,20}(?:样本|\d+\s*行)|样本[^，,。.!！；;\n]{0,16}(?:中|内|所示)", clause, re.I)
+            if not sample_scoped and re.search(r"(?:高频|大量|全部匹配|常规|正常|无异常|不构成异常|频次)", clause, re.I):
+                return "LOG_SAMPLE_SCOPE_INFERENCE"
+        for level_match in re.finditer(rf"{match_count}\s*(?:条|个|行)?[^。.!！；;\n]{{0,28}}{level}", answer, re.I):
+            phrase = level_match.group(0)
+            level_position = phrase.upper().find(level)
+            scope_positions = [position for token in ("展示", "样本", "返回", "所给", "shown", "sample")
+                               if (position := phrase.lower().find(token.lower())) >= 0]
+            if not scope_positions or level_position < min(scope_positions):
+                return "LOG_SAMPLE_SCOPE_INFERENCE"
+        for match in exact_match_count.finditer(answer):
+            start = max(0, answer.rfind("。", 0, match.start()) + 1)
+            end_positions = [position for marker in ("。", "!", "！", "\n")
+                             if (position := answer.find(marker, match.end())) >= 0]
+            end = min(end_positions) if end_positions else len(answer)
+            sentence = answer[start:end]
+            level_position = sentence.upper().find(level)
+            if level_position < 0:
+                continue
+            scope_positions = [position for token in ("展示", "样本", "返回", "所给", "shown", "sample")
+                               if (position := sentence.lower().find(token.lower())) >= 0]
+            if not scope_positions or level_position < min(scope_positions):
+                return "LOG_SAMPLE_SCOPE_INFERENCE"
+            if re.search(r"(?:全部|全都|均)\s*(?:为|是)?\s*(?:已)?(?:展示|返回|所给)", sentence, re.I):
+                return "LOG_MATCH_SAMPLE_CONFLATION"
+    allowed_match_counts = {
+        count
+        for match_count, sample_count, _level, _markers in bounded_records
+        for count in (match_count, sample_count, max(0, match_count - sample_count))
+    }
+    mentioned_match_counts = [
+        int(match.group(1) or match.group(2))
+        for match in re.finditer(
+            r"(?:(?<!\d)(\d+)\s*(?:条|个|行)?\s*(?:匹配|命中)|"
+            r"(?:匹配|命中)(?:数|数量)?\s*(?:共(?:有|计)?|合计|为|是|：|:|=)?\s*(?<!\d)(\d+)(?!\d))",
+            answer, re.I,
+        )
+    ]
+    if any(count not in allowed_match_counts for count in mentioned_match_counts):
+        return "LOG_DERIVED_COUNT_INFERENCE"
+    allowed_sample_counts = {record[1] for record in bounded_records}
+    mentioned_sample_counts = [
+        int(match.group(1) or match.group(2))
+        for match in re.finditer(
+            r"(?:(?<!\d)(\d+)\s*(?:条|个|行)?\s*(?:展示|返回|给出)?\s*(?:的)?\s*样本|"
+            r"样本(?:数|数量)?\s*(?:共(?:有|计)?|合计|为|是|：|:|=)?\s*(?<!\d)(\d+)(?!\d))",
+            answer, re.I,
+        )
+    ]
+    if any(count not in allowed_sample_counts for count in mentioned_sample_counts):
+        return "LOG_DERIVED_COUNT_INFERENCE"
+    return None
 
 
 def _validate_agent_loop_decision(
@@ -668,13 +1288,15 @@ def _validate_agent_loop_decision(
     if decision["action"] in {"final", "cannot_proceed"}:
         answer = str(decision.get("answer") or "")
         tool_names = [str(item["name"]) for item in tools]
-        if any(re.search(rf"(?:^|[^A-Za-z0-9_.-]){re.escape(name)}(?:$|[^A-Za-z0-9_.-])", answer, re.I) for name in tool_names):
+        if observations and any(re.search(rf"(?:^|[^A-Za-z0-9_.-]){re.escape(name)}(?:$|[^A-Za-z0-9_.-])", answer, re.I) for name in tool_names):
             return "$.answer:INTERNAL_TOOL_LEAK"
         if re.search(r"executed successfully\s*;?\s*not independently verified", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
-        if re.search(r"\bmcs:[A-Za-z0-9:_-]{12,}\b|(?:实例|instance)\s*[（(:]?\s*[a-f0-9]{8}(?:[a-f0-9]{8,}|…)|\b(?:[A-Za-z_$][\w$]*Exception|FileNotFoundException|stack\s*trace)\b|https?://\S+|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|(?:控制台|console)\s*(?:命令|command|输出|output|未返回)", answer, re.I):
+        if re.search(r"\bmcs:[A-Za-z0-9:_-]{12,}\b|(?:实例|instance)\s*[（(:]?\s*[a-f0-9]{8}(?:[a-f0-9]{8,}|…)|\b(?:[A-Za-z_$][\w$]*Exception|FileNotFoundException|stack\s*trace)\b|https?://\S+", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
-        if re.search(r"(?:接下来|下面|然后|下一步|我(?:将|会)|将会|准备|改用|继续)[^。.!！\n]{0,48}(?:调用|查询|获取|读取|检查|执行|使用|命令)|\b(?:next|then|I\s*(?:will|'ll)|going\s+to)\b[^.!?\n]{0,64}\b(?:call|query|fetch|read|inspect|execute|use|run)\b", answer, re.I):
+        if observations and re.search(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|(?:控制台|console)\s*(?:命令|command|输出|output|未返回)", answer, re.I):
+            return "$.answer:INTERNAL_DETAIL_LEAK"
+        if re.search(r"(?:接下来|下面|然后|下一步|我将|将会|准备|改用|继续)[^。.!！\n]{0,48}(?:调用|查询|获取|读取|检查|执行|使用|命令)|\b(?:next|then|I\s*(?:will|'ll)|going\s+to)\b[^.!?\n]{0,64}\b(?:call|query|fetch|read|inspect|execute|use|run)\b", answer, re.I):
             return "$.answer:NON_TERMINAL_FINAL"
         if re.search(r"(?:尚未|还未|未能|没有)[^。.!！\n]{0,48}(?:取得|获取|查询|读取|拉取|核验)[^。.!！\n]{0,80}(?:如需|需要|请).{0,24}(?:继续|确认)|\b(?:not yet|have not|did not)\b[^.!?\n]{0,72}\b(?:fetch|query|read|resolve|check)\b[^.!?\n]{0,72}\b(?:continue|confirm)\b", answer, re.I):
             return "$.answer:INCOMPLETE_WORK"
@@ -699,7 +1321,15 @@ def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
     if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
         return 4_096
-    return MODEL_ANSWER_MAX_TOKENS if required == {"answer"} else MODEL_ROUTING_MAX_TOKENS
+    if required == {"answer"}:
+        answer_schema = schema.get("properties", {}).get("answer", {})
+        max_length = answer_schema.get("maxLength") if isinstance(answer_schema, dict) else None
+        if isinstance(max_length, int) and max_length <= 650:
+            return 320
+        if isinstance(max_length, int) and max_length <= 800:
+            return 400
+        return MODEL_ANSWER_MAX_TOKENS
+    return MODEL_ROUTING_MAX_TOKENS
 
 
 def _provider_content(payload: Any) -> str:
@@ -723,6 +1353,246 @@ def _provider_content(payload: Any) -> str:
                     return candidate
     # A few OpenAI-compatible gateways return the content object at top level.
     return _compatibility_text(payload)
+
+
+def _provider_message(payload: Any) -> dict[str, Any] | None:
+    """Extract only the public assistant message and native function calls."""
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    message = choices[0].get("message")
+    return message if isinstance(message, dict) else None
+
+
+def _agent_native_decision(
+    turn: dict[str, Any], observations: list[dict[str, Any]], chinese: bool,
+) -> tuple[dict[str, Any], str | None]:
+    message = turn.get("message")
+    if not isinstance(message, dict):
+        return {}, "$:NATIVE_MESSAGE_MISSING"
+    tool_calls = message.get("tool_calls", [])
+    if not isinstance(tool_calls, list):
+        return {}, "$.tool_calls:INVALID"
+    if tool_calls:
+        # Providers may return several autonomous calls even when the loop asks
+        # for one. Preserve the model's order and execute only its first choice;
+        # the next round lets the model reconsider the remaining work against
+        # the newly observed result instead of an old planner rewriting it.
+        raw_call = tool_calls[0]
+        function = raw_call.get("function") if isinstance(raw_call, dict) else None
+        if not isinstance(raw_call, dict) or raw_call.get("type") != "function" or not isinstance(function, dict):
+            return {}, "$.tool_calls[0]:INVALID"
+        name = function.get("name")
+        raw_arguments = function.get("arguments")
+        if not isinstance(name, str):
+            return {}, "$.tool_calls[0].function.name:INVALID"
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        except json.JSONDecodeError:
+            return {}, "$.tool_calls[0].function.arguments:INVALID_JSON"
+        if not isinstance(arguments, dict):
+            return {}, "$.tool_calls[0].function.arguments:NOT_OBJECT"
+        return {
+            "action": "tool_call", "tool": name, "arguments": arguments,
+            "reason": "正在使用请求所需的受控工具。" if chinese else "Using the controlled tool needed for the request.",
+        }, None
+    content = _compatibility_text(message.get("content"))
+    if not content or len(content) > AGENT_LOOP_MAX_OUTPUT_CHARS:
+        return {}, "$.content:EMPTY_OR_TOO_LONG"
+    try:
+        parsed = _unique_json_object(content)
+        if parsed.get("action") in {"tool_call", "final", "cannot_proceed"}:
+            return {}, "$.content:TEXT_ACTION_PROTOCOL_FORBIDDEN"
+    except ValueError:
+        pass
+    succeeded = [
+        str(item.get("tool_call_id")) for item in observations
+        if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)
+    ]
+    failed_only = bool(observations) and not succeeded and all(
+        item.get("status") in {"failed", "indeterminate"} for item in observations
+    )
+    if failed_only:
+        return {"action": "cannot_proceed", "answer": content}, None
+    return {"action": "final", "answer": content, "citations": list(dict.fromkeys(succeeded))}, None
+
+
+def _agent_entry_route_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "route_self_contained",
+            "description": "Use instead of any application tool when the request can be fully answered from conversation, user-provided text, reasoning, or stable general knowledge. Required for explanations, writing, translation, summaries, brainstorming, and advice that need no current external facts or actions. Put the complete natural answer in answer.",
+            "input_schema": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 4_000}},
+                "required": ["answer"],
+            },
+        },
+        {
+            "name": "route_uncertain",
+            "description": "Use only when the user's goal is too underspecified to choose a safe application action or give a useful self-contained answer. Put one concise natural clarification in question.",
+            "input_schema": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 1_000}},
+                "required": ["question"],
+            },
+        },
+    ]
+
+
+def _agent_continuation_route_tools(tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    application_tools = tools or []
+    tool_names = [str(item["name"]) for item in application_tools]
+    catalog_summary = "\n".join(
+        f"- {item['name']}: {str(item['description'])[:300]}" for item in application_tools
+    )
+    more_properties: dict[str, Any] = {
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1_000},
+    }
+    more_required = ["reason"]
+    more_description = (
+        "Use when the current successful observations do not yet support a complete answer. "
+        "Briefly state the earliest missing evidence."
+    )
+    if tool_names:
+        more_properties["next_tool"] = {"type": "string", "enum": tool_names}
+        more_required.append("next_tool")
+        more_description += (
+            " Select the exact permitted application function that should obtain it next; "
+            "the next bounded pass will expose only that function. Never select a function "
+            "whose successful observation already covers the same requested fact unless that "
+            "result is explicitly incomplete.\nRegistered application functions:\n" + catalog_summary
+        )
+    return [
+        {
+            "name": "route_evidence_complete",
+            "description": "Use only after pairing every explicit requested subject to a successful observation from a registered function whose description directly covers that subject. One observation cannot cover an unrelated subject. If any subject lacks that pairing, use route_more_tools. This marker has no business arguments; a separate answer-only pass will write the natural response without choosing tools.",
+            "input_schema": {
+                "type": "object", "additionalProperties": False,
+                "properties": {}, "required": [],
+            },
+        },
+        {
+            "name": "route_more_tools",
+            "description": more_description,
+            "input_schema": {
+                "type": "object", "additionalProperties": False,
+                "properties": more_properties,
+                "required": more_required,
+            },
+        },
+    ]
+
+
+def _agent_evidence_final_tool() -> dict[str, Any]:
+    """Compatibility exit for the already-selected application-argument pass."""
+    return {
+        "name": "route_evidence_final",
+        "description": "Use only if the supplied successful observations already support a complete natural user-facing answer; do not invent facts or mention internal function names.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 12_000}},
+            "required": ["answer"],
+        },
+    }
+
+
+def _agent_cannot_proceed_tool() -> dict[str, Any]:
+    return {
+        "name": "route_cannot_proceed",
+        "description": "Use after one or more supplied observations failed or became indeterminate and the goal cannot be completed safely without repeating a non-retryable call or changing the user's target. Put a concise natural explanation in answer using only the supplied safe error facts, explicitly identify the requested target, and state at least one concrete supplied failure fact; a generic cannot-continue statement alone is invalid. State the observed no-side-effect boundary when present. Never claim success or propose a future tool call.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 4_000}},
+            "required": ["answer"],
+        },
+    }
+
+
+def _agent_continuation_decision(
+    turn: dict[str, Any], observations: list[dict[str, Any]], chinese: bool,
+    tool_names: list[str] | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    message = turn.get("message")
+    calls = message.get("tool_calls", []) if isinstance(message, dict) else []
+    if isinstance(calls, list) and calls:
+        function = calls[0].get("function") if isinstance(calls[0], dict) else None
+        if isinstance(function, dict) and function.get("name") == "route_evidence_complete":
+            raw_arguments = function.get("arguments")
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            except json.JSONDecodeError:
+                arguments = None
+            if arguments == {}:
+                return {"action": "evidence_complete"}, None
+            return {}, "$.tool_calls[0].function.arguments:INVALID"
+        if isinstance(function, dict) and function.get("name") == "route_evidence_final":
+            raw_arguments = function.get("arguments")
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            except json.JSONDecodeError:
+                arguments = None
+            answer = arguments.get("answer") if isinstance(arguments, dict) else None
+            if isinstance(answer, str) and answer.strip():
+                succeeded = [
+                    str(item.get("tool_call_id")) for item in observations
+                    if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)
+                ]
+                return {"action": "final", "answer": answer.strip(), "citations": list(dict.fromkeys(succeeded))}, None
+            return {}, "$.tool_calls[0].function.arguments.answer:INVALID"
+        if isinstance(function, dict) and function.get("name") == "route_cannot_proceed":
+            raw_arguments = function.get("arguments")
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            except json.JSONDecodeError:
+                arguments = None
+            answer = arguments.get("answer") if isinstance(arguments, dict) else None
+            failed = any(item.get("status") in {"failed", "indeterminate"} for item in observations)
+            if failed and isinstance(answer, str) and answer.strip():
+                return {"action": "cannot_proceed", "answer": answer.strip()}, None
+            return {}, "$.tool_calls[0].function.arguments.answer:INVALID"
+        if isinstance(function, dict) and function.get("name") == "route_more_tools":
+            raw_arguments = function.get("arguments")
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+            except json.JSONDecodeError:
+                arguments = None
+            reason = arguments.get("reason") if isinstance(arguments, dict) else None
+            next_tool = arguments.get("next_tool") if isinstance(arguments, dict) else None
+            if not isinstance(reason, str) or not reason.strip():
+                return {}, "$.tool_calls[0].function.arguments.reason:INVALID"
+            if tool_names is not None and next_tool not in tool_names:
+                return {}, "$.tool_calls[0].function.arguments.next_tool:INVALID"
+            return {"action": "more_tools", "tool": next_tool, "reason": reason.strip()}, None
+    return _agent_native_decision(turn, observations, chinese)
+
+
+def _agent_entry_decision(
+    turn: dict[str, Any], observations: list[dict[str, Any]], chinese: bool,
+) -> tuple[dict[str, Any], str | None]:
+    message = turn.get("message")
+    calls = message.get("tool_calls", []) if isinstance(message, dict) else []
+    if isinstance(calls, list) and calls:
+        function = calls[0].get("function") if isinstance(calls[0], dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        raw_arguments = function.get("arguments") if isinstance(function, dict) else None
+        try:
+            arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+        except json.JSONDecodeError:
+            arguments = None
+        if name == "route_self_contained" and isinstance(arguments, dict):
+            answer = arguments.get("answer")
+            if isinstance(answer, str) and answer.strip():
+                return {"action": "final", "answer": answer.strip(), "citations": []}, None
+            return {}, "$.tool_calls[0].function.arguments.answer:INVALID"
+        if name == "route_uncertain" and isinstance(arguments, dict):
+            question = arguments.get("question")
+            if isinstance(question, str) and question.strip():
+                return {"action": "final", "answer": question.strip(), "citations": []}, None
+            return {}, "$.tool_calls[0].function.arguments.question:INVALID"
+    return _agent_native_decision(turn, observations, chinese)
 
 
 def _coerce_model_response(content: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
@@ -992,7 +1862,7 @@ class McaiGraph:
         return state.get("decision") or _response("任务结果不可用。", status="unavailable")
 
     async def decide_agent_loop(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return one validated AI-first loop decision from ordinary model content."""
+        """Return one validated AI-first decision from provider-native application tools."""
         message = payload.get("message")
         system_prompt = payload.get("systemPrompt")
         if not isinstance(message, str) or not message.strip() or len(message) > 16_000:
@@ -1006,11 +1876,16 @@ class McaiGraph:
         history = payload.get("history", [])
         if not isinstance(history, list) or len(history) > 40:
             raise ValueError("INVALID_HISTORY")
-        bounded_history: list[dict[str, str]] = []
-        for item in history[-12:]:
+        validated_history: list[dict[str, str]] = []
+        for item in history:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
                 raise ValueError("INVALID_HISTORY")
-            bounded_history.append({"role": item["role"], "content": item["content"][:4_000]})
+            validated_history.append({"role": item["role"], "content": item["content"]})
+        history_item_budget = min(4_000, 48_000 // max(1, len(validated_history)))
+        bounded_history = [
+            {"role": item["role"], "content": _compact_history_content(item["content"], history_item_budget)}
+            for item in validated_history
+        ]
         limits_value = payload.get("limits")
         if not isinstance(limits_value, dict):
             raise ValueError("INVALID_LIMITS")
@@ -1025,60 +1900,342 @@ class McaiGraph:
             raise ValueError("INVALID_ROUND")
         limits = {"maxRounds": max_rounds, "maxToolCalls": max_tool_calls}
         instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
+        tools = _agent_loop_tools_available_for_instance(tools, instance)
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
         system = "\n".join((
             system_prompt.strip(),
             "You are operating one bounded Minecraft server agent loop.",
-            "Return exactly one JSON object and no other text.",
-            'Allowed decisions: {"action":"tool_call","tool":"registered name","arguments":{},"reason":"short"}, '
-            '{"action":"final","answer":"user-facing answer","citations":["successful tool_call_id"]}, or '
-            '{"action":"cannot_proceed","answer":"user-facing answer"}.',
-            "Use the fewest registered tools. Never invent observations, tool names, arguments, citations, execution, or verification.",
+            "The complete registered application-function catalog is available to you. Decide autonomously whether a function is needed and which one best advances the user's goal.",
+            "You own both tool selection and the final user-facing synthesis. No planner or reviewer will reinterpret a valid choice or rewrite a valid evidence-bound answer.",
+            "The final CURRENT USER REQUEST block is authoritative. Use earlier history only for relevant facts; never reuse a prior assistant answer as the answer to a different current request.",
+            "Call at most one registered function in this turn when external facts or actions are needed; otherwise answer the user naturally.",
+            "The current instance object is a live platform snapshot and is sufficient evidence for metadata-only facts already present there, including the selected instance name, implementation, Minecraft version, loader, and current state. Answer those facts directly; never call an unrelated application function merely to re-check or appear to verify an existing metadata field.",
+            "Prefer the registered function whose documented result or effect most directly matches the explicit goal. Do not replace a requested action with an unrelated preflight read merely because confirmation is required; the safety layer handles confirmation after your choice.",
+            "For live runtime state or game rules exposed by an allowed read-only command, choose the relevant runtime/command function; config inspection is only for actual supported configuration files.",
+            "For host resource headroom, process capacity, or memory exhaustion evidence, prefer the dedicated instance metrics function; use console commands for game-runtime facts such as TPS, players, weather, or game rules.",
+            "For instance lifecycle actions, use the dedicated start, stop, or restart function; never substitute an equivalent console command.",
+            "Finding, resolving, searching, downloading, or installing current plugin artifacts, compatible versions, or sources requires the relevant registered application function; never answer it from model memory alone.",
+            "For a task-relevant public file, use web.search only when a source URL must first be discovered, then use file.download for the exact public HTTP(S) URL and a new downloads/<filename> target. Downloading never implies installation, execution, extraction, overwrite, or restart.",
+            "When a requested write lacks required prior state, choose the specific read function that obtains that state or revision, never a generic directory listing as a substitute.",
+            "Do not emit a JSON action in message content. Function choices must use the provider-native tool call channel.",
+            "Never invent observations, function names, arguments, execution, or verification.",
             "A final factual or execution claim must cite the successful observations that support it.",
             "A final answer must cite every successful observation from this run and synthesize all of them.",
             "Do not finalize a multi-part or multi-subject request after only one part; continue with the remaining registered tool calls within the existing user authorization.",
+            "Never repeat a function whose successful observation already covers the same requested fact unless that result is explicitly incomplete.",
+            "A successful bounded search or inspection with zero matches is complete negative evidence for the requested conditions, not a reason to repeat the function. Repeat only when the result explicitly says it was invalid, truncated, or incomplete.",
+            "A successful observation covering a requested subject supersedes failed attempts for that same subject. Do not retry it merely because another attempt failed.",
+            "After a failed or indeterminate observation, use the supplied safe error facts to choose one bounded recovery only when it directly preserves the user's target. Otherwise end honestly with route_cannot_proceed and include the requested target plus at least one concrete supplied failure fact; a generic inability statement is incomplete. Never repeat a non-retryable call, change the target, or hide the failure.",
+            "Do not expand an inventory, listing, or inspection request into unrequested metadata, dependency, compatibility, or health research. A successful listing satisfies the requested inventory unless it explicitly reports truncation or incompleteness.",
             "Never copy raw execution-status diagnostics into the user answer; state only supported user-facing facts.",
             "Honor read-only and no-change constraints. The safety layer independently decides risk and confirmation.",
             "Answer Chinese requests in natural Chinese and English requests in natural English.",
         ))
         context = {
-            "message": message.strip(), "instance": instance, "toolCatalog": tools,
-            "observations": observations, "round": round_number, "limits": limits,
+            "instance": instance,
+            "observations": _evidence_routing_observations(observations), "round": round_number, "limits": limits,
         }
-        messages = [*bounded_history, {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
+        current_turn = "\n".join((
+            "CURRENT USER REQUEST (authoritative; history is context only):",
+            message.strip(),
+            "RUNTIME CONTEXT (JSON):",
+            json.dumps(context, ensure_ascii=False, separators=(",", ":")),
+        ))
+        messages = [*bounded_history, {"role": "user", "content": current_turn}]
+        decision_deadline = asyncio.get_running_loop().time() + AGENT_LOOP_TOTAL_SECONDS
+
+        async def within_decision_deadline(factory):
+            remaining = decision_deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise ModelProviderError("TIMEOUT", [{"model": self.provider.config.model, "mode": "agent_loop", "code": "TIMEOUT"}])
+            try:
+                async with asyncio.timeout(remaining):
+                    return await factory()
+            except (TimeoutError, asyncio.TimeoutError) as error:
+                raise ModelProviderError("TIMEOUT", [{"model": self.provider.config.model, "mode": "agent_loop", "code": "TIMEOUT"}]) from error
+
+        entry_round = round_number == 1 and not observations
+        decision_tools = ([*tools, *_agent_entry_route_tools()] if entry_round
+                          else [*tools, _agent_evidence_final_tool(), _agent_cannot_proceed_tool()])
+        decision_messages = messages
+        constraint_instruction = "Treat every explicit user constraint or prohibition as a hard constraint; never select a registered function that the user explicitly forbids."
+        decision_system = "\n".join((system, constraint_instruction)) if not entry_round else "\n".join((
+            system,
+            constraint_instruction,
+            "This is the first turn. Choose exactly one provider-native function.",
+            "Use route_self_contained with a complete, direct, concise answer when no current external facts or actions are needed; normally stay within 800 Chinese characters or 500 English words.",
+            "Use route_uncertain with one clarification only when the goal is genuinely underspecified.",
+            "Otherwise choose the single registered application function that directly advances the external goal.",
+        ))
         attempts: list[dict[str, Any]] = []
         repair_used = False
-        for attempt in (1, 2):
+        selected_continuation_tool: str | None = None
+        for attempt in (1, 2, 3, 4):
+            # After every observation the same AI sees the application catalog
+            # and the final-answer function together. It directly chooses the
+            # next tool or finishes; no meta-router preselects a tool for it.
+            attempt_tools = decision_tools
+            attempt_system = decision_system
             try:
-                content = await self.provider.plain_json(system, messages)
+                turn = await within_decision_deadline(lambda: self.provider.native_tool_turn(
+                    attempt_system, decision_messages, attempt_tools,
+                    max_tokens=1_024 if entry_round else AGENT_LOOP_MAX_PROVIDER_TOKENS,
+                    # Evidence-backed continuation and synthesis must leave the
+                    # configured fast model a full first-attempt budget instead
+                    # of only the tail of the shared provider deadline.
+                    prefer_fast=False,
+                ))
             except ModelProviderError:
                 raise
             except Exception as provider_error:  # noqa: BLE001
                 code = _provider_error_code(provider_error)
-                raise ModelProviderError(code, [{"model": self.provider.config.model, "mode": "plain_content", "code": code}]) from provider_error
-            if len(content) > AGENT_LOOP_MAX_OUTPUT_CHARS:
-                error = "$:MAX_OUTPUT_CHARS"
-                decision: dict[str, Any] = {}
+                raise ModelProviderError(code, [{"model": self.provider.config.model, "mode": "native_tools", "code": code}]) from provider_error
+            if entry_round:
+                decision, error = _agent_entry_decision(
+                    turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)))
             else:
-                try:
-                    decision = _bind_agent_final_citations(_unique_json_object(content), observations)
-                    error = _validate_agent_loop_decision(decision, tools, observations, limits)
-                except ValueError as parse_error:
-                    decision = {}
-                    error = f"$:JSON:{parse_error}"
+                decision, error = _agent_continuation_decision(
+                    turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
+                    [item["name"] for item in tools],
+                )
+            terminal_provider_model = str(turn.get("providerModel") or self.provider.config.model)
+            if (
+                error is None and selected_continuation_tool and attempt >= 2
+                and decision.get("action") in {"final", "cannot_proceed"}
+            ):
+                decision = {}
+                error = "$.action:SELECTED_TOOL_CALL_REQUIRED"
+            requires_terminal_editor = error is None and decision.get("action") == "evidence_complete"
+            if requires_terminal_editor:
+                succeeded = [
+                    str(item.get("tool_call_id")) for item in observations
+                    if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)
+                ]
+                # The independent editor below owns the only prose generation.
+                # A separate unconstrained draft was discarded and consumed most
+                # of the bounded deadline without contributing to the reviewed answer.
+                decision = {
+                    "action": "final", "answer": "Evidence complete.",
+                    "citations": list(dict.fromkeys(succeeded)),
+                }
+            if error is None and decision.get("action") == "more_tools":
+                selected_continuation_tool = str(decision.get("tool") or "")
+                selected = next((item for item in tools if item["name"] == selected_continuation_tool), None)
+                if selected is None:
+                    error = "$.tool_calls[0].function.arguments.next_tool:INVALID"
+                else:
+                    decision_tools = [selected]
+                    error = "$.action:MORE_TOOLS_REQUIRED"
+            if (
+                error is None and decision.get("action") == "final"
+                and any(item.get("status") in {"failed", "indeterminate"} for item in observations)
+                and _answer_admits_request_incomplete(str(decision.get("answer") or ""))
+            ):
+                decision = {
+                    "action": "cannot_proceed",
+                    "answer": str(decision.get("answer") or "").strip(),
+                }
+            if error is None and decision.get("action") == "cannot_proceed":
+                decision = {
+                    **decision,
+                    "answer": _ensure_cannot_proceed_failure_fact(
+                        str(decision.get("answer") or ""), observations,
+                    ),
+                }
+            decision = _bind_agent_final_citations(decision, observations)
+            terminal_candidate = bool(observations) and decision.get("action") in {"final", "cannot_proceed"}
+            if error is None and not terminal_candidate:
+                error = _validate_agent_loop_decision(decision, tools, observations, limits)
+            if error is None and terminal_candidate:
+                # The same native Agent that inspected the typed observations
+                # owns the final synthesis. Keep structural/citation validation,
+                # but do not send its valid answer through independent editors
+                # that can time out, omit facts, or change its conclusion.
+                error = _validate_agent_loop_decision(decision, tools, observations, limits)
+                if error is None:
+                    terminal_evidence_error = _terminal_review_semantic_error(
+                        str(decision.get("answer") or ""), observations,
+                    )
+                    if terminal_evidence_error is None and not requires_terminal_editor:
+                        return {
+                            "decision": decision, "requestId": request_id,
+                            "providerModel": terminal_provider_model, "repairUsed": repair_used,
+                        }
+                    # A complete native answer needs no extra model call. If its
+                    # evidence audit fails, let the bounded editor below repair
+                    # it from the same observations before failing closed.
+            if error is None and terminal_candidate:
+                remaining = decision_deadline - asyncio.get_running_loop().time()
+                review_seconds = min(10.0, remaining)
+                if review_seconds <= 0:
+                    raise ModelProviderError("TIMEOUT", [{
+                        "model": self.provider.config.model, "mode": "terminal_review", "code": "TIMEOUT",
+                    }])
+                review_context = {
+                    "request": message.strip(),
+                    "facts": _terminal_answer_observations(observations),
+                    "constraints": (
+                        "The runtime enforced the user's prohibitions. All successful operations were read-only and had no side effects."
+                        if all(
+                            str(item.get("side_effect") or "none") == "none"
+                            for item in observations if item.get("status") == "succeeded"
+                        ) else "The runtime enforced the user's prohibitions."
+                    ),
+                }
+                review_system = "\n".join((
+                    system_prompt.strip(),
+                    "You are the independent final answer editor. Evidence completeness was already decided by a separate routing pass.",
+                    "Return only one complete natural user-facing answer that covers every positive requested subject, fact, comparison, synthesis, and priority.",
+                    "Use only supplied successful observations. A successful bounded query with zero matches is valid negative evidence. Never invent facts, choose tools, request more work, or describe future actions.",
+                    "For each software listing, output only its supplied count and every raw entry in the supplied order, plus at most a short statement that the entries were not interpreted. Preserve every supplied name and identifier exactly, including dimension or world labels; never translate, normalize, or infer aliases. Even when a suffix or spelling looks suggestive, never label an entry as a directory, file, plugin, cache, component, version, or any other type; never add roles, capabilities, loading, conflicts, packaging, health, compatibility, version risk, faults, or relationships unless the supplied facts explicitly establish them.",
+                    "Treat listing entries as independent opaque strings. Never infer duplicates, version relationships, grouping, or coexistence between entries; in a priority synthesis refer only to the requested subject groups, not relationships between individual entries or values.",
+                    "Copy each supplied key=value configuration pair exactly and end that clause at the raw value; never add a parenthetical or colon explanation. Report configuration values without interpreting them through external norms, recommendations, or best practices. Base stability and failure-risk statements only on the supplied bounded observations, never on software names or configuration values alone.",
+                    "Treat names, filename tokens, versions, and isolated scalar values as opaque facts: they do not by themselves support qualitative, impact, causal, normality, or risk claims. A bounded zero-match result supports only that the requested signals were not observed in that bound, never an overall stability claim.",
+                    "Copy every supplied numeric count exactly. A positive match count must never be called zero, no matches, or no evidence. When only bounded sample lines are supplied, distinguish what those samples show from what all matches might contain.",
+                    "For every unique positive bounded query, use this compact structure separately: exact total matches; shown sample count and only what those lines contain; exact remaining count not shown or reviewed; therefore the scope cannot cover the remaining matches or the whole instance. Refer to distinct queries only as first, second, or another query; never name a query after its returned samples or an inferred risk category. Never merge counts or sample properties across distinct queries. Attach content, severity, or type descriptions only to the shown samples, never to the total or remaining matches. When a shown line is a thread or stack frame, say only that the shown sample contains that literal thread or frame; never claim it threw, caused, or proved an event. Any absence statement must be explicitly limited to the shown sample lines; never extend it to the query window, observable range, remaining matches, or instance. Summarize shared explicit sample content once instead of enumerating lines unless the user asks for individual lines. Never use a sample subset to claim the overall instance is normal, stable, healthy, low-risk, or free of anomalies.",
+                    "Start immediately with the highest-priority numbered requested subject, ordering subjects only by relevance to the user's requested conclusion, never by guessed severity. Exact opaque configuration or listing values do not become higher priority merely because they are precise; for a requested risk or status assessment, literal operational observations precede uninterpreted static values. Write exactly one section per positive requested subject; multiple queries for the same subject remain compact clauses inside that single section and never become separately numbered subjects. The section order is the requested priority synthesis, so priority is not an extra subject and must not create another section. Make each section one compact sentence or semicolon-separated fact paragraph, and use at most four sentences for the whole answer. End immediately after the last subject: never add a separate conclusion, priority, compliance heading, or trailing text, and never restate facts.",
+                    "Do not recommend future work. Synthesize the facts once without repeating a fact table and the same conclusions. Keep Chinese answers within 700 Chinese characters and other answers within 750 characters.",
+                    "Honor constraints. Only when the user explicitly requests confirmation that no change occurred, fold one short read-only/no-change clause into the final requested subject; never create a compliance section or repeat individual negative constraints. Translate machine labels into natural language; never copy underscore labels, digests, raw filters, internal function names, call ids, schemas, routing, or diagnostics.",
+                    "Answer Chinese requests in natural Chinese and English requests in natural English.",
+                ))
+                reviewed = await within_decision_deadline(lambda: self.provider.structured(
+                    review_system,
+                    [{"role": "user", "content": json.dumps(review_context, ensure_ascii=False, separators=(",", ":"))}],
+                    {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 800}},
+                        "required": ["answer"],
+                    },
+                    timeout_seconds=review_seconds,
+                    prefer_fast=False,
+                ))
+                reviewed_answer = reviewed.get("answer") if isinstance(reviewed, dict) else None
+                previous_answer = str(decision.get("answer") or "").strip()
+                terminal_error: str | None = None
+                if not isinstance(reviewed_answer, str) or not reviewed_answer.strip():
+                    terminal_error = "$.answer:EMPTY"
+                else:
+                    decision = {**decision, "answer": reviewed_answer.strip()}
+                    terminal_provider_model = str(reviewed.get("providerModel") or terminal_provider_model)
+                    repair_used = repair_used or decision["answer"] != previous_answer
+                    terminal_error = (
+                        "$.answer:TOO_LONG" if len(decision["answer"]) > 800
+                        else _validate_agent_loop_decision(decision, tools, observations, limits)
+                    )
+                    if terminal_error is None:
+                        terminal_error = _terminal_review_semantic_error(decision["answer"], observations)
+                if terminal_error is not None:
+                    remaining = decision_deadline - asyncio.get_running_loop().time()
+                    correction_seconds = min(12.0, remaining)
+                    if correction_seconds <= 0:
+                        raise ModelProviderError("AGENT_TERMINAL_REVIEW_INVALID", [{
+                            "model": self.provider.config.model, "mode": "terminal_review", "code": terminal_error,
+                        }])
+                    correction_context = {
+                        **review_context,
+                        "deterministic_audit_error": terminal_error,
+                    }
+                    correction_system = "\n".join((
+                        "You are the final evidence correction editor. Evidence gathering and completeness are finished. Return only one corrected natural user-facing answer from the supplied request, facts, constraints, and deterministic audit code. Never choose tools, request more work, expose internal labels, or add unsupported facts.",
+                        "Copy every supplied opaque raw listing entry exactly and use only its supplied total; never derive a remaining subgroup count, entry type, role, version relationship, or meaning. Copy every supplied raw key=value pair exactly and add no interpretation.",
+                        "For every unique positive bounded log query separately, state its exact total matches, exact shown sample count and only the literal shown-sample level/content, then its exact remaining count not shown or reviewed. Express every query naturally in the request language. For a Chinese request use the semantic form '该查询匹配N条，展示S条样本，剩余R条匹配未展示或未审阅'; for an English request use 'the query has N matches, shows S samples, and leaves R matches not shown or reviewed'. Substitute the evidence numbers, never copy label notation, and never mix languages. Never call remaining matches samples. Keep multiple queries as compact clauses in one log subject. Never merge or sum their counts. Never attach a shown sample's level, save content, thread, or frame to the total or remaining matches. Samples cannot prove or exclude a requested risk for the remaining matches, query window, or whole instance.",
+                        "LISTING_ENTRY_OMITTED means copy every supplied opaque raw entry exactly. LISTING_ENTRY_INFERENCE means remove all entry interpretation. LISTING_COUNT_INFERENCE means use only the supplied total count and never derive a remaining subgroup count. CONFIG_VALUE_OMITTED means copy every supplied raw key=value pair exactly. CONFIG_VALUE_INFERENCE means add no meaning to those pairs. UNSUPPORTED_RISK_INFERENCE or UNSUPPORTED_RISK_ABSENCE means keep risk presence or absence limited to literal shown samples and state the scope limit. LOG_QUERY_LABEL_INFERENCE means call queries only first, second, or another query. LOG_MATCH_COUNT_OMITTED, LOG_SAMPLE_COUNT_OMITTED, or LOG_REMAINDER_OMITTED means restore every exact per-query count. LOG_SAMPLE_SCOPE_INFERENCE or LOG_MATCH_SAMPLE_CONFLATION means separate totals, shown samples, and unreviewed remainder. LOG_DERIVED_COUNT_INFERENCE means remove every sum or derived match/sample count and keep only exact per-query counts from the facts.",
+                        "The corrected answer must be complete and no longer than 650 characters. Use at most four compact sentences and group facts by the user's requested subjects. Keep multiple queries for one subject as separate compact clauses inside that single subject, never as separately numbered subjects. Order subjects from highest to lowest priority only by relevance to the user's requested conclusion, never guessed severity; precise opaque static values are not automatically more relevant than literal operational observations. Mandatory output contract: when successful facts include runtime logs and the request evaluates runtime risk or status, the first sentence must start with those runtime log observations and must not start with configuration or a listing; put uninterpreted static values afterward without inferring severity. Express priority only by that order. Do not add a separate synthesis, conclusion, recommendation, or compliance paragraph. If no-change confirmation is explicitly requested, include one short read-only clause inside the final sentence. End immediately after the last requested subject. Answer Chinese requests in Chinese and English requests in English.",
+                    ))
+                    corrected = await within_decision_deadline(lambda: self.provider.structured(
+                        correction_system,
+                        [{"role": "user", "content": json.dumps(correction_context, ensure_ascii=False, separators=(",", ":"))}],
+                        {
+                            "type": "object", "additionalProperties": False,
+                            "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 800}},
+                            "required": ["answer"],
+                        },
+                        timeout_seconds=correction_seconds,
+                        prefer_fast=False,
+                    ))
+                    corrected_answer = corrected.get("answer") if isinstance(corrected, dict) else None
+                    if not isinstance(corrected_answer, str) or not corrected_answer.strip():
+                        terminal_error = "$.answer:EMPTY"
+                    else:
+                        decision = {**decision, "answer": corrected_answer.strip()}
+                        terminal_provider_model = str(corrected.get("providerModel") or terminal_provider_model)
+                        repair_used = True
+                        terminal_error = (
+                            "$.answer:TOO_LONG" if len(decision["answer"]) > 800
+                            else _validate_agent_loop_decision(decision, tools, observations, limits)
+                        )
+                        if terminal_error is None:
+                            terminal_error = _terminal_review_semantic_error(decision["answer"], observations)
+                    if terminal_error in {"LISTING_ENTRY_OMITTED", "CONFIG_VALUE_OMITTED"}:
+                        remaining = decision_deadline - asyncio.get_running_loop().time()
+                        transcription_seconds = min(8.0, remaining)
+                        if transcription_seconds > 0:
+                            transcription_context = {
+                                **review_context,
+                                "answer_to_repair": decision["answer"],
+                                "deterministic_audit_error": terminal_error,
+                            }
+                            transcribed = await within_decision_deadline(lambda: self.provider.structured(
+                                "\n".join((
+                                    "You are the final exact-fact transcription repair. Return the same complete natural user-facing answer, changing only mistakes needed to copy the supplied opaque listing entries and raw key=value pairs exactly.",
+                                    "Copy every supplied listing entry character-for-character in its supplied order and every supplied key=value pair character-for-character. Do not translate, normalize, infer, omit, rename, or add any entry or value.",
+                                    "Preserve all already-supported log counts, sample scope, subject order, risk limits, and read-only boundary. Never choose or reopen tools, add facts, expose internal labels, or describe the repair. Keep the full answer within 650 characters and entirely in the request language.",
+                                )),
+                                [{"role": "user", "content": json.dumps(
+                                    transcription_context, ensure_ascii=False, separators=(",", ":"),
+                                )}],
+                                {
+                                    "type": "object", "additionalProperties": False,
+                                    "properties": {"answer": {"type": "string", "minLength": 1, "maxLength": 800}},
+                                    "required": ["answer"],
+                                },
+                                timeout_seconds=transcription_seconds,
+                                prefer_fast=False,
+                            ))
+                            transcribed_answer = transcribed.get("answer") if isinstance(transcribed, dict) else None
+                            if not isinstance(transcribed_answer, str) or not transcribed_answer.strip():
+                                terminal_error = "$.answer:EMPTY"
+                            else:
+                                decision = {**decision, "answer": transcribed_answer.strip()}
+                                terminal_provider_model = str(
+                                    transcribed.get("providerModel") or terminal_provider_model
+                                )
+                                terminal_error = (
+                                    "$.answer:TOO_LONG" if len(decision["answer"]) > 800
+                                    else _validate_agent_loop_decision(decision, tools, observations, limits)
+                                )
+                                if terminal_error is None:
+                                    terminal_error = _terminal_review_semantic_error(
+                                        decision["answer"], observations,
+                                    )
+                    if terminal_error is not None:
+                        raise ModelProviderError("AGENT_TERMINAL_REVIEW_INVALID", [{
+                            "model": self.provider.config.model, "mode": "terminal_review", "code": terminal_error,
+                        }])
             if error is None:
                 return {
                     "decision": decision, "requestId": request_id,
-                    "providerModel": self.provider.config.model, "repairUsed": repair_used,
+                    "providerModel": terminal_provider_model, "repairUsed": repair_used,
                 }
-            attempts.append({"model": self.provider.config.model, "mode": "plain_content", "attempt": attempt, "code": error})
-            if attempt == 2:
+            attempts.append({"model": self.provider.config.model, "mode": "native_tools", "attempt": attempt, "code": error})
+            if attempt == 4 or (attempt == 2 and selected_continuation_tool is None):
                 break
             repair_used = True
-            messages.extend((
-                {"role": "assistant", "content": content[:AGENT_LOOP_MAX_OUTPUT_CHARS]},
-                {"role": "user", "content": f"Your decision was invalid at {error}. Return one corrected JSON decision only; do not add prose."},
-            ))
+            if error == "$.action:MORE_TOOLS_REQUIRED":
+                repair_instruction = (
+                    f"The evidence-routing pass selected {selected_continuation_tool} as the exact next application function for the earliest missing evidence. Call that exposed function with schema-valid arguments; do not reinterpret or replace the selection."
+                )
+            elif selected_continuation_tool and attempt >= 2:
+                limit_instruction = (
+                    " The MAX_ITEMS value in the error is the exact authoritative array limit. Obey it numerically: distribute independent values across additional schema-valid objects only when that preserves the schema semantics; otherwise omit lower-priority values. Never repeat an over-limit array."
+                    if ":MAX_ITEMS=" in error else ""
+                )
+                repair_instruction = (
+                    f"The previous call to the already-selected {selected_continuation_tool} function was schema-invalid at {error}. Call that same exposed function again with corrected schema-valid arguments; do not select another function or answer instead.{limit_instruction}"
+                )
+            else:
+                repair_instruction = f"The previous native decision was invalid at {error}. Select exactly one valid registered function with schema-valid arguments."
+            decision_messages.append({"role": "user", "content": repair_instruction})
         raise ModelProviderError("AGENT_LOOP_INVALID_RESPONSE", attempts, {"repair_used": repair_used})
 
     async def probe(self) -> dict[str, Any]:
