@@ -116,6 +116,11 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
 
         await test_listing_transcription_error_gets_one_fact_only_repair_without_reopening_tools()
 
+    async def test_native_direct_final_repairs_uncovered_evidence(self):
+        from test_native_autonomous_tools import test_native_final_with_uncovered_evidence_uses_bounded_editor
+
+        await test_native_final_with_uncovered_evidence_uses_bounded_editor()
+
     def test_agent_loop_unique_json_extractor_accepts_one_object_and_rejects_multiple(self):
         self.assertEqual(_unique_json_object('short preface {"action":"cannot_proceed","answer":"Need a target"}'), {"action": "cannot_proceed", "answer": "Need a target"})
         with self.assertRaises(ValueError):
