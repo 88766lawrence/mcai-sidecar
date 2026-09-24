@@ -70,6 +70,11 @@ type pluginResolver interface {
 	Resolve(context.Context, string, string, string, pluginResolutionProgress) (resolvedPlugin, error)
 }
 
+type pluginMetadataResolver interface {
+	ResolveMetadata(context.Context, string, string, string, pluginResolutionProgress) (resolvedPlugin, error)
+	Fetch(context.Context, pluginManifest) ([]byte, string, string, error)
+}
+
 type pluginResolutionProgress func(source, status string)
 
 type officialPluginResolver struct {
@@ -84,11 +89,19 @@ func newOfficialPluginResolver() *officialPluginResolver {
 }
 
 func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, minecraftVersion string, progress pluginResolutionProgress) (resolvedPlugin, error) {
+	return r.resolve(ctx, project, loader, minecraftVersion, progress, false)
+}
+
+func (r *officialPluginResolver) ResolveMetadata(ctx context.Context, project, loader, minecraftVersion string, progress pluginResolutionProgress) (resolvedPlugin, error) {
+	return r.resolve(ctx, project, loader, minecraftVersion, progress, true)
+}
+
+func (r *officialPluginResolver) resolve(ctx context.Context, project, loader, minecraftVersion string, progress pluginResolutionProgress, metadataOnly bool) (resolvedPlugin, error) {
 	project = strings.ToLower(strings.TrimSpace(project))
 	reportPluginProgress(progress, "Modrinth", "正在查询兼容版本")
-	artifact, modrinthErr := r.resolveModrinth(ctx, project, loader, minecraftVersion)
+	artifact, modrinthErr := r.resolveModrinth(ctx, project, loader, minecraftVersion, metadataOnly)
 	if modrinthErr == nil {
-		reportPluginProgress(progress, "Modrinth", "已找到并校验官方制品")
+		reportPluginProgress(progress, "Modrinth", pluginResolutionStatus(metadataOnly))
 		return artifact, nil
 	}
 	var attempts []string
@@ -96,9 +109,9 @@ func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, m
 	reportPluginProgress(progress, "Modrinth", "未找到可用制品，切换下一可信来源")
 	if r.hangarBase != "" {
 		reportPluginProgress(progress, "Hangar", "正在查询 PaperMC 官方插件仓库")
-		artifact, hangarErr := r.resolveHangar(ctx, project, loader, minecraftVersion)
+		artifact, hangarErr := r.resolveHangar(ctx, project, loader, minecraftVersion, metadataOnly)
 		if hangarErr == nil {
-			reportPluginProgress(progress, "Hangar", "已找到并校验官方制品")
+			reportPluginProgress(progress, "Hangar", pluginResolutionStatus(metadataOnly))
 			return artifact, nil
 		}
 		attempts = append(attempts, "Hangar: "+hangarErr.Error())
@@ -107,9 +120,9 @@ func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, m
 	source, supported := githubPluginSources[project]
 	if supported {
 		reportPluginProgress(progress, "official GitHub", "正在查询项目官方发布页")
-		official, githubErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source)
+		official, githubErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source, metadataOnly)
 		if githubErr == nil {
-			reportPluginProgress(progress, "official GitHub", "已找到并校验官方制品")
+			reportPluginProgress(progress, "official GitHub", pluginResolutionStatus(metadataOnly))
 			return official, nil
 		}
 		attempts = append(attempts, "official GitHub: "+githubErr.Error())
@@ -118,7 +131,20 @@ func (r *officialPluginResolver) Resolve(ctx context.Context, project, loader, m
 	if len(attempts) == 1 {
 		return resolvedPlugin{}, modrinthErr
 	}
+	// Preserve the typed business-absence classification across fallback
+	// sources. The caller may then report an auditable metadata result instead
+	// of turning "no compatible artifact" into an infrastructure failure.
+	if errors.Is(modrinthErr, errNoCompatiblePluginVersion) {
+		return resolvedPlugin{}, fmt.Errorf("%w: no trusted compatible artifact found after %d sources: %s", errNoCompatiblePluginVersion, len(attempts), strings.Join(attempts, "; "))
+	}
 	return resolvedPlugin{}, fmt.Errorf("no trusted compatible artifact found after %d sources: %s", len(attempts), strings.Join(attempts, "; "))
+}
+
+func pluginResolutionStatus(metadataOnly bool) string {
+	if metadataOnly {
+		return "已找到可信来源、兼容版本和制品校验元数据"
+	}
+	return "已找到并校验官方制品"
 }
 
 func reportPluginProgress(progress pluginResolutionProgress, source, status string) {
@@ -127,7 +153,7 @@ func reportPluginProgress(progress pluginResolutionProgress, source, status stri
 	}
 }
 
-func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
+func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loader, minecraftVersion string, metadataOnly bool) (resolvedPlugin, error) {
 	loader = strings.ToLower(strings.TrimSpace(loader))
 	if loader == "purpur" || loader == "spigot" || loader == "bukkit" {
 		loader = "paper"
@@ -196,7 +222,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			continue
 		}
 		if download.ExternalURL != "" && download.DownloadURL == "" {
-			return r.resolveReviewedHangarGitHubAsset(ctx, project, version.ID, version.Name, download.ExternalURL)
+			return r.resolveReviewedHangarGitHubAsset(ctx, project, version.ID, version.Name, download.ExternalURL, metadataOnly)
 		}
 		if download.DownloadURL == "" {
 			continue
@@ -213,6 +239,11 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 		trustedTest := r.hangarBase != hangarAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
 		if !trustedOfficial && !trustedTest {
 			return resolvedPlugin{}, errors.New("Hangar returned an untrusted artifact URL")
+		}
+		if metadataOnly {
+			return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
+				FileName: download.FileInfo.Name, SourceURL: download.DownloadURL, LocalSHA256: declared256,
+				Source: "hangar", Compatibility: "exact-game-version"}, nil
 		}
 		contents, err := r.downloadPluginArtifact(ctx, download.DownloadURL)
 		if err != nil {
@@ -236,7 +267,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 	return resolvedPlugin{}, fmt.Errorf("Hangar has no release compatible with Minecraft %s", minecraftVersion)
 }
 
-func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project string, versionID int64, versionNumber, externalURL string) (resolvedPlugin, error) {
+func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project string, versionID int64, versionNumber, externalURL string, metadataOnly bool) (resolvedPlugin, error) {
 	artifactURL, err := url.Parse(externalURL)
 	if err != nil || artifactURL.Scheme != "https" || artifactURL.Hostname() != "github.com" {
 		return resolvedPlugin{}, errors.New("reviewed Hangar release points to an unsupported external host")
@@ -277,6 +308,11 @@ func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Co
 		declared256 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.Digest)), "sha256:")
 		if len(declared256) != 64 || asset.Size <= 0 || asset.Size > 64<<20 {
 			return resolvedPlugin{}, errors.New("GitHub release asset has incomplete integrity metadata")
+		}
+		if metadataOnly {
+			return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(versionID, 10), VersionNumber: versionNumber,
+				FileName: assetName, SourceURL: externalURL, LocalSHA256: declared256,
+				Source: "hangar-reviewed-github", Compatibility: "exact-game-version"}, nil
 		}
 		contents, err := r.downloadPluginArtifact(ctx, externalURL)
 		if err != nil {
@@ -340,7 +376,7 @@ func normalizePluginIdentity(value string) string {
 	}, value)
 }
 
-func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, loader, minecraftVersion string) (resolvedPlugin, error) {
+func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, loader, minecraftVersion string, metadataOnly bool) (resolvedPlugin, error) {
 	project = strings.ToLower(strings.TrimSpace(project))
 	loader = strings.ToLower(strings.TrimSpace(loader))
 	if !pluginProjectPattern.MatchString(project) {
@@ -415,6 +451,12 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 	if err != nil || (!trustedOfficial && !trustedTest) {
 		return resolvedPlugin{}, errors.New("Modrinth returned an untrusted artifact URL")
 	}
+	declared := strings.ToLower(selected.Hashes.SHA512)
+	if metadataOnly {
+		return resolvedPlugin{Project: project, VersionID: version.ID, VersionNumber: version.VersionNumber,
+			FileName: selected.Filename, SourceURL: selected.URL, SourceSHA512: declared,
+			Source: "modrinth", Compatibility: "exact-game-version"}, nil
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL.String(), nil)
 	if err != nil {
 		return resolvedPlugin{}, err
@@ -435,7 +477,6 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 	if len(contents) == 0 || len(contents) > 64<<20 {
 		return resolvedPlugin{}, errors.New("plugin artifact size is outside the 1 byte to 64 MiB limit")
 	}
-	declared := strings.ToLower(selected.Hashes.SHA512)
 	actual512 := sha512.Sum512(contents)
 	if hex.EncodeToString(actual512[:]) != declared {
 		return resolvedPlugin{}, errors.New("plugin artifact SHA-512 does not match Modrinth metadata")
@@ -449,7 +490,7 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 	}, nil
 }
 
-func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, project, loader, minecraftVersion string, source githubPluginSource) (resolvedPlugin, error) {
+func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, project, loader, minecraftVersion string, source githubPluginSource, metadataOnly bool) (resolvedPlugin, error) {
 	loader = strings.ToLower(strings.TrimSpace(loader))
 	if loader == "purpur" || loader == "spigot" || loader == "bukkit" {
 		loader = "paper"
@@ -502,6 +543,11 @@ func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, proje
 			trustedTest := r.githubBase != githubAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
 			if !trustedOfficial && !trustedTest {
 				return resolvedPlugin{}, errors.New("official GitHub release returned an untrusted artifact URL")
+			}
+			if metadataOnly {
+				return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(release.ID, 10), VersionNumber: version,
+					FileName: asset.Name, SourceURL: asset.BrowserDownloadURL, LocalSHA256: declared256,
+					Source: "github-official", Compatibility: compatibility}, nil
 			}
 			contents, err := r.downloadPluginArtifact(ctx, artifactURL.String())
 			if err != nil {
@@ -576,6 +622,24 @@ func (r *officialPluginResolver) downloadPluginArtifact(ctx context.Context, end
 		return nil, errors.New("plugin artifact size is outside the 1 byte to 64 MiB limit")
 	}
 	return contents, nil
+}
+
+func (r *officialPluginResolver) Fetch(ctx context.Context, manifest pluginManifest) ([]byte, string, string, error) {
+	contents, err := r.downloadPluginArtifact(ctx, manifest.SourceURL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	actual256 := sha256.Sum256(contents)
+	actual512 := sha512.Sum512(contents)
+	sha256Value := hex.EncodeToString(actual256[:])
+	sha512Value := hex.EncodeToString(actual512[:])
+	if manifest.LocalSHA256 != "" && !strings.EqualFold(manifest.LocalSHA256, sha256Value) {
+		return nil, "", "", errors.New("plugin artifact SHA-256 does not match trusted metadata")
+	}
+	if manifest.SourceSHA512 != "" && !strings.EqualFold(manifest.SourceSHA512, sha512Value) {
+		return nil, "", "", errors.New("plugin artifact SHA-512 does not match trusted metadata")
+	}
+	return contents, sha256Value, sha512Value, nil
 }
 
 func (r *officialPluginResolver) getGitHubJSON(ctx context.Context, endpoint string, output any) error {
@@ -686,19 +750,32 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 			emit("", "inventory", fmt.Sprintf("已从当前实例日志与文件识别服务端：%s %s", loader, minecraftVersion))
 		}
 	}
-	artifact, err := e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion, func(source, status string) {
+	progress := func(source, status string) {
 		emit("", "source", fmt.Sprintf("%s：%s", source, status))
-	})
+	}
+	var artifact resolvedPlugin
+	var err error
+	if resolver, ok := e.pluginResolver.(pluginMetadataResolver); ok {
+		artifact, err = resolver.ResolveMetadata(ctx, project, loader, minecraftVersion, progress)
+	} else {
+		artifact, err = e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion, progress)
+	}
 	if err != nil {
+		if errors.Is(err, errNoCompatiblePluginVersion) {
+			emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; resolution=no-compatible-artifact; compatibility=incompatible; checked_source=modrinth; requested_loader=%s; requested_minecraft_version=%s", project, loader, minecraftVersion))
+			return nil
+		}
 		return err
 	}
 	directory := e.pluginTaskDir(plan.TaskID)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	artifactPath := filepath.Join(directory, "artifact.jar")
-	if err := os.WriteFile(artifactPath, artifact.Contents, 0o600); err != nil {
-		return err
+	if len(artifact.Contents) > 0 {
+		artifactPath := filepath.Join(directory, "artifact.jar")
+		if err := os.WriteFile(artifactPath, artifact.Contents, 0o600); err != nil {
+			return err
+		}
 	}
 	manifest := pluginManifest{
 		Project: artifact.Project, VersionID: artifact.VersionID, VersionNumber: artifact.VersionNumber,
@@ -709,7 +786,7 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), encoded, 0o600); err != nil {
 		return err
 	}
-	emit("", "plugin", fmt.Sprintf("已从 %s 解析插件 %s %s；兼容性：%s；制品哈希已验证（SHA-256：%s）", artifact.Source, artifact.Project, artifact.VersionNumber, artifact.Compatibility, artifact.LocalSHA256))
+	emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; version=%s; source=%s; artifact=%s; compatibility=%s; sha256=%s; source_sha512=%s", artifact.Project, artifact.VersionNumber, artifact.Source, artifact.FileName, artifact.Compatibility, artifact.LocalSHA256, artifact.SourceSHA512))
 	return nil
 }
 
@@ -766,16 +843,41 @@ func detectPluginTarget(ctx context.Context, p provider.Provider, instanceRef st
 }
 
 func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
-	manifest, contents, err := e.loadPluginArtifact(plan.TaskID)
+	sourceTaskID := strings.TrimSpace(stringArg(step.Args, "source_task_id"))
+	if sourceTaskID == "" {
+		sourceTaskID = plan.TaskID
+	}
+	manifest, contents, err := e.loadPluginArtifact(sourceTaskID)
+	if err != nil && strings.Contains(err.Error(), "artifact is missing") {
+		resolver, ok := e.pluginResolver.(pluginMetadataResolver)
+		if !ok {
+			return err
+		}
+		contents, manifest.LocalSHA256, manifest.SourceSHA512, err = resolver.Fetch(ctx, manifest)
+		if err == nil {
+			encoded, _ := json.MarshalIndent(manifest, "", "  ")
+			directory := e.pluginTaskDir(sourceTaskID)
+			err = os.WriteFile(filepath.Join(directory, "manifest.json"), encoded, 0o600)
+			if err == nil {
+				err = os.WriteFile(filepath.Join(directory, "artifact.jar"), contents, 0o600)
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
 	if project := strings.ToLower(strings.TrimSpace(stringArg(step.Args, "project"))); project != "" && project != manifest.Project {
 		return errors.New("resolved plugin project does not match install step")
 	}
-	expected := strings.ToLower(strings.TrimSpace(stringArg(step.Args, "expected_sha256")))
-	if expected != "" && expected != "${s1.sha256}" && expected != manifest.LocalSHA256 {
-		return errors.New("plugin install SHA-256 does not match the resolved artifact")
+	expectedAlgorithm, expectedValue := pluginExpectedIntegrity(step.Args)
+	if expectedValue != "" {
+		manifestValue := manifest.LocalSHA256
+		if expectedAlgorithm == "sha512" {
+			manifestValue = manifest.SourceSHA512
+		}
+		if !strings.EqualFold(expectedValue, manifestValue) {
+			return errors.New("plugin install integrity does not match the resolved artifact")
+		}
 	}
 	uploader, ok := p.(interface {
 		UploadFile(context.Context, string, string, string, []byte) error
@@ -788,6 +890,10 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	}
 	manifest.InstalledPath = "plugins/" + manifest.FileName
 	encoded, _ := json.MarshalIndent(manifest, "", "  ")
+	if err := os.MkdirAll(e.pluginTaskDir(plan.TaskID), 0o700); err != nil {
+		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(e.pluginTaskDir(plan.TaskID), "manifest.json"), encoded, 0o600); err != nil {
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
 		return err
@@ -800,7 +906,7 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		_ = os.WriteFile(filepath.Join(e.pluginTaskDir(plan.TaskID), "manifest.json"), encoded, 0o600)
 		return errors.New("plugin upload completed without file-list evidence")
 	}
-	_ = os.Remove(filepath.Join(e.pluginTaskDir(plan.TaskID), "artifact.jar"))
+	_ = os.Remove(filepath.Join(e.pluginTaskDir(sourceTaskID), "artifact.jar"))
 	if e.audit != nil {
 		e.audit.Append("plugin.install.committed", plan.TaskID, manifest.Project, map[string]any{
 			"version": manifest.VersionNumber, "file": manifest.FileName,
@@ -809,6 +915,14 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	}
 	emit("", "files", fmt.Sprintf("插件已落盘到 /plugins/%s（SHA-256：%s）", manifest.FileName, manifest.LocalSHA256))
 	return nil
+}
+
+func pluginExpectedIntegrity(args map[string]any) (string, string) {
+	if value, ok := args["expected_integrity"].(map[string]any); ok {
+		return strings.ToLower(strings.TrimSpace(stringArg(value, "algorithm"))), strings.ToLower(strings.TrimSpace(stringArg(value, "value")))
+	}
+	// Legacy deterministic plans remain readable during rolling upgrades.
+	return "sha256", strings.ToLower(strings.TrimSpace(stringArg(args, "expected_sha256")))
 }
 
 func (e *Executor) deleteUploadedPlugin(ctx context.Context, p provider.Provider, instanceRef, target string) {
@@ -831,7 +945,7 @@ func (e *Executor) loadPluginArtifact(taskID string) (pluginManifest, []byte, er
 	}
 	contents, err := os.ReadFile(filepath.Join(directory, "artifact.jar"))
 	if err != nil {
-		return pluginManifest{}, nil, errors.New("quarantined plugin artifact is missing")
+		return manifest, nil, errors.New("quarantined plugin artifact is missing")
 	}
 	local256 := sha256.Sum256(contents)
 	local512 := sha512.Sum512(contents)

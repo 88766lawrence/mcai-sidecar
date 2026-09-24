@@ -22,7 +22,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function apiStream<T>(path: string, init: RequestInit, onEvent: (event: T) => void): Promise<void> {
+export async function apiStream<T>(path: string, init: RequestInit, onEvent: (event: T) => void | Promise<void>): Promise<void> {
   const token = typeof window === "undefined" ? "" : sessionStorage.getItem("mcai_token") ?? "";
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
@@ -52,9 +52,9 @@ export async function apiStream<T>(path: string, init: RequestInit, onEvent: (ev
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
     for (const line of lines) {
-      if (line.trim()) onEvent(JSON.parse(line) as T);
+      if (line.trim()) await onEvent(JSON.parse(line) as T);
     }
     if (done) break;
   }
-  if (buffer.trim()) onEvent(JSON.parse(buffer) as T);
+  if (buffer.trim()) await onEvent(JSON.parse(buffer) as T);
 }

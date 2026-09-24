@@ -3,17 +3,20 @@ package mcsmanager
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,11 +36,19 @@ type instanceDetail struct {
 	Config       struct {
 		Nickname     string `json:"nickname"`
 		StartCommand string `json:"startCommand"`
+		LastDatetime int64  `json:"lastDatetime"`
 		Type         string `json:"type"`
+		Docker       struct {
+			Memory int64 `json:"memory"`
+		} `json:"docker"`
 	} `json:"config"`
 	Info struct {
 		Version string `json:"version"`
 	} `json:"info"`
+	ProcessInfo struct {
+		Memory int64   `json:"memory"`
+		CPU    float64 `json:"cpu"`
+	} `json:"processInfo"`
 }
 
 type apiResponse[T any] struct {
@@ -163,17 +174,45 @@ func (c *Client) ReadOutput(ctx context.Context, ref string, sizeKB int) (string
 }
 
 func (c *Client) ListFiles(ctx context.Context, ref, target string) (string, error) {
-	daemonID, uuid, err := parseRef(ref)
+	listing, err := c.ListFileEntries(ctx, ref, target)
 	if err != nil {
 		return "", err
 	}
+	return fmt.Sprintf("共 %d 项：%s", listing.Total, strings.Join(listing.Names, "、")), nil
+}
+
+func (c *Client) ListFileEntries(ctx context.Context, ref, target string) (provider.FileListing, error) {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return provider.FileListing{}, err
+	}
+	names, total, err := c.listFiles(ctx, daemonID, uuid, target)
+	if err != nil {
+		// MCSManager returns HTTP 500 for a directory that does not exist.
+		// Distinguish that state from a provider failure by listing the direct
+		// parent: an absent child is an authoritative empty collection, while an
+		// existing child with a failing list keeps the original error.
+		clean := path.Clean("/" + strings.TrimPrefix(strings.ReplaceAll(target, "\\", "/"), "/"))
+		parent, base := path.Dir(clean), path.Base(clean)
+		if clean != "/" && parent != clean && base != "." && base != "/" {
+			parentNames, _, parentErr := c.listFiles(ctx, daemonID, uuid, parent)
+			if parentErr == nil && !containsExactName(parentNames, base) {
+				return provider.FileListing{Names: []string{}, Total: 0}, nil
+			}
+		}
+		return provider.FileListing{}, err
+	}
+	return provider.FileListing{Names: names, Total: total, Truncated: total > len(names)}, nil
+}
+
+func (c *Client) listFiles(ctx context.Context, daemonID, uuid, target string) ([]string, int, error) {
 	var response apiResponse[struct {
 		Items []struct {
 			Name string `json:"name"`
 		} `json:"items"`
 		Total int `json:"total"`
 	}]
-	err = c.call(ctx, http.MethodGet, "/api/files/list", url.Values{
+	err := c.call(ctx, http.MethodGet, "/api/files/list", url.Values{
 		"daemonId":  {daemonID},
 		"uuid":      {uuid},
 		"page":      {"0"},
@@ -182,7 +221,7 @@ func (c *Client) ListFiles(ctx context.Context, ref, target string) (string, err
 		"target":    {target},
 	}, nil, &response)
 	if err != nil {
-		return "", err
+		return nil, 0, err
 	}
 	names := make([]string, 0, len(response.Data.Items))
 	for _, item := range response.Data.Items {
@@ -190,7 +229,16 @@ func (c *Client) ListFiles(ctx context.Context, ref, target string) (string, err
 			names = append(names, item.Name)
 		}
 	}
-	return fmt.Sprintf("共 %d 项：%s", response.Data.Total, strings.Join(names, "、")), nil
+	return names, response.Data.Total, nil
+}
+
+func containsExactName(names []string, expected string) bool {
+	for _, name := range names {
+		if name == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) DownloadFromURL(ctx context.Context, ref, sourceURL, fileName string) error {
@@ -278,6 +326,244 @@ func (c *Client) UploadFile(ctx context.Context, ref, uploadDir, fileName string
 		return fmt.Errorf("daemon upload failed with HTTP %d", response.StatusCode)
 	}
 	return nil
+}
+
+// CreateBinaryFile commits one exact new file without replacing an existing
+// target. Bytes are uploaded under a random, proven-absent staging name,
+// read back byte-for-byte, then moved to the final path with MCSManager's
+// non-overwriting move operation.
+func (c *Client) CreateBinaryFile(ctx context.Context, ref, target string, contents []byte) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	target, err = canonicalBinaryCreateTarget(target)
+	if err != nil {
+		return err
+	}
+	if len(contents) < 1 || len(contents) > 64<<20 {
+		return errors.New("binary create must contain between 1 byte and 64 MiB")
+	}
+	parent, finalName := path.Dir(target), path.Base(target)
+	if parent == "." {
+		parent = "/"
+	}
+	if parent != "/" {
+		if strings.Contains(parent, "/") {
+			return errors.New("binary create supports one inert staging directory level")
+		}
+		root, err := c.ListFileEntries(ctx, ref, "/")
+		if err != nil || root.Truncated {
+			return errors.New("cannot prove the binary staging directory state")
+		}
+		if !containsExactName(root.Names, parent) {
+			var response apiResponse[any]
+			if err := c.call(ctx, http.MethodPost, "/api/files/mkdir", url.Values{
+				"daemonId": {daemonID}, "uuid": {uuid},
+			}, map[string]string{"target": "/" + parent}, &response); err != nil {
+				if _, listErr := c.ListFileEntries(ctx, ref, parent); listErr != nil {
+					return fmt.Errorf("create binary staging directory: %w", err)
+				}
+			}
+		}
+	}
+	listing, err := c.ListFileEntries(ctx, ref, parent)
+	if err != nil || listing.Truncated {
+		return errors.New("cannot prove the binary target is absent")
+	}
+	if containsExactName(listing.Names, finalName) {
+		return errors.New("binary create target already exists")
+	}
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return errors.New("generate binary create staging name")
+	}
+	stagingName := ".mcai-download-" + hex.EncodeToString(random) + ".part"
+	if containsExactName(listing.Names, stagingName) {
+		return errors.New("binary create staging target collision")
+	}
+	stagingTarget := stagingName
+	if parent != "/" {
+		stagingTarget = path.Join(parent, stagingName)
+	}
+	cleanup := func() {
+		_ = c.DeleteFiles(context.WithoutCancel(ctx), ref, []string{"/" + stagingTarget})
+	}
+	if err := c.uploadCreateBinary(ctx, ref, parent, stagingName, contents); err != nil {
+		cleanup()
+		return fmt.Errorf("upload binary create staging file: %w", err)
+	}
+	readBack, err := c.ReadBinaryFile(ctx, ref, stagingTarget)
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("verify binary create staging file: %w", err)
+	}
+	wantHash, gotHash := sha256.Sum256(contents), sha256.Sum256(readBack)
+	if len(readBack) != len(contents) || gotHash != wantHash {
+		cleanup()
+		return errors.New("binary create staging bytes did not match")
+	}
+	var response apiResponse[any]
+	if err := c.call(ctx, http.MethodPut, "/api/files/move", url.Values{
+		"daemonId": {daemonID}, "uuid": {uuid},
+	}, map[string]any{"targets": [][]string{{"/" + stagingTarget, "/" + target}}}, &response); err != nil {
+		cleanup()
+		return fmt.Errorf("commit binary create without overwrite: %w", err)
+	}
+	return nil
+}
+
+func canonicalBinaryCreateTarget(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" || strings.HasPrefix(raw, "/") || strings.HasSuffix(raw, "/") || len(raw) > 256 {
+		return "", errors.New("binary create target must be one safe instance-relative file path")
+	}
+	clean := path.Clean(raw)
+	if clean != raw || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", errors.New("binary create target must be one safe instance-relative file path")
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if segment == "" || len(segment) > 160 || strings.TrimSpace(segment) == "" || strings.ContainsAny(segment, "<>\"|?*;:\x00\r\n") {
+			return "", errors.New("binary create target must be one safe instance-relative file path")
+		}
+	}
+	return clean, nil
+}
+
+func (c *Client) uploadCreateBinary(ctx context.Context, ref, uploadDir, fileName string, contents []byte) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	if uploadDir == "." || uploadDir == "" {
+		uploadDir = "/"
+	}
+	if uploadDir != "/" {
+		uploadDir = strings.Trim(uploadDir, "/")
+	}
+	if uploadDir == "" || path.Base(fileName) != fileName || fileName == "" || len(fileName) > 160 || strings.ContainsAny(fileName, "/\\<>\"|?*;:\x00\r\n") {
+		return errors.New("binary staging destination is invalid")
+	}
+	var passport apiResponse[struct {
+		Password string `json:"password"`
+		Addr     string `json:"addr"`
+	}]
+	if err := c.call(ctx, http.MethodGet, "/api/files/upload", url.Values{
+		"daemonId": {daemonID}, "uuid": {uuid}, "upload_dir": {uploadDir},
+	}, nil, &passport); err != nil {
+		return fmt.Errorf("register upload passport: %w", err)
+	}
+	base, err := daemonTransferBaseURL(c.baseURL.Scheme, passport.Data.Addr)
+	if err != nil || !validTransferPassword(passport.Data.Password) {
+		return errors.New("panel returned an invalid upload passport")
+	}
+	uploadURL := base.ResolveReference(&url.URL{Path: "/upload/" + passport.Data.Password, RawQuery: "overwrite=false"})
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(contents); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL.String(), &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := daemonTransferClient(2 * time.Minute).Do(request)
+	if err != nil {
+		return fmt.Errorf("upload staging file to daemon: %w", err)
+	}
+	defer response.Body.Close()
+	result, readErr := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+	if readErr != nil {
+		return readErr
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || strings.TrimSpace(string(result)) != "OK" {
+		return fmt.Errorf("daemon staging upload failed with HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+// ReadBinaryFile follows MCSManager's one-time download-passport protocol so
+// callers can verify the exact bytes committed to the instance filesystem.
+func (c *Client) ReadBinaryFile(ctx context.Context, ref, target string) ([]byte, error) {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	target = strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(target), "\\", "/"), "/")
+	cleanTarget := path.Clean("/" + target)
+	if target == "" || cleanTarget != "/"+target || strings.ContainsAny(target, "\x00\r\n") || len(target) > 512 {
+		return nil, errors.New("binary read target must be a safe instance-relative file")
+	}
+	fileName := path.Base(target)
+	if fileName == "." || fileName == "/" || fileName == "" || len(fileName) > 160 {
+		return nil, errors.New("binary read target omitted a safe filename")
+	}
+	var passport apiResponse[struct {
+		Password string `json:"password"`
+		Addr     string `json:"addr"`
+	}]
+	if err := c.call(ctx, http.MethodPost, "/api/files/download", url.Values{
+		"daemonId": {daemonID}, "uuid": {uuid}, "file_name": {"/" + target},
+	}, nil, &passport); err != nil {
+		return nil, fmt.Errorf("register download passport: %w", err)
+	}
+	base, err := daemonTransferBaseURL(c.baseURL.Scheme, passport.Data.Addr)
+	if err != nil || !validTransferPassword(passport.Data.Password) {
+		return nil, errors.New("panel returned an invalid download passport")
+	}
+	downloadURL := base.ResolveReference(&url.URL{Path: "/download/" + passport.Data.Password + "/" + fileName})
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := daemonTransferClient(2 * time.Minute).Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("download binary file from daemon: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 || response.ContentLength > 64<<20 {
+		return nil, fmt.Errorf("daemon binary download failed with HTTP %d", response.StatusCode)
+	}
+	contents, err := io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(contents) < 1 || len(contents) > 64<<20 {
+		return nil, errors.New("daemon binary download is outside the 1 byte to 64 MiB limit")
+	}
+	return contents, nil
+}
+
+func validTransferPassword(password string) bool {
+	return regexp.MustCompile(`^[A-Za-z0-9_-]{1,256}$`).MatchString(password)
+}
+
+func daemonTransferBaseURL(defaultScheme, address string) (*url.URL, error) {
+	raw := strings.TrimSpace(address)
+	if !strings.Contains(raw, "://") {
+		raw = defaultScheme + "://" + raw
+	}
+	raw = strings.Replace(raw, "ws://", "http://", 1)
+	raw = strings.Replace(raw, "wss://", "https://", 1)
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("daemon transfer address is invalid")
+	}
+	parsed.Path, parsed.RawPath = "", ""
+	return parsed, nil
+}
+
+func daemonTransferClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 func (c *Client) DeleteFiles(ctx context.Context, ref string, targets []string) error {
@@ -431,13 +717,21 @@ func profile(daemonID string, detail instanceDetail) provider.Instance {
 	// not invalidate a plan that was approved against the same instance config.
 	revision := struct {
 		InstanceUUID string `json:"instanceUuid"`
-		Config       any    `json:"config"`
-		Info         any    `json:"info"`
+		Config       struct {
+			Nickname     string `json:"nickname"`
+			StartCommand string `json:"startCommand"`
+			Type         string `json:"type"`
+		} `json:"config"`
+		Info struct {
+			Version string `json:"version"`
+		} `json:"info"`
 	}{
 		InstanceUUID: detail.InstanceUUID,
-		Config:       detail.Config,
-		Info:         detail.Info,
 	}
+	revision.Config.Nickname = detail.Config.Nickname
+	revision.Config.StartCommand = detail.Config.StartCommand
+	revision.Config.Type = detail.Config.Type
+	revision.Info.Version = detail.Info.Version
 	raw, _ := json.Marshal(revision)
 	hash := sha256.Sum256(raw)
 	loader := inferLoader(detail.Config.Type + " " + detail.Config.StartCommand)
@@ -446,7 +740,43 @@ func profile(daemonID string, detail instanceDetail) provider.Instance {
 		Platform: loader, Loader: loader, MinecraftVersion: detail.Info.Version,
 		State: stateName(detail.Status), ProfileRevision: hex.EncodeToString(hash[:]),
 		ProviderType: "mcsmanager", CollectedAt: time.Now().UTC().Format(time.RFC3339),
+		MemoryBytes: detail.ProcessInfo.Memory, MemoryLimitBytes: instanceMemoryLimit(detail), CPUUsage: detail.ProcessInfo.CPU,
+		UptimeSeconds: instanceUptimeSeconds(detail),
 	}
+}
+
+func instanceUptimeSeconds(detail instanceDetail) int64 {
+	if detail.Status != 3 || detail.Config.LastDatetime <= 0 {
+		return 0
+	}
+	started := time.UnixMilli(detail.Config.LastDatetime)
+	seconds := int64(time.Since(started).Seconds())
+	if seconds < 0 || seconds > 10*365*24*60*60 {
+		return 0
+	}
+	return seconds
+}
+
+var javaMaximumHeapPattern = regexp.MustCompile(`(?i)(?:^|\s)-Xmx(\d+(?:\.\d+)?)([kmgt])(?:\s|$)`)
+
+func instanceMemoryLimit(detail instanceDetail) int64 {
+	if detail.Config.Docker.Memory > 0 {
+		return detail.Config.Docker.Memory
+	}
+	match := javaMaximumHeapPattern.FindStringSubmatch(detail.Config.StartCommand)
+	if len(match) != 3 {
+		return 0
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	multiplier := map[string]float64{"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}[strings.ToLower(match[2])]
+	bytes := value * multiplier
+	if bytes <= 0 || bytes > math.MaxInt64 {
+		return 0
+	}
+	return int64(bytes)
 }
 
 func parseRef(ref string) (string, string, error) {

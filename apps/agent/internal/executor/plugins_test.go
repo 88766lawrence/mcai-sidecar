@@ -45,6 +45,37 @@ func TestOfficialPluginResolverVerifiesModrinthHash(t *testing.T) {
 	}
 }
 
+func TestOfficialPluginMetadataResolutionDoesNotDownloadArtifact(t *testing.T) {
+	contents := []byte("metadata-only-plugin")
+	sourceHash := sha512.Sum512(contents)
+	artifactRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/metadataonly/version":
+			_, _ = fmt.Fprintf(writer, `[{"id":"version-meta","version_number":"4.2.0","dependencies":[],"files":[{"url":%q,"filename":"MetadataOnly-4.2.0.jar","primary":true,"hashes":{"sha512":"%s"}}]}]`, server.URL+"/artifact.jar", hex.EncodeToString(sourceHash[:]))
+		case "/artifact.jar":
+			artifactRequests++
+			_, _ = writer.Write(contents)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2"}
+	artifact, err := resolver.ResolveMetadata(context.Background(), "metadataonly", "paper", "1.21.3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifactRequests != 0 || len(artifact.Contents) != 0 || artifact.LocalSHA256 != "" {
+		t.Fatalf("metadata lookup downloaded artifact bytes: requests=%d artifact=%#v", artifactRequests, artifact)
+	}
+	if artifact.Source != "modrinth" || artifact.SourceSHA512 != hex.EncodeToString(sourceHash[:]) || artifact.Compatibility == "" {
+		t.Fatalf("metadata lookup omitted provenance, integrity, or compatibility: %#v", artifact)
+	}
+}
+
 func TestOfficialPluginResolverRejectsHashMismatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/version") {
@@ -307,6 +338,12 @@ func (r staticPluginResolver) Resolve(context.Context, string, string, string, p
 	return r.artifact, nil
 }
 
+type failingPluginResolver struct{ err error }
+
+func (r failingPluginResolver) Resolve(context.Context, string, string, string, pluginResolutionProgress) (resolvedPlugin, error) {
+	return resolvedPlugin{}, r.err
+}
+
 type recordingPluginResolver struct {
 	loader  string
 	version string
@@ -373,25 +410,79 @@ func TestPluginResolveInstallAndRollback(t *testing.T) {
 		Project: "essentialsx", VersionID: "version-1", VersionNumber: "2.21.0",
 		FileName: "EssentialsX-2.21.0.jar", SourceURL: "https://cdn.modrinth.com/data/test.jar",
 		SourceSHA512: hex.EncodeToString(hash512[:]), LocalSHA256: hex.EncodeToString(hash256[:]), Contents: contents,
+		Source: "modrinth", Compatibility: "paper 1.21.1",
 	}}
-	plan := protocol.TaskPlan{TaskID: "task-plugin", InstanceRef: "mcs:daemon:instance"}
+	resolvePlan := protocol.TaskPlan{TaskID: "task-plugin-resolve", InstanceRef: "mcs:daemon:instance"}
+	installPlan := protocol.TaskPlan{TaskID: "task-plugin-install", InstanceRef: "mcs:daemon:instance"}
 	provider := &pluginProvider{}
-	if err := executor.executeStep(context.Background(), provider, plan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
+	var resolveSummary string
+	if err := executor.executeStep(context.Background(), provider, resolvePlan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
 		"project": "essentialsx", "loader": "paper", "minecraft_version": "1.21.1",
-	}}, func(string, string, string) {}); err != nil {
+	}}, func(_ string, kind string, summary string, _ ...map[string]any) {
+		if kind == "plugin" {
+			resolveSummary = summary
+		}
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := executor.executeStep(context.Background(), provider, plan, protocol.TaskStep{Tool: "plugin.install", Args: map[string]any{
-		"project": "essentialsx", "expected_sha256": "${s1.sha256}",
-	}}, func(string, string, string) {}); err != nil {
+	for _, required := range []string{"Plugin resolve result:", "project=essentialsx", "version=2.21.0", "source=", "artifact=EssentialsX-2.21.0.jar", "compatibility=", "sha256="} {
+		if !strings.Contains(resolveSummary, required) {
+			t.Fatalf("resolve evidence omitted %q: %s", required, resolveSummary)
+		}
+	}
+	if err := executor.executeStep(context.Background(), provider, installPlan, protocol.TaskStep{Tool: "plugin.install", Args: map[string]any{
+		"project": "essentialsx", "expected_integrity": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(hash256[:])}, "source_task_id": resolvePlan.TaskID,
+	}}, func(string, string, string, ...map[string]any) {}); err != nil {
 		t.Fatal(err)
 	}
 	if provider.uploadDir != "plugins" || provider.uploadName != "EssentialsX-2.21.0.jar" || string(provider.uploaded) != string(contents) {
 		t.Fatalf("unexpected controlled upload: %#v", provider)
 	}
-	executor.rollbackPlugin(context.Background(), provider, plan, func(string, string, string) {})
+	executor.rollbackPlugin(context.Background(), provider, installPlan, func(string, string, string, ...map[string]any) {})
 	if len(provider.deleted) != 1 || provider.deleted[0] != "plugins/EssentialsX-2.21.0.jar" {
 		t.Fatalf("unexpected rollback targets: %#v", provider.deleted)
+	}
+}
+
+func TestPluginMetadataOnlyResolveFetchesVerifiedArtifactDuringInstall(t *testing.T) {
+	contents := []byte("metadata-only-install")
+	hash512 := sha512.Sum512(contents)
+	artifactRequests := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/authmereloaded/version":
+			writer.Header().Set("content-type", "application/json")
+			_, _ = fmt.Fprintf(writer, `[{"id":"version-authme","version_number":"5.7.0","dependencies":[],"files":[{"url":%q,"filename":"AuthMe-5.7.0.jar","primary":true,"hashes":{"sha512":"%s"}}]}]`, server.URL+"/AuthMe-5.7.0.jar", hex.EncodeToString(hash512[:]))
+		case "/AuthMe-5.7.0.jar":
+			artifactRequests++
+			_, _ = writer.Write(contents)
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	executor := New(t.TempDir(), nil)
+	executor.pluginResolver = &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2"}
+	resolvePlan := protocol.TaskPlan{TaskID: "task-authme-resolve", InstanceRef: "mcs:daemon:instance"}
+	installPlan := protocol.TaskPlan{TaskID: "task-authme-install", InstanceRef: "mcs:daemon:instance"}
+	provider := &pluginProvider{}
+	if err := executor.executeStep(context.Background(), provider, resolvePlan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
+		"project": "authmereloaded", "loader": "paper", "minecraft_version": "1.21.1",
+	}}, func(string, string, string, ...map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if artifactRequests != 0 {
+		t.Fatalf("metadata-only resolve downloaded artifact bytes: %d", artifactRequests)
+	}
+	if err := executor.executeStep(context.Background(), provider, installPlan, protocol.TaskStep{Tool: "plugin.install", Args: map[string]any{
+		"project": "authmereloaded", "expected_integrity": map[string]any{"algorithm": "sha512", "value": hex.EncodeToString(hash512[:])}, "source_task_id": resolvePlan.TaskID,
+	}}, func(string, string, string, ...map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	if artifactRequests != 1 || provider.uploadName != "AuthMe-5.7.0.jar" || string(provider.uploaded) != string(contents) {
+		t.Fatalf("metadata-only install did not fetch and upload the verified artifact exactly once: requests=%d provider=%#v", artifactRequests, provider)
 	}
 }
 
@@ -407,12 +498,34 @@ func TestPluginResolveDetectsMissingServerMetadata(t *testing.T) {
 		TaskID: "task-detect-plugin", InstanceRef: "mcs:daemon:instance",
 	}, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
 		"project": "essentialsx", "loader": "unknown", "minecraft_version": "",
-	}}, func(string, string, string) {})
+	}}, func(string, string, string, ...map[string]any) {})
 	if err == nil || err.Error() != "recorded" {
 		t.Fatalf("expected recording resolver sentinel, got %v", err)
 	}
 	if resolver.loader != "paper" || resolver.version != "1.21.1" {
 		t.Fatalf("detected target = %s %s, want paper 1.21.1", resolver.loader, resolver.version)
+	}
+}
+
+func TestPluginResolveReportsAuditableCompatibleArtifactAbsence(t *testing.T) {
+	executor := New(t.TempDir(), nil)
+	executor.pluginResolver = failingPluginResolver{err: fmt.Errorf("%w: no paper release", errNoCompatiblePluginVersion)}
+	provider := &pluginProvider{}
+	var events []string
+	err := executor.resolvePlugin(context.Background(), provider, protocol.TaskPlan{
+		TaskID: "task-plugin-absence", InstanceRef: "mcs:daemon:instance",
+	}, protocol.TaskStep{ID: "s1", Tool: "plugin.resolve", Args: map[string]any{
+		"project": "sodium-extra", "loader": "paper", "minecraft_version": "1.21.1",
+	}}, func(_, kind, summary string, _ ...map[string]any) {
+		if kind == "plugin" {
+			events = append(events, summary)
+		}
+	})
+	if err != nil {
+		t.Fatalf("resolvePlugin() error = %v", err)
+	}
+	if len(events) != 1 || !strings.Contains(events[0], "resolution=no-compatible-artifact") || !strings.Contains(events[0], "requested_minecraft_version=1.21.1") {
+		t.Fatalf("unexpected events: %#v", events)
 	}
 }
 
@@ -422,5 +535,37 @@ func TestPluginAcceptanceRecognizesEssentialsAlias(t *testing.T) {
 	}
 	if containsPluginEvidence("Server Plugins (0):", "essentialsx") {
 		t.Fatal("empty plugin list must not pass acceptance")
+	}
+}
+
+func TestLoadedPluginInventoryParsesPaperColorizedMultilineCallback(t *testing.T) {
+	fixture := "\x1b[32m[Server thread/INFO]: \u00a7aServer Plugins (3):\u00a7r\n[Server thread/INFO]: \u00a77Bukkit Plugins:\u00a7r\n[Server thread/INFO]: \u00a77 - Chunky, LuckPerms\u00a7r\n[Server thread/INFO]: \u00a77 - ViaVersion\u00a7r"
+	declared, names, ok := loadedPluginInventory(fixture)
+	if !ok || declared != 3 || strings.Join(names, ",") != "Chunky,LuckPerms,ViaVersion" {
+		t.Fatalf("unexpected parsed inventory: declared=%d names=%v ok=%v", declared, names, ok)
+	}
+}
+
+func TestLoadedPluginInventoryParsesTimestampedPaperCallback(t *testing.T) {
+	fixture := "[22:52:18] [Server thread/INFO]: Server Plugins (3):\n[22:52:18] [Server thread/INFO]: Bukkit Plugins:\n[22:52:18] [Server thread/INFO]:  - LuckPerms, ProtocolLib, WorldEdit"
+	declared, names, ok := loadedPluginInventory(fixture)
+	if !ok || declared != 3 || strings.Join(names, ",") != "LuckPerms,ProtocolLib,WorldEdit" {
+		t.Fatalf("unexpected parsed inventory: declared=%d names=%v ok=%v", declared, names, ok)
+	}
+}
+
+func TestLoadedPluginInventoryFailsClosedOnTruncatedOrConflictingCount(t *testing.T) {
+	for _, fixture := range []string{
+		"Server Plugins (3): Chunky, LuckPerms",
+		"Server Plugins (1): Chunky, LuckPerms",
+		"Server Plugins (2): Chunky\n[Server thread/INFO]: unrelated",
+	} {
+		if _, _, ok := loadedPluginInventory(fixture); ok {
+			t.Fatalf("incomplete or conflicting inventory must fail closed: %q", fixture)
+		}
+	}
+	declared, names, ok := loadedPluginInventory("Server Plugins (0):")
+	if !ok || declared != 0 || len(names) != 0 {
+		t.Fatalf("empty inventory is a valid fact: declared=%d names=%v ok=%v", declared, names, ok)
 	}
 }

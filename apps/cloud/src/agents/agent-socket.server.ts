@@ -113,6 +113,7 @@ export class AgentSocketServer {
     for (const profile of message.payload.instances ?? []) {
       this.store.instances.set(profile.instance_id, { ...profile, tenant_id: agent.tenantId, agent_id: agent.id });
     }
+    this.tasks.recordInventoryProfiles(message.payload.instances ?? []);
   }
 
   private verifyEnvelope(message: AgentEnvelope<Record<string, unknown>>) {

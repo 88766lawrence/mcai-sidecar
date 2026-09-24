@@ -14,10 +14,11 @@ import { AuthMiddleware } from "./auth/auth.middleware";
 import { ModelGatewayService } from "./model-gateway/model-gateway.service";
 import { ChatController } from "./chat/chat.controller";
 import { ChatService } from "./chat/chat.service";
+import { AgentRunStore } from "./agents/agent-run.store";
 
 @Module({
   controllers: [HealthController, SetupController, PairingController, AgentsController, TasksController, ChatController],
-  providers: [CloudStore, SetupService, AuthMiddleware, PairingService, AgentConnectionRegistry, AgentSocketServer, ModelGatewayService, TasksService, ChatService],
+  providers: [CloudStore, AgentRunStore, SetupService, AuthMiddleware, PairingService, AgentConnectionRegistry, AgentSocketServer, ModelGatewayService, TasksService, ChatService],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

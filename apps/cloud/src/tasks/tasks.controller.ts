@@ -27,13 +27,12 @@ export class TasksController {
   }
 
   @Post(":id/confirmation")
-  issueConfirmation(@Param("id") id: string, @Req() request: Request) {
-    return this.tasks.issueConfirmation(id, actorFrom(request).tenantId);
+  async issueConfirmation(@Param("id") id: string, @Req() request: Request) {
+    return this.tasks.issueConfirmationForRequest(id, actorFrom(request).tenantId);
   }
 
   @Post(":id/confirm")
-  confirm(@Param("id") id: string, @Body() body: { token?: string }, @Req() request: Request) {
-    return this.tasks.confirm(id, actorFrom(request).tenantId, body.token ?? "");
+  async confirm(@Param("id") id: string, @Body() body: { token?: string }, @Req() request: Request) {
+    return this.tasks.confirmForRequest(id, actorFrom(request).tenantId, body.token ?? "");
   }
 }
-
