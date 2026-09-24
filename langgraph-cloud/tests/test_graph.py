@@ -30,6 +30,7 @@ from mcai_graph.graph import (
     _normalize_decision,
     _provider_content,
     _strict_json_object,
+    _validate_agent_loop_decision,
     _unique_json_object,
     _planner_prompt,
     _readonly_health_skill_intent,
@@ -86,6 +87,18 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         await self.graph.close()
         self.temp.cleanup()
 
+    def test_direct_answers_reject_internal_reasoning_and_instance_identifiers(self):
+        examples = (
+            ("用户问的是 Paper 和 Fabric 的区别，不需要任何外部工具调用。\nPaper 支持插件。", "$.answer:INTERNAL_REASONING_LEAK"),
+            ("当前选中的实例是测试。来源：运行时上下文 `instance.name`。", "$.answer:INTERNAL_DETAIL_LEAK"),
+            ("实例测试（id: aabbccddeeff00112233445566778899）已停止。", "$.answer:INTERNAL_DETAIL_LEAK"),
+            ("当前实例的 state 为 `stopped`。", "$.answer:INTERNAL_DETAIL_LEAK"),
+        )
+        for answer, expected in examples:
+            with self.subTest(answer=answer):
+                decision = {"action": "final", "answer": answer, "citations": []}
+                self.assertEqual(_validate_agent_loop_decision(decision, [], [], {"maxToolCalls": 19}), expected)
+
     async def test_affirmative_follow_up_runs_pending_plugin_file_check(self):
         payload = {
             "threadId": "session-1",
@@ -120,6 +133,16 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
         from test_native_autonomous_tools import test_native_final_with_uncovered_evidence_uses_bounded_editor
 
         await test_native_final_with_uncovered_evidence_uses_bounded_editor()
+
+    async def test_plugin_installation_check_uses_plugins_directory(self):
+        from test_native_autonomous_tools import test_named_plugin_check_repairs_root_listing_to_plugins_directory
+
+        await test_named_plugin_check_repairs_root_listing_to_plugins_directory()
+
+    async def test_bound_instance_metadata_does_not_leak_internal_ids(self):
+        from test_native_autonomous_tools import test_bound_instance_metadata_answers_without_model_or_internal_ids
+
+        await test_bound_instance_metadata_answers_without_model_or_internal_ids()
 
     def test_agent_loop_unique_json_extractor_accepts_one_object_and_rejects_multiple(self):
         self.assertEqual(_unique_json_object('short preface {"action":"cannot_proceed","answer":"Need a target"}'), {"action": "cannot_proceed", "answer": "Need a target"})
