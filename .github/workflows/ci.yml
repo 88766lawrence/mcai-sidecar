@@ -30,3 +30,10 @@ jobs:
       - run: npm run test --prefix local-cloud
       - run: go test ./...
         working-directory: apps/agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r langgraph-cloud/requirements.txt
+      - run: python -m unittest discover -s langgraph-cloud/tests -v
+        env:
+          PYTHONPATH: langgraph-cloud
