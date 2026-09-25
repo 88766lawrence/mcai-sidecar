@@ -99,6 +99,26 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
                 decision = {"action": "final", "answer": answer, "citations": []}
                 self.assertEqual(_validate_agent_loop_decision(decision, [], [], {"maxToolCalls": 19}), expected)
 
+    def test_web_search_final_allows_only_observed_source_urls(self):
+        source = "https://docs.papermc.io/paper/getting-started/"
+        web = {
+            "tool_call_id": "call-web", "tool": "web.search", "status": "succeeded",
+            "data": {"qa0144_read_result": {
+                "output_schema_id": "web-search-result/v1",
+                "value": {"schema_version": "web-search-result/v1", "results": [{"url": source}]},
+            }},
+        }
+        config = {"tool_call_id": "call-config", "tool": "config.inspect", "status": "succeeded"}
+        observations = [web, config]
+        decision = {"action": "final", "answer": f"Paper 官方文档：{source}", "citations": ["call-web", "call-config"]}
+        self.assertIsNone(_validate_agent_loop_decision(decision, [], observations, {"maxToolCalls": 19}))
+        self.assertEqual(_validate_agent_loop_decision(
+            {**decision, "answer": "Paper 文档：https://example.invalid/claim"}, [], observations, {"maxToolCalls": 19},
+        ), "$.answer:UNSUPPORTED_SOURCE_URL")
+        self.assertEqual(_validate_agent_loop_decision(
+            {**decision, "citations": ["call-config"]}, [], [config], {"maxToolCalls": 19},
+        ), "$.answer:UNSUPPORTED_SOURCE_URL")
+
     async def test_affirmative_follow_up_runs_pending_plugin_file_check(self):
         payload = {
             "threadId": "session-1",
