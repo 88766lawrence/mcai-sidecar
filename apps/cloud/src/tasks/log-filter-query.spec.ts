@@ -4,6 +4,15 @@ import { draftPlan } from "./planner";
 import { validatePlanCompatibility } from "./plan-compatibility";
 
 describe("structured log filter query", () => {
+  it("accepts the bounded EssentialsX literal and excludes unrelated errors", () => {
+    const result = canonicalizeLogFilterGroups([
+      { all_of: ["literal:Essentials"], any_of: ["error", "warning"] },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(matchesLogFilterQuery("[Essentials] You are running an unsupported server version! ERROR", result.query)).toBe(true);
+    expect(matchesLogFilterQuery("[PaperVersionFetcher] Error while parsing version", result.query)).toBe(false);
+  });
   it.each([
     ["检查组件初始化失败或依赖项缺失的近期记录", "software_component", ["initialization_failure", "dependency_missing"]],
     ["Were any module dependencies unavailable or extensions unable to initialize?", "software_component", ["initialization_failure", "dependency_missing"]],
