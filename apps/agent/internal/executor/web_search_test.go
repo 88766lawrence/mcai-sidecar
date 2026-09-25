@@ -54,6 +54,22 @@ func TestRelevantWebSearchResultsHonorsRequestedSite(t *testing.T) {
 	}
 }
 
+func TestRelevantWebSearchResultsRequiresRequestedDownloadPage(t *testing.T) {
+	results := []webSearchResult{
+		{Title: "PaperMC official downloads", Link: "https://papermc.io/", Snippet: "Find Paper downloads here"},
+		{Title: "Downloads - PaperMC", Link: "https://papermc.io/downloads/", Snippet: "PaperMC builds"},
+	}
+	for _, query := range []string{"PaperMC official download page", "搜索 PaperMC 官方下载页"} {
+		filtered := relevantWebSearchResults(query, results)
+		if len(filtered) != 1 || filtered[0].Link != "https://papermc.io/downloads/" {
+			t.Fatalf("%q: homepage must not stand in for download page: %+v", query, filtered)
+		}
+	}
+	if filtered := relevantWebSearchResults("PaperMC official website", results); len(filtered) != 2 {
+		t.Fatalf("ordinary website query should still include both pages: %+v", filtered)
+	}
+}
+
 func TestParseDuckDuckGoHTMLResultsDecodesSourceLinks(t *testing.T) {
 	document := `<div class="web-result"><h2><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpapermc.io%2Fdownloads%2F&amp;rut=abc">Downloads - PaperMC</a></h2><a class="result__snippet" href="#"><b>PaperMC</b> official downloads &amp; builds</a></div>` +
 		`<div class="web-result"><a class="result__a" href="javascript:alert(1)">Unsafe</a><a class="result__snippet">Bad result</a></div>`
@@ -163,6 +179,19 @@ func TestFallbackSearchCachesRelevantDuckDuckGoResults(t *testing.T) {
 	}
 	if primary.calls != 1 || secondary.calls != 0 {
 		t.Fatalf("unexpected provider calls: primary=%d secondary=%d", primary.calls, secondary.calls)
+	}
+}
+
+func TestFallbackSearchSkipsHomepageForDownloadPage(t *testing.T) {
+	primary := &stubWebSearcher{response: webSearchResponse{Provider: "duckduckgo-html", Results: []webSearchResult{{Title: "PaperMC official downloads", Link: "https://papermc.io/", Snippet: "Find Paper builds"}}}}
+	secondary := &stubWebSearcher{response: webSearchResponse{Provider: "github-org-site", Results: []webSearchResult{{Title: "PaperMC — Downloads", Link: "https://papermc.io/downloads", Snippet: "Linked from the project website"}}}}
+	searcher := &fallbackWebSearcher{primary: primary, secondary: secondary}
+	result, err := searcher.Search(context.Background(), "PaperMC official download page")
+	if err != nil || result.Provider != "github-org-site" || len(result.Results) != 1 || result.Results[0].Link != "https://papermc.io/downloads" {
+		t.Fatalf("expected actual download page from fallback, got %+v, %v", result, err)
+	}
+	if primary.calls != 1 || secondary.calls != 1 {
+		t.Fatalf("expected both providers, got %d and %d", primary.calls, secondary.calls)
 	}
 }
 

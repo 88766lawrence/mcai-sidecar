@@ -21,6 +21,17 @@ function directPlan() {
 }
 
 describe("agent direct execution plan", () => {
+  it.each(["ProtocolLib", "Citizens"])("canonicalizes model plugin name %s in the Cloud plan", (project) => {
+    const checked = validateAgentToolCall({
+      action: "tool_call", tool: "plugin.resolve", reason: "Check a compatible plugin without installing it.",
+      arguments: { project, source: "modrinth", platform: "paper", minecraft_version: "1.21.1", loader: "paper" },
+    }, "mcs:daemon:instance");
+    if (!checked.ok) throw new Error(checked.message);
+    const plan = buildAgentDirectExecutionPlan("mcs:daemon:instance", "revision-direct-1", `Check ${project}`, "call-plugin", checked.value);
+    expect(plan.steps[0].args.project).toBe(project.toLowerCase());
+    expect(plan.agent_execution?.arguments.project).toBe(project.toLowerCase());
+  });
+
   it("binds an AI-selected tool without creating a legacy semantic ledger", () => {
     const plan = directPlan();
     expect(plan).toMatchObject({
