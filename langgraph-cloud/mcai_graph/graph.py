@@ -728,6 +728,23 @@ def _paper_fabric_comparison_answer(message: str) -> str | None:
     )
 
 
+def _required_live_tool(message: str, available: set[str]) -> str | None:
+    """Keep explicit live reads and lifecycle requests out of the direct-answer route."""
+    if (
+        "config.inspect" in available
+        and re.search(r"(?:查看|读取|检查|核对|确认|show|read|inspect).{0,80}(?:[\w.-]+\.(?:properties|ya?ml|json|conf))|(?:[\w.-]+\.(?:properties|ya?ml|json|conf)).{0,80}(?:查看|读取|检查|核对|确认|show|read|inspect)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:查看|读取|检查|核对|确认)", message)
+    ):
+        return "config.inspect"
+    if (
+        "instance.restart" in available
+        and re.search(r"(?:重启|重新启动|restart).{0,12}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,12}(?:重启|重新启动|restart)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:重启|重新启动|restart)", message, re.I)
+    ):
+        return "instance.restart"
+    return None
+
+
 def _unavailable_instance_action_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Do not replace an unavailable runtime action with a different tool."""
     if str(instance.get("state") or "").strip().lower() != "stopped":
@@ -1982,6 +1999,7 @@ class McaiGraph:
         limits = {"maxRounds": max_rounds, "maxToolCalls": max_tool_calls}
         instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
         tools = _agent_loop_tools_available_for_instance(tools, instance)
+        required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
         if round_number == 1 and not observations:
             snapshot_answer = _instance_snapshot_answer(message, instance)
@@ -2101,6 +2119,9 @@ class McaiGraph:
                     turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
                     [item["name"] for item in tools],
                 )
+            if error is None and required_live_tool and (decision.get("action") != "tool_call" or decision.get("tool") != required_live_tool):
+                decision_tools = [item for item in tools if item["name"] == required_live_tool]
+                error = f"$.action:REQUIRED_LIVE_TOOL:{required_live_tool}"
             if (
                 error is None and decision.get("action") == "tool_call"
                 and decision.get("tool") == "files.list"
