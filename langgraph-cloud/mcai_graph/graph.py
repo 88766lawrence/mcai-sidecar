@@ -1535,6 +1535,28 @@ def _enforce_log_time_scope(decision: dict[str, Any], observations: list[dict[st
     return {**decision, "answer": answer.rstrip() + " " + note}
 
 
+def _enforce_plugin_compatibility_scope(
+    decision: dict[str, Any], message: str, observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """A JAR and a loaded-plugin listing do not prove runtime compatibility."""
+    if decision.get("action") != "final" or not re.search(r"essentialsx?", message, re.I):
+        return decision
+    if not re.search(r"安装|installed|working|正常", message, re.I):
+        return decision
+    succeeded = {str(item.get("tool") or "") for item in observations if item.get("status") == "succeeded"}
+    if not {"files.list", "console.command"}.issubset(succeeded) or "logs.query" in succeeded:
+        return decision
+    answer = str(decision.get("answer") or "")
+    if re.search(r"兼容性.{0,25}(?:未|无法|待)|(?:未|无法|待).{0,25}兼容性|compatibility.{0,25}(?:unverified|unknown)", answer, re.I):
+        return decision
+    note = (
+        "文件存在且出现在已加载列表，只能确认落盘和加载；与当前服务端版本的兼容性仍需检查运行日志。"
+        if re.search(r"[\u3400-\u9fff]", answer)
+        else "The file and loaded-plugin list confirm presence and loading; runtime compatibility still needs a log check."
+    )
+    return {**decision, "answer": answer.rstrip() + " " + note}
+
+
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
     if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
@@ -2322,7 +2344,9 @@ class McaiGraph:
                     )
                     if terminal_evidence_error is None and not requires_terminal_editor:
                         return {
-                            "decision": _enforce_log_time_scope(decision, observations), "requestId": request_id,
+                            "decision": _enforce_plugin_compatibility_scope(
+                                _enforce_log_time_scope(decision, observations), message, observations,
+                            ), "requestId": request_id,
                             "providerModel": terminal_provider_model, "repairUsed": repair_used,
                         }
                     # A complete native answer needs no extra model call. If its
@@ -2478,7 +2502,9 @@ class McaiGraph:
                         }])
             if error is None:
                 return {
-                    "decision": _enforce_log_time_scope(decision, observations), "requestId": request_id,
+                    "decision": _enforce_plugin_compatibility_scope(
+                        _enforce_log_time_scope(decision, observations), message, observations,
+                    ), "requestId": request_id,
                     "providerModel": terminal_provider_model, "repairUsed": repair_used,
                 }
             attempts.append({"model": self.provider.config.model, "mode": "native_tools", "attempt": attempt, "code": error})
