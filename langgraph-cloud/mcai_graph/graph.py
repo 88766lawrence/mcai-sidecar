@@ -737,6 +737,12 @@ def _required_live_tool(message: str, available: set[str]) -> str | None:
     ):
         return "config.inspect"
     if (
+        "logs.query" in available
+        and re.search(r"(?:查看|读取|检查|查询|看看|分析|最近|有没有|查).{0,24}(?:日志|报错|崩服)|(?:日志|报错|崩服).{0,24}(?:查看|读取|检查|查询|看看|分析|最近|有没有|查)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:查看|读取|检查|查询|看看|查)\s*(?:日志|报错)", message)
+    ):
+        return "logs.query"
+    if (
         "instance.restart" in available
         and re.search(r"(?:重启|重新启动|restart).{0,12}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,12}(?:重启|重新启动|restart)", message, re.I)
         and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:重启|重新启动|restart)", message, re.I)
@@ -750,6 +756,11 @@ def _explicit_live_decision(message: str, tools: list[dict[str, Any]], instance:
     required = _required_live_tool(message, {item["name"] for item in tools})
     if required == "instance.restart":
         arguments = {"target": str(instance.get("id") or "")}
+    elif required == "logs.query" and re.search(r"(?:日志|报错|崩服)", message):
+        window = 30 if re.search(r"(?:半小时|30\s*分钟)", message) else 60
+        arguments = {"window_minutes": window, "max_lines": 500,
+                     "filter_query": {"groups": [{"all_of": [], "any_of":
+                         ["error", "warning", "crash", "out_of_memory", "dependency_missing"]}]}}
     elif required == "config.inspect":
         path_match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+\.(?:properties|ya?ml|json|conf))(?![A-Za-z0-9_.-])", message, re.I)
         if not path_match:
