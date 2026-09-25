@@ -35,6 +35,7 @@ from mcai_graph.graph import (
     _planner_prompt,
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
+    _enforce_plugin_compatibility_scope,
     _health_check_next_read,
     _health_check_final,
     _readonly_health_skill_intent,
@@ -46,6 +47,18 @@ from mcai_graph.graph import (
 
 
 class LogWindowScopeTests(unittest.TestCase):
+    def test_plugin_file_and_loaded_list_do_not_prove_compatibility(self):
+        decision = {"action": "final", "answer": "EssentialsX 已成功安装并加载。", "citations": ["files", "plugins"]}
+        observations = [
+            {"tool": "files.list", "status": "succeeded", "tool_call_id": "files"},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"},
+        ]
+        result = _enforce_plugin_compatibility_scope(
+            decision, "确认 EssentialsX 是否真的安装好了，不要修改文件", observations,
+        )
+        self.assertIn("兼容性仍需检查运行日志", result["answer"])
+        self.assertEqual(result["citations"], ["files", "plugins"])
+
     def test_unverified_wall_clock_scope_is_visible_in_final_answer(self):
         decision = {"action": "final", "answer": "日志匹配 8 条错误或警告。", "citations": ["call-log"]}
         observations = [{"tool": "logs.query", "status": "succeeded", "tool_call_id": "call-log",
