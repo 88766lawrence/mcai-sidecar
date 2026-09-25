@@ -494,7 +494,7 @@ func projectSiteLinks(home *url.URL, document, query, brand string) []webSearchR
 		}
 		results = append(results, link.result)
 	}
-	if len(results) == 0 {
+	if len(results) == 0 && len(terms) == 0 {
 		results = append(results, webSearchResult{
 			Title:   brand + " — project website",
 			Link:    home.String(),
@@ -505,6 +505,7 @@ func projectSiteLinks(home *url.URL, document, query, brand string) []webSearchR
 }
 
 func projectSiteSearchTerms(query, brand string) []string {
+	brand = strings.ToLower(brand)
 	stopwords := map[string]bool{"official": true, "website": true, "site": true, "page": true, "link": true, "latest": true, "minecraft": true, "plugin": true, "server": true, "paper": true}
 	terms := make([]string, 0)
 	if strings.Contains(query, "下载") {
@@ -515,7 +516,7 @@ func projectSiteSearchTerms(query, brand string) []string {
 	}
 	for _, field := range strings.Fields(strings.ToLower(query)) {
 		term := strings.Trim(field, `"'(),;:.!?`)
-		if term == brand || stopwords[term] || strings.HasPrefix(term, "site:") || len(term) < 4 {
+		if term == brand || stopwords[term] || strings.HasPrefix(term, "site:") || len(term) < 4 || strings.IndexFunc(term, func(r rune) bool { return r > 127 }) >= 0 {
 			continue
 		}
 		term = strings.TrimSuffix(term, "s")

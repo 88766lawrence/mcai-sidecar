@@ -131,6 +131,17 @@ func TestProjectSiteLinksUnderstandsChineseDownloadQuery(t *testing.T) {
 	}
 }
 
+func TestProjectSiteLinksDoesNotSubstituteHomeForMissingDownload(t *testing.T) {
+	home := mustWebSearchURL(t, "https://papermc.io/")
+	document := `<a href="/docs">Documentation</a>`
+	if results := projectSiteLinks(home, document, "PaperMC official downloads", "PaperMC"); len(results) != 0 {
+		t.Fatalf("homepage must not stand in for a missing download page: %+v", results)
+	}
+	if results := projectSiteLinks(home, document, "PaperMC 官网", "PaperMC"); len(results) != 1 || results[0].Link != "https://papermc.io/" {
+		t.Fatalf("website query should return the linked homepage: %+v", results)
+	}
+}
+
 func mustWebSearchURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	parsed, err := url.Parse(raw)
