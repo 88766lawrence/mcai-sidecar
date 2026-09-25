@@ -94,6 +94,37 @@ func TestDuckDuckGoHTMLSearcherReadsOrganicResults(t *testing.T) {
 	}
 }
 
+func TestDuckDuckGoLiteFallbackAfterHTMLRateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") != "PaperMC official download page" {
+			t.Errorf("unexpected search query: %s", r.URL.String())
+		}
+		if r.URL.Path == "/html" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if r.URL.Path != "/lite" {
+			t.Errorf("unexpected search path: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`<tr><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpapermc.io%2Fdownloads%2F">Downloads - PaperMC</a></td></tr><tr><td class="result-snippet">Official <b>PaperMC</b> builds</td></tr>`))
+	}))
+	defer server.Close()
+	searcher := &duckDuckGoHTMLWebSearcher{httpClient: server.Client(), endpoint: server.URL + "/html", liteEndpoint: server.URL + "/lite"}
+	response, err := searcher.Search(context.Background(), "PaperMC official download page")
+	if err != nil || response.Provider != "duckduckgo-lite" || len(response.Results) != 1 || response.Results[0].Link != "https://papermc.io/downloads/" || response.Results[0].Snippet != "Official PaperMC builds" {
+		t.Fatalf("expected a direct Lite result after HTML rate limit, got %+v, %v", response, err)
+	}
+}
+
+func TestDuckDuckGoLiteFallbackPreservesRateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
+	defer server.Close()
+	searcher := &duckDuckGoHTMLWebSearcher{httpClient: server.Client(), endpoint: server.URL + "/html", liteEndpoint: server.URL + "/lite"}
+	if _, err := searcher.Search(context.Background(), "PaperMC downloads"); !errors.Is(err, errWebSearchRateLimited) {
+		t.Fatalf("both blocked endpoints must remain rate limited, got %v", err)
+	}
+}
+
 func TestBraveWebSearcherUsesHeaderAndTypedResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("q") != "PaperMC downloads" || r.Header.Get("X-Subscription-Token") != "test-key" {
