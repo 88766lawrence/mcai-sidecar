@@ -89,6 +89,7 @@ var (
 	webSearchAnchorRE       = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 	webSearchHrefRE         = regexp.MustCompile(`(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 	webSearchClassRE        = regexp.MustCompile(`(?i)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	webSearchDownloadPageRE = regexp.MustCompile(`(?i)\bdownloads?\s+page\b`)
 )
 
 func newPublicWebSearchClient() *http.Client {
@@ -220,6 +221,7 @@ func validatedWebSearchQuery(args map[string]any) (string, error) {
 func relevantWebSearchResults(query string, results []webSearchResult) []webSearchResult {
 	siteHost, sitePath := "", ""
 	brand := distinctiveWebSearchBrand(query)
+	wantsDownloadPage := strings.Contains(query, "下载页") || strings.Contains(query, "下载页面") || webSearchDownloadPageRE.MatchString(query)
 	for _, field := range strings.Fields(query) {
 		token := strings.Trim(field, `"'(),;`)
 		if strings.HasPrefix(strings.ToLower(token), "site:") {
@@ -238,6 +240,11 @@ func relevantWebSearchResults(query string, results []webSearchResult) []webSear
 			continue
 		}
 		host := strings.TrimPrefix(strings.ToLower(link.Hostname()), "www.")
+		// A provider may rank the project homepage first for a download-page
+		// query. It cannot stand in for the requested destination.
+		if wantsDownloadPage && !strings.Contains(strings.ToLower(host+link.Path), "download") {
+			continue
+		}
 		if siteHost != "" && host != siteHost && !strings.HasSuffix(host, "."+siteHost) {
 			continue
 		}
