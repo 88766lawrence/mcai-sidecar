@@ -36,6 +36,8 @@ from mcai_graph.graph import (
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
     _enforce_plugin_compatibility_scope,
+    _explicit_live_decision,
+    _plugin_verification_next_read,
     _health_check_next_read,
     _health_check_final,
     _readonly_health_skill_intent,
@@ -47,6 +49,34 @@ from mcai_graph.graph import (
 
 
 class LogWindowScopeTests(unittest.TestCase):
+    def test_essentials_log_request_targets_plugin_warnings(self):
+        tools = [{"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}}]
+        decision = _explicit_live_decision("只读检查日志中 EssentialsX 的 ERROR 或 WARN", tools, {})
+        self.assertEqual(decision["arguments"]["window_minutes"], 1440)
+        self.assertEqual(decision["arguments"]["filter_query"]["groups"], [
+            {"all_of": ["literal:Essentials"], "any_of": ["error", "warning"]},
+        ])
+
+    def test_essentials_install_verification_checks_logs_after_file_and_load(self):
+        tools = [{"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}}]
+        observations = [
+            {"tool": "files.list", "status": "succeeded", "tool_call_id": "files"},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"},
+        ]
+        decision = _plugin_verification_next_read(
+            "确认 EssentialsX 是否真的安装好了，不要修改文件", tools, observations,
+        )
+        self.assertEqual(decision["tool"], "logs.query")
+        self.assertEqual(decision["arguments"]["filter_query"]["groups"][0]["all_of"], ["literal:Essentials"])
+
     def test_plugin_file_and_loaded_list_do_not_prove_compatibility(self):
         decision = {"action": "final", "answer": "EssentialsX 已成功安装并加载。", "citations": ["files", "plugins"]}
         observations = [
