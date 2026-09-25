@@ -1004,6 +1004,8 @@ async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
         test_natural_answer_requires_no_tool_call,
+        test_explicit_config_read_repairs_unsupported_direct_answer,
+        test_explicit_restart_repairs_unexecuted_progress_claim,
         test_concept_explanation_route_never_exposes_console_tool,
         test_explicit_user_prohibitions_are_forwarded_as_hard_native_constraints,
         test_first_turn_semantic_selection_uses_primary_model,
