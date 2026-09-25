@@ -210,7 +210,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 		}
 		// A reviewed Hangar release may link to its official GitHub tag
 		// instead of declaring every compatible patch version. The exact
-		// asset and release-train compatibility are checked below.
+		// asset and explicitly listed Minecraft version are checked below.
 		reviewedTag := strings.EqualFold(version.ReviewState, "reviewed") && download.DownloadURL == "" &&
 			(strings.Contains(download.ExternalURL, "/releases/tag/") || strings.Contains(download.ExternalURL, "/releases/tags/"))
 		if !compatible && !reviewedTag {
@@ -541,11 +541,9 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 }
 
 func officialReleaseCompatibility(body, minecraftVersion string) (string, bool) {
-	target := strings.Split(minecraftVersion, ".")
-	if len(target) < 2 {
+	if !minecraftVersionPattern.MatchString(minecraftVersion) {
 		return "", false
 	}
-	train := target[0] + "." + target[1]
 	inSupportedSection := false
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -557,12 +555,8 @@ func officialReleaseCompatibility(body, minecraftVersion string) (string, bool) 
 			continue
 		}
 		for _, match := range minecraftReleasePattern.FindAllStringSubmatch(trimmed, -1) {
-			candidate := strings.Split(match[1], ".")
-			if len(candidate) >= 2 && candidate[0]+"."+candidate[1] == train {
-				if match[1] == minecraftVersion {
-					return "official-exact:" + match[1], true
-				}
-				return "official-release-train:" + train, true
+			if match[1] == minecraftVersion {
+				return "official-exact:" + match[1], true
 			}
 		}
 	}

@@ -337,11 +337,11 @@ func TestOfficialPluginResolverUsesReviewedHangarGitHubReleaseTag(t *testing.T) 
 		}
 		return http.DefaultTransport.RoundTrip(request)
 	})
-	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil)
+	artifact, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.11", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifact.Source != "hangar-reviewed-github" || artifact.VersionNumber != "2.22.0" || artifact.Compatibility != "official-release-train:1.21" {
+	if artifact.Source != "hangar-reviewed-github" || artifact.VersionNumber != "2.22.0" || artifact.Compatibility != "official-exact:1.21.11" {
 		t.Fatalf("unexpected official fallback artifact: %#v", artifact)
 	}
 	if artifact.LocalSHA256 != hex.EncodeToString(digest[:]) || string(artifact.Contents) != string(contents) {
@@ -349,23 +349,30 @@ func TestOfficialPluginResolverUsesReviewedHangarGitHubReleaseTag(t *testing.T) 
 	}
 }
 
-func TestOfficialPluginResolverRejectsGitHubReleaseWithoutMatchingMinecraftTrain(t *testing.T) {
+func TestOfficialPluginResolverRejectsGitHubReleaseWithoutMatchingMinecraftVersion(t *testing.T) {
 	resolver := reviewedEssentialsTestResolver(t, "## Supported server versions\n- ✅ `1.20.6` - supported\n", strings.Repeat("a", 64), []byte("artifact"), "reviewed", "1.21.11")
 	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !errors.Is(err, errNoCompatiblePluginVersion) || !strings.Contains(err.Error(), "does not declare support") {
-		t.Fatalf("expected release-train compatibility failure, got %v", err)
+		t.Fatalf("expected exact-version compatibility failure, got %v", err)
+	}
+}
+
+func TestOfficialPluginResolverRejectsDifferentPatchWithinSameReleaseTrain(t *testing.T) {
+	resolver := reviewedEssentialsTestResolver(t, "## Supported server versions\n- ✅ `1.21.11` - supported\n", strings.Repeat("a", 64), []byte("artifact"), "reviewed", "1.21.11")
+	if _, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !errors.Is(err, errNoCompatiblePluginVersion) {
+		t.Fatalf("a supported 1.21.11 release must not be called compatible with 1.21.1: %v", err)
 	}
 }
 
 func TestOfficialPluginResolverRejectsGitHubDigestMismatch(t *testing.T) {
 	resolver := reviewedEssentialsTestResolver(t, "## Supported server versions\n- ✅ `1.21.11` - supported\n", strings.Repeat("0", 64), []byte("tampered"), "reviewed", "1.21.11")
-	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	if _, err := resolver.Resolve(context.Background(), "essentialsx", "paper", "1.21.11", nil); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("expected GitHub SHA-256 mismatch, got %v", err)
 	}
 }
 
 func TestOfficialPluginResolverRejectsNonHexGitHubDigestDuringMetadataLookup(t *testing.T) {
 	resolver := reviewedEssentialsTestResolver(t, "## Supported server versions\n- ✅ `1.21.11` - supported\n", strings.Repeat("z", 64), []byte("artifact"), "reviewed", "1.21.11")
-	if _, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.1", nil); err == nil || !strings.Contains(err.Error(), "invalid SHA-256") {
+	if _, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.11", nil); err == nil || !strings.Contains(err.Error(), "invalid SHA-256") {
 		t.Fatalf("non-hex source digest must fail before returning metadata: %v", err)
 	}
 }
@@ -441,15 +448,15 @@ func TestLiveOfficialEssentialsXFallback(t *testing.T) {
 	if os.Getenv("MCAI_LIVE_PLUGIN_RESOLVE") != "1" {
 		t.Skip("set MCAI_LIVE_PLUGIN_RESOLVE=1 to query official plugin sources")
 	}
-	artifact, err := newOfficialPluginResolver().Resolve(context.Background(), "essentialsx", "paper", "1.21.1", nil)
+	artifact, err := newOfficialPluginResolver().Resolve(context.Background(), "essentialsx", "paper", "1.21.11", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (artifact.Source != "hangar" && artifact.Source != "hangar-reviewed-github") || artifact.Project != "essentialsx" || !strings.HasSuffix(artifact.FileName, ".jar") {
-		t.Fatalf("unexpected live official artifact: %#v", artifact)
+	if artifact.Source != "modrinth" && artifact.Source != "hangar" && artifact.Source != "hangar-reviewed-github" || artifact.Project != "essentialsx" || !strings.HasSuffix(artifact.FileName, ".jar") {
+		t.Fatalf("unexpected live official artifact: project=%q source=%q version=%q file=%q", artifact.Project, artifact.Source, artifact.VersionNumber, artifact.FileName)
 	}
 	if len(artifact.Contents) == 0 || len(artifact.LocalSHA256) != 64 || artifact.Compatibility == "" {
-		t.Fatalf("live official artifact was not verified: %#v", artifact)
+		t.Fatalf("live official artifact was not verified: source=%q compatibility=%q hash_length=%d size=%d", artifact.Source, artifact.Compatibility, len(artifact.LocalSHA256), len(artifact.Contents))
 	}
 }
 
