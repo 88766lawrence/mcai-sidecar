@@ -1548,7 +1548,13 @@ def _enforce_log_time_scope(decision: dict[str, Any], observations: list[dict[st
     if not summaries or re.search(r"(?:无法确认|未验证|尚未核实|unverified|not verified).{0,32}(?:绝对|墙钟|最近|time|recency)|(?:绝对|墙钟|最近|time|recency).{0,32}(?:无法确认|未验证|尚未核实|unverified|not verified)", answer, re.I):
         return decision
     if any("absolute wall-clock recency is unverified" in summary for summary in summaries):
-        note = "时间范围以日志内最后时间戳为基准，无法确认对应绝对最近一小时。" if re.search(r"[\u3400-\u9fff]", answer) else "The window is relative to the log's latest timestamp; absolute recency is unverified."
+        windows = [int(match.group(1)) for summary in summaries
+                   if (match := re.search(r"window_minutes=(\d+)", summary))]
+        window = windows[0] if len(set(windows)) == 1 and windows else None
+        scope = "最近一天" if window == 1440 else "最近一小时" if window == 60 else f"最近 {window} 分钟" if window else "所请求的时间范围"
+        note = (f"时间范围以日志内最后时间戳为基准，无法确认对应绝对{scope}。"
+                if re.search(r"[\u3400-\u9fff]", answer)
+                else "The window is relative to the log's latest timestamp; absolute recency is unverified.")
     elif any("No parseable timestamps" in summary for summary in summaries):
         note = "日志缺少可解析时间戳，无法验证所请求的时间范围。" if re.search(r"[\u3400-\u9fff]", answer) else "The log has no parseable timestamps, so the requested time window is unverified."
     else:
