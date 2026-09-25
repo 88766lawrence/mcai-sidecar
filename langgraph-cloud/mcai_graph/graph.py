@@ -801,6 +801,48 @@ def _health_check_next_read(message: str, tools: list[dict[str, Any]], observati
     return decision if _validate_agent_loop_decision(decision, tools, observations, {"maxToolCalls": 19}) is None else None
 
 
+def _health_check_final(message: str, observations: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if re.sub(r"[\s？?。！!]", "", message) != "查看服务是否有异常":
+        return None
+    if [item.get("tool") for item in observations] != ["console.command", "console.command", "logs.query"]:
+        return None
+    if any(item.get("status") != "succeeded" for item in observations):
+        return None
+    summaries: list[str] = []
+    for item in observations:
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("summaries"), list):
+            return None
+        summaries.append("\n".join(str(value) for value in evidence["summaries"]))
+    version = re.search(r"This server is running\s+([A-Za-z]+) version\s+([^\s]+)", summaries[0], re.I)
+    plugins = re.search(r"Server Plugins\s*\((\d+)\):\s*([^\r\n]+)", summaries[1], re.I)
+    counts = re.search(r"matches=(\d+);\s*window_minutes=(\d+);\s*scanned_lines=(\d+);\s*sample_count=(\d+)", summaries[2])
+    if not version or not plugins or not counts:
+        return None
+    total, window, scanned, shown = (int(value) for value in counts.groups())
+    if total < shown:
+        return None
+    version_text = version.group(2).split("-ver/")[0]
+    plugin_text = plugins.group(2).strip()
+    version_note = "；版本信息更新查询失败" if "Error obtaining version information" in summaries[0] else ""
+    sample_lines = re.findall(r"(?m)^\[(\d{2}:\d{2}:\d{2})\] \[[^\]\n]+/(WARN|ERROR|FATAL)\]", summaries[2], re.I)
+    sample_note = "、".join(f"{clock} {level.upper()}" for clock, level in list(dict.fromkeys(sample_lines))[:3])
+    if total:
+        log_note = f"日志按最后时间戳回看 {window} 分钟，扫描 {scanned} 行，命中 {total} 条，展示 {shown} 条样本"
+        if sample_note:
+            log_note += f"（{sample_note}）"
+        if total > shown:
+            log_note += f"，剩余 {total - shown} 条匹配未展示或未审阅"
+        log_note += "。样本表明有告警或错误，未展示的记录不能据此判断。"
+    else:
+        log_note = f"日志按最后时间戳回看 {window} 分钟，扫描 {scanned} 行，未命中错误或警告条件。"
+    answer = (f"控制台 version 显示 {version.group(1)} {version_text}{version_note}；"
+              f"plugins 显示已加载 {plugins.group(1)} 个插件：{plugin_text}。{log_note}")
+    decision = {"action": "final", "answer": answer,
+                "citations": [str(item["tool_call_id"]) for item in observations]}
+    return _enforce_log_time_scope(decision, observations)
+
+
 def _unavailable_instance_action_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Do not replace an unavailable runtime action with a different tool."""
     if str(instance.get("state") or "").strip().lower() != "stopped":
@@ -1482,7 +1524,7 @@ def _enforce_log_time_scope(decision: dict[str, Any], observations: list[dict[st
         if isinstance(evidence, dict) and isinstance(evidence.get("summaries"), list):
             summaries.extend(str(summary) for summary in evidence["summaries"])
     answer = str(decision.get("answer") or "")
-    if not summaries or re.search(r"(?:最后时间戳|墙钟|绝对时间|latest timestamp|wall.clock|absolute recency)", answer, re.I):
+    if not summaries or re.search(r"(?:无法确认|未验证|尚未核实|unverified|not verified).{0,32}(?:绝对|墙钟|最近|time|recency)|(?:绝对|墙钟|最近|time|recency).{0,32}(?:无法确认|未验证|尚未核实|unverified|not verified)", answer, re.I):
         return decision
     if any("absolute wall-clock recency is unverified" in summary for summary in summaries):
         note = "时间范围以日志内最后时间戳为基准，无法确认对应绝对最近一小时。" if re.search(r"[\u3400-\u9fff]", answer) else "The window is relative to the log's latest timestamp; absolute recency is unverified."
@@ -2083,6 +2125,10 @@ class McaiGraph:
         if health_read is not None:
             return {"decision": health_read, "requestId": request_id,
                     "providerModel": "health-read-sequence", "repairUsed": False}
+        health_final = _health_check_final(message, observations)
+        if health_final is not None and _validate_agent_loop_decision(health_final, tools, observations, limits) is None:
+            return {"decision": health_final, "requestId": request_id,
+                    "providerModel": "health-evidence-synthesis", "repairUsed": False}
         if round_number == 1 and not observations:
             explicit_live = _explicit_live_decision(message, tools, instance)
             if explicit_live is not None:
