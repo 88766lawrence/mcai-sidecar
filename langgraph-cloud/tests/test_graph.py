@@ -34,12 +34,25 @@ from mcai_graph.graph import (
     _unique_json_object,
     _planner_prompt,
     _paper_fabric_comparison_answer,
+    _enforce_log_time_scope,
     _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
     _thread_id,
     _unavailable_instance_action_answer,
 )
+
+
+class LogWindowScopeTests(unittest.TestCase):
+    def test_unverified_wall_clock_scope_is_visible_in_final_answer(self):
+        decision = {"action": "final", "answer": "日志匹配 8 条错误或警告。", "citations": ["call-log"]}
+        observations = [{"tool": "logs.query", "status": "succeeded", "tool_call_id": "call-log",
+                         "evidence": {"summaries": ["Log query result: matches=8; window_minutes=60\n"
+                            "Time window is relative to the latest timestamp in the available log; "
+                            "absolute wall-clock recency is unverified."]}}]
+        result = _enforce_log_time_scope(decision, observations)
+        self.assertIn("无法确认对应绝对最近一小时", result["answer"])
+        self.assertEqual(result["citations"], ["call-log"])
 
 SOURCE_CATALOG = {
     "schema_version": "intent-source-catalog/v1",
