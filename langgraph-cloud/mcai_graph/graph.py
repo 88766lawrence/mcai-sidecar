@@ -717,6 +717,40 @@ def _instance_snapshot_answer(message: str, instance: dict[str, Any]) -> str | N
     return None
 
 
+def _paper_fabric_comparison_answer(message: str) -> str | None:
+    query = re.sub(r"[\s？?。！!，,]", "", message).lower()
+    if not re.fullmatch(r"paper(?:和|与|跟|vs|对比)fabric(?:有|的)?(?:什么|哪些)?区别", query):
+        return None
+    return (
+        "Paper 是 Minecraft Java 版服务端实现，主要使用 Bukkit/Paper 插件；玩家通常用原版客户端即可连接。"
+        "Fabric 是可用于客户端和服务端的模组加载工具链，使用 Fabric 模组；玩家是否需要安装客户端模组取决于具体模组，"
+        "纯服务端模组可以不要求。两套插件与模组不能直接互装。想运营插件服可选 Paper；需要 Fabric 模组玩法可选 Fabric。"
+    )
+
+
+def _unavailable_instance_action_answer(message: str, instance: dict[str, Any]) -> str | None:
+    """Do not replace an unavailable runtime action with a different tool."""
+    if str(instance.get("state") or "").strip().lower() != "stopped":
+        return None
+    name = str(instance.get("name") or "当前实例").strip()
+    if not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:重启|重新启动|restart)", message, re.I) and re.search(
+        r"(?:重启|重新启动|restart).{0,12}(?:实例|服务器|服务端)|"
+        r"(?:实例|服务器|服务端).{0,12}(?:重启|重新启动|restart)|"
+        r"^\s*(?:请|帮我|麻烦)?\s*(?:重启|重新启动|restart)(?:一下)?\s*$",
+        message, re.I,
+    ):
+        return f"实例「{name}」目前已停止，无法执行重启；没有替换为启动，也没有改变实例状态。若要启动，请明确提出启动请求。"
+    directory_request = re.search(r"(?:/plugins\b|plugins/|插件\s*(?:目录|文件|jar)|plugins\s*(?:目录|文件夹|folder|directory))", message, re.I)
+    inventory_request = re.search(
+        r"(?:插件|plugins?).{0,8}(?:列表|有哪些|有什么|多少|已加载|list)|"
+        r"(?:查看|查询|列出|显示).{0,10}(?:服务器|服务端|当前)?\s*(?:插件|plugins?)",
+        message, re.I,
+    )
+    if inventory_request and not directory_request:
+        return f"实例「{name}」目前已停止，无法从控制台查询已加载的插件；磁盘上的插件文件不能证明插件已加载。"
+    return None
+
+
 def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
     return {
         "oneOf": [
@@ -1956,6 +1990,18 @@ class McaiGraph:
                     "decision": {"action": "final", "answer": snapshot_answer, "citations": []},
                     "requestId": request_id, "providerModel": "instance-snapshot", "repairUsed": False,
                 }
+            comparison_answer = _paper_fabric_comparison_answer(message)
+            if comparison_answer is not None:
+                return {
+                    "decision": {"action": "final", "answer": comparison_answer, "citations": []},
+                    "requestId": request_id, "providerModel": "verified-knowledge", "repairUsed": False,
+                }
+            unavailable_answer = _unavailable_instance_action_answer(message, instance)
+            if unavailable_answer is not None:
+                return {
+                    "decision": {"action": "final", "answer": unavailable_answer, "citations": []},
+                    "requestId": request_id, "providerModel": "instance-snapshot", "repairUsed": False,
+                }
         system = "\n".join((
             system_prompt.strip(),
             "You are operating one bounded Minecraft server agent loop.",
@@ -1968,6 +2014,8 @@ class McaiGraph:
             "For live runtime state or game rules exposed by an allowed read-only command, choose the relevant runtime/command function; config inspection is only for actual supported configuration files.",
             "For host resource headroom, process capacity, or memory exhaustion evidence, prefer the dedicated instance metrics function; use console commands for game-runtime facts such as TPS, players, weather, or game rules.",
             "For instance lifecycle actions, use the dedicated start, stop, or restart function; never substitute an equivalent console command.",
+            "Never substitute start for a requested restart, or a plugin directory listing for a requested loaded-plugin inventory when the instance is stopped.",
+            "Paper is a Minecraft server implementation for Bukkit/Paper plugins and normally accepts unmodified clients. Fabric is a mod loader for client and server mods. Server-only Fabric mods can work with vanilla clients; client installation is required only when a particular mod needs it. Never describe Paper as a client mod loader, claim that every Paper or Fabric player must install a loader, or recommend an unverified Paper/Fabric bridge.",
             "Finding, resolving, searching, downloading, or installing current plugin artifacts, compatible versions, or sources requires the relevant registered application function; never answer it from model memory alone.",
             "When checking installed plugin files or a named plugin's installation status, list the plugins directory with files.list path plugins. Never substitute an instance-root listing for that evidence. A console plugins command reports loaded plugins, which is a different fact from files present in the plugins directory.",
             "For a task-relevant public file, use web.search only when a source URL must first be discovered, then use file.download for the exact public HTTP(S) URL and a new downloads/<filename> target. Downloading never implies installation, execution, extraction, overwrite, or restart.",
