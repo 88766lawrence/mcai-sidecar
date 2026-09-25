@@ -64,5 +64,8 @@ describe("QA0144 typed read observations", () => {
     }, "web");
     expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [web])).toBe(true);
     expect(groundedQa0144WebFinal("See https://example.invalid/claim", [web])).toBe(false);
+    const config = observed("config.inspect", "config-inspect-result/v1", { path: "server.properties", entries: [] }, "config");
+    expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [web, config])).toBe(true);
+    expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [{ ...web, status: "failed" }])).toBe(false);
   });
 });

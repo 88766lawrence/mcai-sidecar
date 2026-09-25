@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mcai/sidecar-agent/internal/protocol"
@@ -87,8 +88,9 @@ func (e *Executor) executeWebSearch(ctx context.Context, step protocol.TaskStep,
 	if err != nil {
 		return err
 	}
+	response.Results = relevantWebSearchResults(query, response.Results)
 	if len(response.Results) == 0 {
-		return errors.New("web search returned no organic results")
+		return errors.New("web search provider returned no relevant results")
 	}
 	items := make([]map[string]any, 0, len(response.Results))
 	lines := make([]string, 0, len(response.Results))
@@ -128,6 +130,59 @@ func validatedWebSearchQuery(args map[string]any) (string, error) {
 		return "", errors.New("web.search query exceeds its safe bounds")
 	}
 	return query, nil
+}
+
+// Public RSS search can return unrelated results while still reporting HTTP 200.
+// Enforce explicit site restrictions and distinctive product names before those
+// results become evidence for the Agent.
+func relevantWebSearchResults(query string, results []webSearchResult) []webSearchResult {
+	siteHost, sitePath := "", ""
+	brand := ""
+	for _, field := range strings.Fields(query) {
+		token := strings.Trim(field, `"'(),;`)
+		if strings.HasPrefix(strings.ToLower(token), "site:") {
+			candidate, err := url.Parse("https://" + token[len("site:"):])
+			if err == nil {
+				siteHost = strings.TrimPrefix(strings.ToLower(candidate.Hostname()), "www.")
+				sitePath = strings.TrimRight(strings.ToLower(candidate.Path), "/")
+			}
+			continue
+		}
+		if brand != "" {
+			continue
+		}
+		runes := []rune(token)
+		if len(runes) < 5 {
+			continue
+		}
+		lower, innerUpper := false, false
+		for index, letter := range runes {
+			lower = lower || unicode.IsLower(letter)
+			innerUpper = innerUpper || (index > 0 && unicode.IsUpper(letter))
+		}
+		if lower && innerUpper {
+			brand = strings.ToLower(token)
+		}
+	}
+	filtered := make([]webSearchResult, 0, len(results))
+	for _, result := range results {
+		link, err := url.Parse(result.Link)
+		if err != nil || (link.Scheme != "https" && link.Scheme != "http") || link.Hostname() == "" {
+			continue
+		}
+		host := strings.TrimPrefix(strings.ToLower(link.Hostname()), "www.")
+		if siteHost != "" && host != siteHost && !strings.HasSuffix(host, "."+siteHost) {
+			continue
+		}
+		if sitePath != "" && !strings.HasPrefix(strings.ToLower(link.Path), sitePath) {
+			continue
+		}
+		if brand != "" && !strings.Contains(strings.ToLower(result.Title+" "+result.Snippet+" "+result.Link), brand) {
+			continue
+		}
+		filtered = append(filtered, result)
+	}
+	return filtered
 }
 
 func (s *minimaxWebSearcher) Search(ctx context.Context, query string) (webSearchResponse, error) {

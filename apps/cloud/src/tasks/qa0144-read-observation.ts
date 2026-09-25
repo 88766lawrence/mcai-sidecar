@@ -95,8 +95,11 @@ function readResultForObservation(item: AgentLoopObservation): Qa0144ReadResult 
 
 export function groundedQa0144WebFinal(answer: string, observations: AgentLoopObservation[]) {
   if (!answer || answer.length > 4_000 || observations.length === 0) return false;
-  const results = observations.map((item) => plainObject(item.data) ? item.data.qa0144_read_result : undefined);
-  if (results.some((item) => !plainObject(item) || item.output_schema_id !== "web-search-result/v1" || !plainObject(item.value))) return false;
+  const searches = observations.filter((item) => item.tool === "web.search" && item.status === "succeeded");
+  if (searches.length === 0) return false;
+  const results = searches.map((item) => plainObject(item.data) ? item.data.qa0144_read_result : undefined);
+  if (results.some((item) => !plainObject(item) || item.output_schema_id !== "web-search-result/v1"
+    || !plainObject(item.value) || !Array.isArray(item.value.results))) return false;
   const allowed = results.flatMap((item) => ((item as Qa0144ReadResult).value.results as Record<string, unknown>[]).map((result) => String(result.url)));
   const cited = answer.match(/https?:\/\/[^\s)\]}>，。；、]+/giu) ?? [];
   return cited.length > 0 && cited.every((url) => allowed.includes(url));

@@ -1271,6 +1271,32 @@ def _terminal_review_semantic_error(answer: str, observations: list[dict[str, An
     return None
 
 
+def _successful_web_search_urls(observations: list[dict[str, Any]]) -> set[str]:
+    """Collect public URLs from successful, typed web-search observations."""
+    allowed: set[str] = set()
+    for item in observations:
+        if item.get("status") != "succeeded" or item.get("tool") != "web.search":
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        typed = data.get("qa0144_read_result")
+        if not isinstance(typed, dict) or typed.get("output_schema_id") != "web-search-result/v1":
+            continue
+        value = typed.get("value")
+        if not isinstance(value, dict) or value.get("schema_version") != "web-search-result/v1":
+            continue
+        results = value.get("results")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if isinstance(result, dict) and isinstance(result.get("url"), str):
+                url = result["url"].strip()
+                if re.fullmatch(r"https?://[^\s]+", url, re.I):
+                    allowed.add(url)
+    return allowed
+
+
 def _validate_agent_loop_decision(
     decision: dict[str, Any],
     tools: list[dict[str, Any]],
@@ -1302,6 +1328,9 @@ def _validate_agent_loop_decision(
     if decision["action"] in {"final", "cannot_proceed"}:
         answer = str(decision.get("answer") or "")
         tool_names = [str(item["name"]) for item in tools]
+        cited_urls = [url.rstrip(".,!?") for url in re.findall(r"https?://[^\s)\]}>，。；、]+", answer, re.I)]
+        if cited_urls and not set(cited_urls).issubset(_successful_web_search_urls(observations)):
+            return "$.answer:UNSUPPORTED_SOURCE_URL"
         if re.search(r"\b(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\b|\binstance\.(?:id|name|state)\b|\bstate\s*(?:[:=]|为)\s*[`\"']?(?:running|stopped)\b", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
         if re.search(r"(?:^|\n)\s*(?:用户问的是|这是一个概念性问题|不需要任何外部工具调用|来源[：:]\s*运行时上下文)", answer):
@@ -1310,7 +1339,7 @@ def _validate_agent_loop_decision(
             return "$.answer:INTERNAL_TOOL_LEAK"
         if re.search(r"executed successfully\s*;?\s*not independently verified", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
-        if re.search(r"\bmcs:[A-Za-z0-9:_-]{12,}\b|(?:实例|instance)\s*[（(:]?\s*[a-f0-9]{8}(?:[a-f0-9]{8,}|…)|\b(?:[A-Za-z_$][\w$]*Exception|FileNotFoundException|stack\s*trace)\b|https?://\S+", answer, re.I):
+        if re.search(r"\bmcs:[A-Za-z0-9:_-]{12,}\b|(?:实例|instance)\s*[（(:]?\s*[a-f0-9]{8}(?:[a-f0-9]{8,}|…)|\b(?:[A-Za-z_$][\w$]*Exception|FileNotFoundException|stack\s*trace)\b", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
         if observations and re.search(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|(?:控制台|console)\s*(?:命令|command|输出|output|未返回)", answer, re.I):
             return "$.answer:INTERNAL_DETAIL_LEAK"
