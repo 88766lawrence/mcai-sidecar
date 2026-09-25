@@ -238,6 +238,9 @@ function validateToolArguments(toolName: AgentLoopToolName, args: Record<string,
     if (JSON.stringify(canonical(args)) !== JSON.stringify(canonical({ schema_version: "players-inspect/v1", selector: "first-online", fields: ["gamemode"] }))) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "players.inspect is limited to first-online gamemode");
   } else if (toolName === "plugin.resolve") {
     if (!exactKeys(args, ["project", "source", "platform", "minecraft_version", "loader"]) || !["project", "source", "platform", "minecraft_version", "loader"].every((key) => shortText(args[key], 128))) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "plugin.resolve metadata arguments are invalid");
+    const project = String(args.project).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{1,63}$/u.test(project)) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "plugin.resolve project is not a safe project slug");
+    args.project = project;
   } else if (toolName === "web.search") {
     if (!exactKeys(args, ["query"]) || !shortText(args.query, 400) || String(args.query).trim().split(/\s+/u).length > 50 || /[\u0000-\u001f\u007f]/u.test(String(args.query))) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "web.search query arguments are invalid");
     args.query = String(args.query).trim().replace(/\s+/gu, " ");
