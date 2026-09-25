@@ -56,8 +56,9 @@ type bingRSSWebSearcher struct {
 }
 
 type duckDuckGoHTMLWebSearcher struct {
-	httpClient *http.Client
-	endpoint   string
+	httpClient   *http.Client
+	endpoint     string
+	liteEndpoint string
 }
 
 type braveWebSearcher struct {
@@ -89,6 +90,7 @@ var (
 	webSearchAnchorRE       = regexp.MustCompile(`(?is)<a\b([^>]*)>(.*?)</a>`)
 	webSearchHrefRE         = regexp.MustCompile(`(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 	webSearchClassRE        = regexp.MustCompile(`(?i)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	webSearchLiteSnippetRE  = regexp.MustCompile(`(?is)<td\b([^>]*)>(.*?)</td>`)
 	webSearchDownloadPageRE = regexp.MustCompile(`(?i)\bdownloads?\s+page\b`)
 )
 
@@ -113,8 +115,9 @@ func newWebSearcherFromEnv() webSearcher {
 	if provider == "" || provider == "auto" {
 		return &fallbackWebSearcher{
 			primary: &duckDuckGoHTMLWebSearcher{
-				httpClient: &http.Client{Timeout: 12 * time.Second},
-				endpoint:   "https://duckduckgo.com/html/",
+				httpClient:   &http.Client{Timeout: 12 * time.Second},
+				endpoint:     "https://duckduckgo.com/html/",
+				liteEndpoint: "https://lite.duckduckgo.com/lite/",
 			},
 			secondary: &githubOrgSiteWebSearcher{
 				httpClient:  newPublicWebSearchClient(),
@@ -126,8 +129,9 @@ func newWebSearcherFromEnv() webSearcher {
 	}
 	if provider == "duckduckgo-html" {
 		return &duckDuckGoHTMLWebSearcher{
-			httpClient: &http.Client{Timeout: 12 * time.Second},
-			endpoint:   "https://duckduckgo.com/html/",
+			httpClient:   &http.Client{Timeout: 12 * time.Second},
+			endpoint:     "https://duckduckgo.com/html/",
+			liteEndpoint: "https://lite.duckduckgo.com/lite/",
 		}
 	}
 	if provider == "bing-rss" {
@@ -347,6 +351,18 @@ func (s *fallbackWebSearcher) store(query string, response webSearchResponse) {
 }
 
 func (s *duckDuckGoHTMLWebSearcher) Search(ctx context.Context, query string) (webSearchResponse, error) {
+	response, err := s.searchHTML(ctx, query)
+	if err == nil || s.liteEndpoint == "" {
+		return response, err
+	}
+	liteResponse, liteErr := s.searchLite(ctx, query)
+	if liteErr == nil {
+		return liteResponse, nil
+	}
+	return webSearchResponse{}, errors.Join(fmt.Errorf("duckduckgo HTML: %w", err), fmt.Errorf("duckduckgo Lite: %w", liteErr))
+}
+
+func (s *duckDuckGoHTMLWebSearcher) searchHTML(ctx context.Context, query string) (webSearchResponse, error) {
 	if s.httpClient == nil || s.endpoint == "" {
 		return webSearchResponse{}, errors.New("web search is not configured")
 	}
@@ -380,6 +396,38 @@ func (s *duckDuckGoHTMLWebSearcher) Search(ctx context.Context, query string) (w
 		return webSearchResponse{}, errors.New("web search returned no organic results")
 	}
 	return webSearchResponse{Provider: "duckduckgo-html", Results: results}, nil
+}
+
+func (s *duckDuckGoHTMLWebSearcher) searchLite(ctx context.Context, query string) (webSearchResponse, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.liteEndpoint+"?q="+url.QueryEscape(query), nil)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("create web search request: %w", err)
+	}
+	request.Header.Set("Accept", "text/html")
+	request.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("web search request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusTooManyRequests {
+		return webSearchResponse{}, fmt.Errorf("%w: HTTP %d", errWebSearchRateLimited, response.StatusCode)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return webSearchResponse{}, fmt.Errorf("web search provider returned HTTP %d", response.StatusCode)
+	}
+	limited, err := io.ReadAll(io.LimitReader(response.Body, maxWebSearchResponseBytes+1))
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("read web search response: %w", err)
+	}
+	if len(limited) > maxWebSearchResponseBytes {
+		return webSearchResponse{}, errors.New("web search response exceeds the 1 MiB limit")
+	}
+	results := parseDuckDuckGoLiteResults(string(limited))
+	if len(results) == 0 {
+		return webSearchResponse{}, errors.New("web search returned no organic results")
+	}
+	return webSearchResponse{Provider: "duckduckgo-lite", Results: results}, nil
 }
 
 // GitHub organization profiles often link to the project's own website. When
@@ -552,6 +600,45 @@ func parseDuckDuckGoHTMLResults(document string) []webSearchResult {
 			if len(results) > 0 && results[len(results)-1].Snippet == "" {
 				results[len(results)-1].Snippet = boundedWebText(html.UnescapeString(stripWebMarkup(anchor[2])), 1200)
 			}
+		}
+	}
+	filtered := results[:0]
+	for _, result := range results {
+		if result.Snippet != "" {
+			filtered = append(filtered, result)
+		}
+	}
+	return filtered
+}
+
+func parseDuckDuckGoLiteResults(document string) []webSearchResult {
+	type liteElement struct {
+		position int
+		attrs    string
+		body     string
+		link     bool
+	}
+	elements := make([]liteElement, 0)
+	for _, match := range webSearchAnchorRE.FindAllStringSubmatchIndex(document, -1) {
+		elements = append(elements, liteElement{position: match[0], attrs: document[match[2]:match[3]], body: document[match[4]:match[5]], link: true})
+	}
+	for _, match := range webSearchLiteSnippetRE.FindAllStringSubmatchIndex(document, -1) {
+		elements = append(elements, liteElement{position: match[0], attrs: document[match[2]:match[3]], body: document[match[4]:match[5]]})
+	}
+	sort.SliceStable(elements, func(i, j int) bool { return elements[i].position < elements[j].position })
+	results := make([]webSearchResult, 0, maxWebSearchResults)
+	for _, element := range elements {
+		if element.link && webSearchHasClass(webSearchAttribute(webSearchClassRE, element.attrs), "result-link") {
+			if len(results) >= maxWebSearchResults {
+				break
+			}
+			link := duckDuckGoTargetURL(webSearchAttribute(webSearchHrefRE, element.attrs))
+			title := boundedWebText(html.UnescapeString(stripWebMarkup(element.body)), 300)
+			if link != "" && title != "" {
+				results = append(results, webSearchResult{Title: title, Link: link})
+			}
+		} else if !element.link && webSearchHasClass(webSearchAttribute(webSearchClassRE, element.attrs), "result-snippet") && len(results) > 0 && results[len(results)-1].Snippet == "" {
+			results[len(results)-1].Snippet = boundedWebText(html.UnescapeString(stripWebMarkup(element.body)), 1200)
 		}
 	}
 	filtered := results[:0]
