@@ -141,6 +141,48 @@ async def test_concept_explanation_route_never_exposes_console_tool():
     result = await graph.decide_agent_loop(payload("请解释 TPS 是什么，不要查询当前服务器"))
 
     assert result["decision"]["action"] == "final"
+
+
+async def test_explicit_config_read_repairs_unsupported_direct_answer():
+    provider = FakeNativeProvider([
+        {"tool_calls": [{"id": "direct", "type": "function", "function": {
+            "name": "route_self_contained", "arguments": '{"answer":"online-mode=true"}',
+        }}]},
+        {"tool_calls": [{"id": "read", "type": "function", "function": {
+            "name": "config.inspect", "arguments": '{"path":"server.properties","keys":["online-mode"]}',
+        }}]},
+    ])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("只读查看 server.properties 的 online-mode 配置")
+    request["toolCatalog"] = [{"name": "config.inspect", "description": "Read configuration.",
+        "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"path": {"type": "string"}, "keys": {"type": "array", "items": {"type": "string"}}},
+            "required": ["path", "keys"]}}]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["tool"] == "config.inspect"
+    assert result["decision"]["arguments"] == {"path": "server.properties", "keys": ["online-mode"]}
+    assert [tool["name"] for tool in provider.seen_tool_sets[1]] == ["config.inspect"]
+
+
+async def test_explicit_restart_repairs_unexecuted_progress_claim():
+    provider = FakeNativeProvider([
+        {"tool_calls": [{"id": "direct", "type": "function", "function": {
+            "name": "route_self_contained", "arguments": '{"answer":"实例正在重启中"}',
+        }}]},
+        {"tool_calls": [{"id": "restart", "type": "function", "function": {
+            "name": "instance.restart", "arguments": '{"target":"instance-1"}',
+        }}]},
+    ])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+
+    result = await graph.decide_agent_loop(payload("重启这个测试实例"))
+
+    assert result["decision"]["tool"] == "instance.restart"
+    assert [tool["name"] for tool in provider.seen_tool_sets[1]] == ["instance.restart"]
     assert provider.route == "self_contained"
     assert provider.seen_tools is not None
 
