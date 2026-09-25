@@ -757,10 +757,12 @@ def _explicit_live_decision(message: str, tools: list[dict[str, Any]], instance:
     if required == "instance.restart":
         arguments = {"target": str(instance.get("id") or "")}
     elif required == "logs.query" and re.search(r"(?:日志|报错|崩服)", message):
-        window = 30 if re.search(r"(?:半小时|30\s*分钟)", message) else 60
-        arguments = {"window_minutes": window, "max_lines": 500,
-                     "filter_query": {"groups": [{"all_of": [], "any_of":
-                         ["error", "warning", "crash", "out_of_memory", "dependency_missing"]}]}}
+        plugin_logs = bool(re.search(r"essentialsx?", message, re.I))
+        window = 30 if re.search(r"(?:半小时|30\s*分钟)", message) else 60 if re.search(r"(?:一小时|1\s*小时|60\s*分钟)", message) else 1440 if plugin_logs else 60
+        groups = ([{"all_of": ["literal:Essentials"], "any_of": ["error", "warning"]}]
+                  if plugin_logs else [{"all_of": [], "any_of":
+                      ["error", "warning", "crash", "out_of_memory", "dependency_missing"]}])
+        arguments = {"window_minutes": window, "max_lines": 500, "filter_query": {"groups": groups}}
     elif required == "config.inspect":
         path_match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+\.(?:properties|ya?ml|json|conf))(?![A-Za-z0-9_.-])", message, re.I)
         if not path_match:
@@ -798,6 +800,25 @@ def _health_check_next_read(message: str, tools: list[dict[str, Any]], observati
         return None
     decision = {"action": "tool_call", "tool": tool, "arguments": arguments,
                 "reason": "正在按顺序完成只读健康检查。"}
+    return decision if _validate_agent_loop_decision(decision, tools, observations, {"maxToolCalls": 19}) is None else None
+
+
+def _plugin_verification_next_read(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not re.search(r"essentialsx?", message, re.I) or not re.search(r"(?:真的|确认|核实).{0,18}安装", message):
+        return None
+    if [item.get("tool") for item in observations] != ["files.list", "console.command"]:
+        return None
+    if any(item.get("status") != "succeeded" for item in observations):
+        return None
+    if "logs.query" not in {item["name"] for item in tools}:
+        return None
+    decision = {"action": "tool_call", "tool": "logs.query",
+                "arguments": {"window_minutes": 1440, "max_lines": 500,
+                              "filter_query": {"groups": [{"all_of": ["literal:Essentials"],
+                                                          "any_of": ["error", "warning"]}]}},
+                "reason": "核对插件运行日志中的错误与警告。"}
     return decision if _validate_agent_loop_decision(decision, tools, observations, {"maxToolCalls": 19}) is None else None
 
 
@@ -2147,6 +2168,10 @@ class McaiGraph:
         if health_read is not None:
             return {"decision": health_read, "requestId": request_id,
                     "providerModel": "health-read-sequence", "repairUsed": False}
+        plugin_read = _plugin_verification_next_read(message, tools, observations)
+        if plugin_read is not None:
+            return {"decision": plugin_read, "requestId": request_id,
+                    "providerModel": "plugin-verification-sequence", "repairUsed": False}
         health_final = _health_check_final(message, observations)
         if health_final is not None and _validate_agent_loop_decision(health_final, tools, observations, limits) is None:
             return {"decision": health_final, "requestId": request_id,
