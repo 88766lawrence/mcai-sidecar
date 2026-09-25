@@ -81,7 +81,7 @@ go test ./...       # 在 apps/agent 中运行
 | 工具 | 状态 | 本地保护 |
 | --- | --- | --- |
 | `logs.query` | 已实现 | 响应体和行量受限，仅返回摘要证据 |
-| `config.patch` | 已实现 Properties 单键修改 | 路径/扩展名白名单、2 MiB 上限、S1 快照、复读哈希 |
+| `config.inspect/patch` | 已实现 Properties/Conf、YAML、JSON 读取与结构化修改 | 敏感字段脱敏、路径/扩展名白名单、2 MiB 上限、写前快照、复读哈希与回滚 |
 | `instance.restart` | 已实现 | 高风险二次确认、档案 revision 检查、运行状态验收 |
 | `plugin.resolve/install` | 已实现 Paper 兼容插件闭环 | Modrinth 版本约束、来源 SHA-512、本地 SHA-256、隔离区、一次性上传、落盘/启动日志验收、失败删除回滚 |
 | 任意 Shell | 永久禁止 | 云端和 Agent 双重拒绝未知工具 |
