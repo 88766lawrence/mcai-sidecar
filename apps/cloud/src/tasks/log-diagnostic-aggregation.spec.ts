@@ -81,7 +81,7 @@ describe("log diagnostic aggregation", () => {
   it("derives collection and count from one structured callback and computes the judgement deterministically", () => {
     const evidence = [{
       kind: "logs", step_id: "s1", tool: "logs.query", at: new Date(0).toISOString(), result: "match" as const,
-      summary: "Log query result: matches=2; window_minutes=30; scanned_lines=80; sample_count=2; filters=authentication_failure|timeout\nMatched samples:\n[12:10:00] Login authentication failed\n[12:12:00] Connection timed out",
+      summary: "Log query result: matches=2; window_minutes=30; scanned_lines=80; sample_count=2; filters=authentication_failure|timeout\nTime window is relative to the latest timestamp in the available log; absolute wall-clock recency is unverified.\nMatched samples:\n[12:10:00] Login authentication failed\n[12:12:00] Connection timed out",
     }] as TaskRecord["evidence"];
     const collection: GoalRequirement = {
       id: "g-events", description: "匹配的日志事件", domain: "diagnosis", action: "diagnose", target: "recent-logs",
@@ -91,6 +91,7 @@ describe("log diagnostic aggregation", () => {
     const collectionResult = adaptGoalResult(collection, evidence);
     const countResult = adaptGoalResult(count, evidence);
     expect(collectionResult).toMatchObject({ available: true, observed: expect.arrayContaining([expect.stringContaining("authentication failed"), expect.stringContaining("timed out")]) });
+    expect(collectionResult.observed).toHaveLength(2);
     expect(countResult).toMatchObject({ available: true, observed: 2 });
     expect(evaluateGoalPredicate({
       schema_version: "goal-predicate/v2", operator: "gt", expected: true,
