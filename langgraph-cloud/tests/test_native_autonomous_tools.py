@@ -174,6 +174,29 @@ async def test_explicit_restart_repairs_unexecuted_progress_claim():
     assert provider.seen_tool_sets == []
 
 
+async def test_recent_log_question_requires_real_log_observation():
+    provider = FakeNativeProvider([])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("看看最近一小时日志有没有报错")
+    request["toolCatalog"] = [{"name": "logs.query", "description": "Read bounded logs.",
+        "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}}]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["tool"] == "logs.query"
+    assert result["decision"]["arguments"] == {
+        "window_minutes": 60, "max_lines": 500,
+        "filter_query": {"groups": [{"all_of": [], "any_of":
+            ["error", "warning", "crash", "out_of_memory", "dependency_missing"]}]},
+    }
+    assert provider.seen_tool_sets == []
+
+
 async def test_explicit_user_prohibitions_are_forwarded_as_hard_native_constraints():
     provider = FakeNativeProvider({"content": "我会保持只读且不使用被禁止的能力。", "tool_calls": []})
     graph = object.__new__(McaiGraph)
@@ -993,6 +1016,7 @@ async def main():
         test_natural_answer_requires_no_tool_call,
         test_explicit_config_read_repairs_unsupported_direct_answer,
         test_explicit_restart_repairs_unexecuted_progress_claim,
+        test_recent_log_question_requires_real_log_observation,
         test_concept_explanation_route_never_exposes_console_tool,
         test_explicit_user_prohibitions_are_forwarded_as_hard_native_constraints,
         test_first_turn_semantic_selection_uses_primary_model,
