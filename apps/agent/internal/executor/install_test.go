@@ -249,6 +249,9 @@ func TestLogsQueryReturnsSanitizedRecentEvidence(t *testing.T) {
 	if strings.Contains(logEvidence, "abc123") || strings.Contains(logEvidence, "secret") {
 		t.Fatalf("log evidence leaked credentials: %q", logEvidence)
 	}
+	if !strings.Contains(logEvidence, "requested time window could not be verified") {
+		t.Fatalf("log evidence implied an absolute recent window without timestamps: %q", logEvidence)
+	}
 }
 
 func TestLogsQueryPrefersCurrentLogOverLongerPanelHistory(t *testing.T) {
