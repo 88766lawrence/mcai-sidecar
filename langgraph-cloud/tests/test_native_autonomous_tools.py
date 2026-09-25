@@ -141,6 +141,8 @@ async def test_concept_explanation_route_never_exposes_console_tool():
     result = await graph.decide_agent_loop(payload("请解释 TPS 是什么，不要查询当前服务器"))
 
     assert result["decision"]["action"] == "final"
+    assert provider.route == "self_contained"
+    assert provider.seen_tools is not None
 
 
 async def test_explicit_config_read_repairs_unsupported_direct_answer():
@@ -183,8 +185,6 @@ async def test_explicit_restart_repairs_unexecuted_progress_claim():
 
     assert result["decision"]["tool"] == "instance.restart"
     assert [tool["name"] for tool in provider.seen_tool_sets[1]] == ["instance.restart"]
-    assert provider.route == "self_contained"
-    assert provider.seen_tools is not None
 
 
 async def test_explicit_user_prohibitions_are_forwarded_as_hard_native_constraints():
