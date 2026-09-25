@@ -119,6 +119,10 @@ export function canonicalizeLogFilterGroups(groups: unknown):
       allOf = allOf.filter((token) => token !== "all");
     }
     if (anyOf.includes("all")) anyOf = [];
+    // An event repeated in an OR list is an alternative, not an extra
+    // mandatory condition. Keeping it in all_of turns "error OR warning"
+    // into "error AND warning" and can hide every real log entry.
+    allOf = allOf.filter((token) => subjectTokens.has(token) || !anyOf.includes(token));
     anyOf = anyOf.filter((token) => !allOf.includes(token));
     if (!allOf.length && !anyOf.length) allOf = ["all"];
     const tokens = [...allOf, ...anyOf];
