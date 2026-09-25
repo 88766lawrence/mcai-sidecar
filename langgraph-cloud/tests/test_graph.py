@@ -99,6 +99,16 @@ class LogWindowScopeTests(unittest.TestCase):
         self.assertIn("无法确认对应绝对最近一小时", result["answer"])
         self.assertEqual(result["citations"], ["call-log"])
 
+    def test_day_window_does_not_claim_an_hour(self):
+        decision = {"action": "final", "answer": "EssentialsX 日志有 3 条警告或错误。", "citations": ["call-log"]}
+        observations = [{"tool": "logs.query", "status": "succeeded", "tool_call_id": "call-log",
+                         "evidence": {"summaries": ["Log query result: matches=3; window_minutes=1440\n"
+                            "Time window is relative to the latest timestamp in the available log; "
+                            "absolute wall-clock recency is unverified."]}}]
+        result = _enforce_log_time_scope(decision, observations)
+        self.assertIn("绝对最近一天", result["answer"])
+        self.assertNotIn("最近一小时", result["answer"])
+
     def test_short_health_request_keeps_version_plugins_logs_order(self):
         tools = [
             {"name": "console.command", "input_schema": {"type": "object", "additionalProperties": False,
