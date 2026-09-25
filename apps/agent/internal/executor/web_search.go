@@ -352,14 +352,28 @@ func (s *fallbackWebSearcher) store(query string, response webSearchResponse) {
 
 func (s *duckDuckGoHTMLWebSearcher) Search(ctx context.Context, query string) (webSearchResponse, error) {
 	response, err := s.searchHTML(ctx, query)
-	if err == nil || s.liteEndpoint == "" {
-		return response, err
+	if err == nil {
+		response.Results = relevantWebSearchResults(query, response.Results)
+		if len(response.Results) > 0 {
+			return response, nil
+		}
+		err = errors.New("web search returned no relevant HTML results")
+	}
+	if s.liteEndpoint == "" {
+		return webSearchResponse{}, err
 	}
 	liteResponse, liteErr := s.searchLite(ctx, query)
 	if liteErr == nil {
-		return liteResponse, nil
+		liteResponse.Results = relevantWebSearchResults(query, liteResponse.Results)
+		if len(liteResponse.Results) > 0 {
+			return liteResponse, nil
+		}
+		liteErr = errors.New("web search returned no relevant Lite results")
 	}
-	return webSearchResponse{}, errors.Join(fmt.Errorf("duckduckgo HTML: %w", err), fmt.Errorf("duckduckgo Lite: %w", liteErr))
+	if errors.Is(err, errWebSearchRateLimited) && errors.Is(liteErr, errWebSearchRateLimited) {
+		return webSearchResponse{}, fmt.Errorf("%w: HTML: %v; Lite: %v", errWebSearchRateLimited, err, liteErr)
+	}
+	return webSearchResponse{}, fmt.Errorf("duckduckgo HTML: %v; Lite: %v", err, liteErr)
 }
 
 func (s *duckDuckGoHTMLWebSearcher) searchHTML(ctx context.Context, query string) (webSearchResponse, error) {
