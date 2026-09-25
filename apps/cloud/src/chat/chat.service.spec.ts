@@ -47,6 +47,30 @@ describe("ChatService", () => {
     }));
   });
 
+  it("runs the knowledge refiner before returning a Paper and Fabric answer", async () => {
+    const store = new CloudStore();
+    store.instances.set("instance-1", {
+      instance_id: "instance-1", name: "Survival", platform: "paper", minecraft_version: "1.21.1",
+      state: "running", profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(),
+      tenant_id: "tenant-1", agent_id: "agent-1",
+    });
+    const model = {
+      route: vi.fn().mockResolvedValue({ route: "direct", answer: "Paper 使用服务端插件，Fabric 使用模组。",
+        trace: [{ stage: "planning", label: "目标已细化", result: "覆盖定位、生态、兼容性和选择建议" }] }),
+      decideAgentLoop: vi.fn(),
+    } as unknown as ModelGatewayService;
+    const tasks = { create: vi.fn(), get: vi.fn() } as unknown as TasksService;
+    const service = new ChatService(store, model, tasks);
+    const session = await service.create("tenant-1", "instance-1");
+
+    const result = await service.send(session.id, "tenant-1", "Paper 和 Fabric 有什么区别？");
+
+    expect(model.route).toHaveBeenCalledOnce();
+    expect(model.decideAgentLoop).not.toHaveBeenCalled();
+    expect(result.message).toMatchObject({ route: "direct", trace: [{ stage: "planning", label: "目标已细化" }] });
+    expect(tasks.create).not.toHaveBeenCalled();
+  });
+
   it("routes an explicit multi-key configuration query to config.inspect without consulting the model", async () => {
     const store = new CloudStore();
     store.instances.set("instance-1", {
