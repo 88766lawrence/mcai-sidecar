@@ -1446,6 +1446,28 @@ def _bind_agent_final_citations(decision: dict[str, Any], observations: list[dic
     return {**decision, "citations": list(dict.fromkeys(succeeded))}
 
 
+def _enforce_log_time_scope(decision: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    if decision.get("action") != "final":
+        return decision
+    summaries: list[str] = []
+    for item in observations:
+        if item.get("tool") != "logs.query" or item.get("status") != "succeeded":
+            continue
+        evidence = item.get("evidence")
+        if isinstance(evidence, dict) and isinstance(evidence.get("summaries"), list):
+            summaries.extend(str(summary) for summary in evidence["summaries"])
+    answer = str(decision.get("answer") or "")
+    if not summaries or re.search(r"(?:最后时间戳|墙钟|绝对时间|latest timestamp|wall.clock|absolute recency)", answer, re.I):
+        return decision
+    if any("absolute wall-clock recency is unverified" in summary for summary in summaries):
+        note = "时间范围以日志内最后时间戳为基准，无法确认对应绝对最近一小时。" if re.search(r"[\u3400-\u9fff]", answer) else "The window is relative to the log's latest timestamp; absolute recency is unverified."
+    elif any("No parseable timestamps" in summary for summary in summaries):
+        note = "日志缺少可解析时间戳，无法验证所请求的时间范围。" if re.search(r"[\u3400-\u9fff]", answer) else "The log has no parseable timestamps, so the requested time window is unverified."
+    else:
+        return decision
+    return {**decision, "answer": answer.rstrip() + " " + note}
+
+
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
     if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
@@ -2225,7 +2247,7 @@ class McaiGraph:
                     )
                     if terminal_evidence_error is None and not requires_terminal_editor:
                         return {
-                            "decision": decision, "requestId": request_id,
+                            "decision": _enforce_log_time_scope(decision, observations), "requestId": request_id,
                             "providerModel": terminal_provider_model, "repairUsed": repair_used,
                         }
                     # A complete native answer needs no extra model call. If its
@@ -2381,7 +2403,7 @@ class McaiGraph:
                         }])
             if error is None:
                 return {
-                    "decision": decision, "requestId": request_id,
+                    "decision": _enforce_log_time_scope(decision, observations), "requestId": request_id,
                     "providerModel": terminal_provider_model, "repairUsed": repair_used,
                 }
             attempts.append({"model": self.provider.config.model, "mode": "native_tools", "attempt": attempt, "code": error})
