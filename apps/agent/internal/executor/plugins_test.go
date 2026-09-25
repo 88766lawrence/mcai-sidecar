@@ -91,6 +91,67 @@ func TestOfficialPluginResolverRejectsHashMismatch(t *testing.T) {
 	}
 }
 
+func TestOfficialPluginResolverStopsOnModrinthInfrastructureFailure(t *testing.T) {
+	hangarCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/v2/project/") {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		hangarCalls++
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1", githubBase: server.URL}
+	var progress []string
+	_, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.1", func(source, status string) {
+		progress = append(progress, source+":"+status)
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") || errors.Is(err, errNoCompatiblePluginVersion) || hangarCalls != 0 {
+		t.Fatalf("infrastructure failure must stop fallback: err=%v hangarCalls=%d", err, hangarCalls)
+	}
+	if strings.Contains(strings.Join(progress, "\n"), "Hangar:") {
+		t.Fatalf("progress must not claim Hangar was queried: %#v", progress)
+	}
+}
+
+func TestOfficialPluginResolverStopsOnHangarInfrastructureFailure(t *testing.T) {
+	githubCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case strings.HasPrefix(request.URL.Path, "/v2/project/"):
+			_, _ = writer.Write([]byte(`[]`))
+		case strings.HasPrefix(request.URL.Path, "/api/v1/"):
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			githubCalls++
+			writer.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1", githubBase: server.URL}
+	_, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.1", nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") || errors.Is(err, errNoCompatiblePluginVersion) || githubCalls != 0 {
+		t.Fatalf("Hangar failure must not become absence or trigger GitHub: err=%v githubCalls=%d", err, githubCalls)
+	}
+}
+
+func TestOfficialPluginResolverPreservesGitHubInfrastructureFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/v2/project/") {
+			_, _ = writer.Write([]byte(`[]`))
+			return
+		}
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", githubBase: server.URL}
+	_, err := resolver.ResolveMetadata(context.Background(), "essentialsx", "paper", "1.21.1", nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") || errors.Is(err, errNoCompatiblePluginVersion) {
+		t.Fatalf("GitHub failure must not become no-compatible-artifact: %v", err)
+	}
+}
+
 func TestOfficialPluginResolverFallsBackToVerifiedHangarRelease(t *testing.T) {
 	contents := []byte("placeholderapi-hangar-release")
 	digest := sha256.Sum256(contents)
@@ -138,7 +199,7 @@ func TestOfficialPluginResolverRejectsHangarDependencyWithoutApproval(t *testing
 		case "/api/v1/projects":
 			_, _ = writer.Write([]byte(`{"result":[{"name":"example","visibility":"public","namespace":{"slug":"example"},"supportedPlatforms":{"PAPER":["1.21.1"]}}]}`))
 		case "/api/v1/projects/example/versions":
-			_, _ = writer.Write([]byte(`{"result":[{"id":1,"name":"1.0.0","visibility":"public","channel":{"name":"Release"},"downloads":{"PAPER":{}},"pluginDependencies":{"RequiredPlugin":"required"},"platformDependencies":{"PAPER":["1.21.1"]}}]}`))
+			_, _ = writer.Write([]byte(`{"result":[{"id":1,"name":"1.0.0","visibility":"public","channel":{"name":"Release"},"downloads":{"PAPER":{}},"pluginDependencies":{"PAPER":[{"name":"RequiredPlugin","required":true}]},"platformDependencies":{"PAPER":["1.21.1"]}}]}`))
 		default:
 			t.Fatalf("unexpected path %s", request.URL.Path)
 		}
@@ -148,6 +209,28 @@ func TestOfficialPluginResolverRejectsHangarDependencyWithoutApproval(t *testing
 	_, err := resolver.Resolve(context.Background(), "example", "paper", "1.21.1", nil)
 	if err == nil || !strings.Contains(err.Error(), "separate approval") {
 		t.Fatalf("expected dependency approval failure, got %v", err)
+	}
+}
+
+func TestOfficialPluginResolverSkipsIncompatibleHangarDependenciesAndAllowsOptionalOnes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v2/project/placeholderapi/version":
+			_, _ = writer.Write([]byte(`[]`))
+		case "/api/v1/projects/PlaceholderAPI/versions":
+			_, _ = fmt.Fprintf(writer, `{"result":[
+				{"id":2,"name":"2.0.0","visibility":"public","channel":{"name":"Release"},"downloads":{"PAPER":{}},"pluginDependencies":{"PAPER":[{"name":"OtherPlugin","required":true}]},"platformDependencies":{"PAPER":["1.21.11"]}},
+				{"id":1,"name":"1.0.0","visibility":"public","channel":{"name":"Release"},"downloads":{"PAPER":{"fileInfo":{"name":"PlaceholderAPI-1.0.0.jar","sizeBytes":1024,"sha256Hash":"%s"},"downloadUrl":"https://hangarcdn.papermc.io/test.jar"}},"pluginDependencies":{"PAPER":[{"name":"Vault","required":false}]},"platformDependencies":{"PAPER":["1.21.1"]}}
+			]}`, strings.Repeat("0", 64))
+		default:
+			t.Fatalf("unexpected request %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	resolver := &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL + "/v2", hangarBase: server.URL + "/api/v1"}
+	artifact, err := resolver.ResolveMetadata(context.Background(), "placeholderapi", "paper", "1.21.1", nil)
+	if err != nil || artifact.Source != "hangar" || artifact.VersionNumber != "1.0.0" || len(artifact.Contents) != 0 {
+		t.Fatalf("expected compatible release with optional dependency, got %+v, %v", artifact, err)
 	}
 }
 
