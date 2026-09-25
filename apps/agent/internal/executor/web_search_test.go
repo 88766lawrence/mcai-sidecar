@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -13,6 +15,12 @@ type stubWebSearcher struct {
 	response webSearchResponse
 	err      error
 	calls    int
+}
+
+type searchRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f searchRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func (s *stubWebSearcher) Search(_ context.Context, _ string) (webSearchResponse, error) {
@@ -85,6 +93,53 @@ func TestBraveWebSearcherUsesHeaderAndTypedResults(t *testing.T) {
 	}
 }
 
+func TestGitHubOrganizationSiteSearchFindsProjectDownloadLink(t *testing.T) {
+	client := &http.Client{Transport: searchRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var body, contentType string
+		switch request.URL.String() {
+		case "https://api.github.com/orgs/papermc":
+			body, contentType = `{"login":"PaperMC","blog":"https://papermc.io/"}`, "application/json"
+		case "https://papermc.io/":
+			body, contentType = `<a href="/downloads">Downloads</a><a href="https://unrelated.example/downloads">Other</a>`, "text/html"
+		default:
+			t.Fatalf("unexpected request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	searcher := &githubOrgSiteWebSearcher{httpClient: client, orgEndpoint: "https://api.github.com/orgs/"}
+	result, err := searcher.Search(context.Background(), "PaperMC official download page paper server")
+	if err != nil || result.Provider != "github-org-site" || len(result.Results) != 1 || result.Results[0].Link != "https://papermc.io/downloads" {
+		t.Fatalf("expected the linked official download page, got %+v, %v", result, err)
+	}
+}
+
+func TestGitHubOrganizationSiteSearchRejectsPrivateWebsite(t *testing.T) {
+	client := &http.Client{Transport: searchRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"login":"PaperMC","blog":"http://127.0.0.1/"}`)), Request: request}, nil
+	})}
+	searcher := &githubOrgSiteWebSearcher{httpClient: client, orgEndpoint: "https://api.github.com/orgs/"}
+	if _, err := searcher.Search(context.Background(), "PaperMC download"); err == nil {
+		t.Fatal("private and non-HTTPS project site must be rejected")
+	}
+}
+
+func TestProjectSiteLinksUnderstandsChineseDownloadQuery(t *testing.T) {
+	home := mustWebSearchURL(t, "https://papermc.io/")
+	results := projectSiteLinks(home, `<a href="/downloads">Downloads</a>`, "搜索 PaperMC 官方下载页", "PaperMC")
+	if len(results) != 1 || results[0].Link != "https://papermc.io/downloads" {
+		t.Fatalf("expected download link for Chinese query, got %+v", results)
+	}
+}
+
+func mustWebSearchURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
 func TestFallbackSearchCachesRelevantDuckDuckGoResults(t *testing.T) {
 	primary := &stubWebSearcher{response: webSearchResponse{Provider: "duckduckgo-html", Results: []webSearchResult{{Title: "Downloads - PaperMC", Link: "https://papermc.io/downloads/", Snippet: "Official PaperMC builds"}}}}
 	secondary := &stubWebSearcher{err: errors.New("should not be called")}
@@ -100,15 +155,32 @@ func TestFallbackSearchCachesRelevantDuckDuckGoResults(t *testing.T) {
 	}
 }
 
+func TestFallbackSearchUsesProjectSiteAfterDuckDuckGoRateLimit(t *testing.T) {
+	primary := &stubWebSearcher{err: errWebSearchRateLimited}
+	secondary := &stubWebSearcher{response: webSearchResponse{Provider: "github-org-site", Results: []webSearchResult{{Title: "PaperMC — Downloads", Link: "https://papermc.io/downloads", Snippet: "Linked from the project website"}}}}
+	tertiary := &stubWebSearcher{err: errors.New("should not be called")}
+	searcher := &fallbackWebSearcher{primary: primary, secondary: secondary, tertiary: tertiary}
+	for range 2 {
+		result, err := searcher.Search(context.Background(), "PaperMC official downloads")
+		if err != nil || result.Provider != "github-org-site" || len(result.Results) != 1 {
+			t.Fatalf("expected cached project site result, got %+v, %v", result, err)
+		}
+	}
+	if primary.calls != 1 || secondary.calls != 1 || tertiary.calls != 0 || searcher.primaryBlockedUntil.IsZero() {
+		t.Fatalf("unexpected rate limit fallback state: %d, %d, %d", primary.calls, secondary.calls, tertiary.calls)
+	}
+}
+
 func TestFallbackSearchDoesNotTreatUnrelatedBingResultsAsSuccess(t *testing.T) {
 	primary := &stubWebSearcher{err: errWebSearchRateLimited}
-	secondary := &stubWebSearcher{response: webSearchResponse{Provider: "bing-rss", Results: []webSearchResult{{Title: "Antarctic ice", Link: "https://example.org/ice", Snippet: "Travel and oceans"}}}}
-	searcher := &fallbackWebSearcher{primary: primary, secondary: secondary}
+	secondary := &stubWebSearcher{err: errors.New("no matching organization")}
+	tertiary := &stubWebSearcher{response: webSearchResponse{Provider: "bing-rss", Results: []webSearchResult{{Title: "Antarctic ice", Link: "https://example.org/ice", Snippet: "Travel and oceans"}}}}
+	searcher := &fallbackWebSearcher{primary: primary, secondary: secondary, tertiary: tertiary}
 	_, err := searcher.Search(context.Background(), "EssentialsX Minecraft")
 	if err == nil || !strings.Contains(err.Error(), "no relevant results") {
 		t.Fatalf("unrelated fallback results must fail explicitly: %v", err)
 	}
-	if primary.calls != 1 || secondary.calls != 1 {
-		t.Fatalf("expected one call to each provider, got %d and %d", primary.calls, secondary.calls)
+	if primary.calls != 1 || secondary.calls != 1 || tertiary.calls != 1 {
+		t.Fatalf("expected one call to each provider, got %d, %d and %d", primary.calls, secondary.calls, tertiary.calls)
 	}
 }
