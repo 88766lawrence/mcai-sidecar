@@ -116,6 +116,40 @@ func TestDuckDuckGoLiteFallbackAfterHTMLRateLimit(t *testing.T) {
 	}
 }
 
+func TestDuckDuckGoLiteFallbackAfterIrrelevantHTMLResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/html":
+			_, _ = w.Write([]byte(`<a class="result__a" href="https://example.org/ice">Antarctic ice</a><a class="result__snippet">Travel and oceans</a>`))
+		case "/lite":
+			_, _ = w.Write([]byte(`<tr><td><a class="result-link" href="https://papermc.io/downloads/">Downloads - PaperMC</a></td></tr><tr><td class="result-snippet">Official PaperMC builds</td></tr>`))
+		default:
+			t.Errorf("unexpected search path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	searcher := &duckDuckGoHTMLWebSearcher{httpClient: server.Client(), endpoint: server.URL + "/html", liteEndpoint: server.URL + "/lite"}
+	response, err := searcher.Search(context.Background(), "PaperMC official download page")
+	if err != nil || response.Provider != "duckduckgo-lite" || len(response.Results) != 1 || response.Results[0].Link != "https://papermc.io/downloads/" {
+		t.Fatalf("irrelevant HTML results must not hide the matching Lite result: %+v, %v", response, err)
+	}
+}
+
+func TestIrrelevantHTMLAndLimitedLiteDoNotBlockOtherQueries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/lite" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		_, _ = w.Write([]byte(`<a class="result__a" href="https://example.org/ice">Antarctic ice</a><a class="result__snippet">Travel and oceans</a>`))
+	}))
+	defer server.Close()
+	searcher := &duckDuckGoHTMLWebSearcher{httpClient: server.Client(), endpoint: server.URL + "/html", liteEndpoint: server.URL + "/lite"}
+	if _, err := searcher.Search(context.Background(), "PaperMC official download page"); err == nil || errors.Is(err, errWebSearchRateLimited) {
+		t.Fatalf("one limited endpoint must not disable an HTML endpoint that still responds: %v", err)
+	}
+}
+
 func TestDuckDuckGoLiteFallbackPreservesRateLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) }))
 	defer server.Close()
