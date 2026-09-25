@@ -4,6 +4,15 @@ import { draftPlan } from "./planner";
 import { validatePlanCompatibility } from "./plan-compatibility";
 
 describe("structured log filter query", () => {
+  it("accepts the bounded EssentialsX literal and excludes unrelated errors", () => {
+    const result = canonicalizeLogFilterGroups([
+      { all_of: ["literal:Essentials"], any_of: ["error", "warning"] },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(matchesLogFilterQuery("[Essentials] You are running an unsupported server version! ERROR", result.query)).toBe(true);
+    expect(matchesLogFilterQuery("[PaperVersionFetcher] Error while parsing version", result.query)).toBe(false);
+  });
   it.each([
     ["检查组件初始化失败或依赖项缺失的近期记录", "software_component", ["initialization_failure", "dependency_missing"]],
     ["Were any module dependencies unavailable or extensions unable to initialize?", "software_component", ["initialization_failure", "dependency_missing"]],
@@ -95,6 +104,17 @@ describe("structured log filter query", () => {
     ]);
     expect(matchesLogFilterQuery("java.lang.OutOfMemoryError: Java heap space", result.query)).toBe(true);
     expect(matchesLogFilterQuery("Can't keep up! Is the server overloaded?", result.query)).toBe(true);
+  });
+
+  it("keeps repeated error in an OR event list from hiding errors and warnings", () => {
+    const result = canonicalizeLogFilterGroups([
+      { all_of: ["error"], any_of: ["error", "warning", "crash", "out_of_memory", "dependency_missing"] },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.query.groups).toEqual([{ all_of: [], any_of: ["error", "warning", "crash", "out_of_memory", "dependency_missing"] }]);
+    expect(matchesLogFilterQuery("[Server thread/ERROR]: Essentials is unsupported", result.query)).toBe(true);
+    expect(matchesLogFilterQuery("[Server thread/WARN]: Vault is missing", result.query)).toBe(true);
   });
 
   it.each([

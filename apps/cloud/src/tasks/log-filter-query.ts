@@ -57,7 +57,9 @@ const eventDefinitions: MatchDefinition[] = [
 const definitions = [...subjectDefinitions, ...eventDefinitions];
 const knownTokens = new Set(["all", ...definitions.map((item) => item.token)]);
 const subjectTokens = new Set(subjectDefinitions.map((item) => item.token));
-export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens].sort();
+// A bounded named-plugin literal allows the agent schema to target EssentialsX
+// without broadening the accepted tool arguments to arbitrary search strings.
+export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens, "literal:Essentials"].sort();
 
 export function compileLogFilterQuery(intent: string): LogFilterQueryV1 {
   const subjects = matchingDefinitions(intent, subjectDefinitions).map((item) => item.token);
@@ -119,6 +121,10 @@ export function canonicalizeLogFilterGroups(groups: unknown):
       allOf = allOf.filter((token) => token !== "all");
     }
     if (anyOf.includes("all")) anyOf = [];
+    // An event repeated in an OR list is an alternative, not an extra
+    // mandatory condition. Keeping it in all_of turns "error OR warning"
+    // into "error AND warning" and can hide every real log entry.
+    allOf = allOf.filter((token) => subjectTokens.has(token) || !anyOf.includes(token));
     anyOf = anyOf.filter((token) => !allOf.includes(token));
     if (!allOf.length && !anyOf.length) allOf = ["all"];
     const tokens = [...allOf, ...anyOf];

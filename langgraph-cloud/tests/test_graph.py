@@ -34,12 +34,111 @@ from mcai_graph.graph import (
     _unique_json_object,
     _planner_prompt,
     _paper_fabric_comparison_answer,
+    _enforce_log_time_scope,
+    _enforce_plugin_compatibility_scope,
+    _explicit_live_decision,
+    _plugin_verification_next_read,
+    _health_check_next_read,
+    _health_check_final,
     _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
     _thread_id,
     _unavailable_instance_action_answer,
 )
+
+
+class LogWindowScopeTests(unittest.TestCase):
+    def test_essentials_log_request_targets_plugin_warnings(self):
+        tools = [{"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}}]
+        decision = _explicit_live_decision("只读检查日志中 EssentialsX 的 ERROR 或 WARN", tools, {})
+        self.assertEqual(decision["arguments"]["window_minutes"], 1440)
+        self.assertEqual(decision["arguments"]["filter_query"]["groups"], [
+            {"all_of": ["literal:Essentials"], "any_of": ["error", "warning"]},
+        ])
+
+    def test_essentials_install_verification_checks_logs_after_file_and_load(self):
+        tools = [{"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+            "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}}]
+        observations = [
+            {"tool": "files.list", "status": "succeeded", "tool_call_id": "files"},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"},
+        ]
+        decision = _plugin_verification_next_read(
+            "确认 EssentialsX 是否真的安装好了，不要修改文件", tools, observations,
+        )
+        self.assertEqual(decision["tool"], "logs.query")
+        self.assertEqual(decision["arguments"]["filter_query"]["groups"][0]["all_of"], ["literal:Essentials"])
+
+    def test_plugin_file_and_loaded_list_do_not_prove_compatibility(self):
+        decision = {"action": "final", "answer": "EssentialsX 已成功安装并加载。", "citations": ["files", "plugins"]}
+        observations = [
+            {"tool": "files.list", "status": "succeeded", "tool_call_id": "files"},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"},
+        ]
+        result = _enforce_plugin_compatibility_scope(
+            decision, "确认 EssentialsX 是否真的安装好了，不要修改文件", observations,
+        )
+        self.assertIn("兼容性仍需检查运行日志", result["answer"])
+        self.assertEqual(result["citations"], ["files", "plugins"])
+
+    def test_unverified_wall_clock_scope_is_visible_in_final_answer(self):
+        decision = {"action": "final", "answer": "日志匹配 8 条错误或警告。", "citations": ["call-log"]}
+        observations = [{"tool": "logs.query", "status": "succeeded", "tool_call_id": "call-log",
+                         "evidence": {"summaries": ["Log query result: matches=8; window_minutes=60\n"
+                            "Time window is relative to the latest timestamp in the available log; "
+                            "absolute wall-clock recency is unverified."]}}]
+        result = _enforce_log_time_scope(decision, observations)
+        self.assertIn("无法确认对应绝对最近一小时", result["answer"])
+        self.assertEqual(result["citations"], ["call-log"])
+
+    def test_short_health_request_keeps_version_plugins_logs_order(self):
+        tools = [
+            {"name": "console.command", "input_schema": {"type": "object", "additionalProperties": False,
+                "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+            {"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+                "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                    "filter_query": {"type": "object", "additionalProperties": False,
+                        "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+                "required": ["window_minutes", "max_lines", "filter_query"]}},
+        ]
+        observations: list[dict] = []
+        first = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(first["arguments"], {"command": "version"})
+        observations.append({"tool": "console.command", "status": "succeeded", "tool_call_id": "version"})
+        second = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(second["arguments"], {"command": "plugins"})
+        observations.append({"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"})
+        third = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(third["tool"], "logs.query")
+        self.assertEqual(third["arguments"]["window_minutes"], 60)
+        self.assertEqual(third["arguments"]["max_lines"], 500)
+
+    def test_health_final_uses_all_three_observations_and_limits_log_scope(self):
+        observations = [
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "version",
+             "evidence": {"summaries": ["This server is running Paper version 1.21.1-133-ver/x\nError obtaining version information"]}},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins",
+             "evidence": {"summaries": ["Server Plugins (2): Essentials, LuckPerms"]}},
+            {"tool": "logs.query", "status": "succeeded", "tool_call_id": "logs",
+             "evidence": {"summaries": ["Log query result: matches=8; window_minutes=60; scanned_lines=105; sample_count=5\n"
+                 "Time window is relative to the latest timestamp in the available log; absolute wall-clock recency is unverified.\n"
+                 "Matched samples:\n[04:55:05] [Server thread/ERROR]: Unsupported version"]}},
+        ]
+        decision = _health_check_final("查看服务是否有异常", observations)
+        self.assertEqual(decision["citations"], ["version", "plugins", "logs"])
+        self.assertIn("Paper 1.21.1-133", decision["answer"])
+        self.assertIn("Essentials, LuckPerms", decision["answer"])
+        self.assertIn("命中 8 条", decision["answer"])
+        self.assertIn("剩余 3 条匹配未展示或未审阅", decision["answer"])
+        self.assertIn("绝对最近一小时", decision["answer"])
 
 SOURCE_CATALOG = {
     "schema_version": "intent-source-catalog/v1",

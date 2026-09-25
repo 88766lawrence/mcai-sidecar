@@ -537,7 +537,17 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     // retained only as a compatibility fallback when the model endpoint is
     // unavailable; it never gets to pre-empt an answered AI decision.
     const decideAgentLoop = (this.modelGateway as ModelGatewayService & { decideAgentLoop?: ModelGatewayService["decideAgentLoop"] }).decideAgentLoop;
-    let agentLoopResult = typeof decideAgentLoop === "function"
+    const knowledgeRefinement = typeof decideAgentLoop === "function"
+      && /paper\s*(?:和|与|跟|vs)\s*fabric.*区别/iu.test(content)
+      && typeof this.modelGateway.route === "function"
+      ? await this.modelGateway.route(routeInput) : undefined;
+    const refinedKnowledgeAnswer = knowledgeRefinement?.route === "direct"
+      && knowledgeRefinement.trace?.some((item) => item.stage === "planning" && item.label === "目标已细化")
+      ? knowledgeRefinement.answer : undefined;
+    let agentLoopResult = refinedKnowledgeAnswer
+      ? { status: "answered" as const, requestId: knowledgeRefinement?.requestId ?? `refined-${randomUUID()}`,
+          decision: { action: "final" as const, answer: refinedKnowledgeAnswer, citations: [] as string[] } }
+      : typeof decideAgentLoop === "function"
       ? await decideAgentLoop.call(this.modelGateway, { ...routeInput, observations: [], round: 1 })
       : { status: "unavailable" as const, error: "AGENT_LOOP_NOT_IMPLEMENTED" };
     if (agentLoopResult.status !== "answered" && transientAgentDecisionError(agentLoopResult.error) && typeof decideAgentLoop === "function") {
@@ -566,7 +576,8 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
           trace: [{ stage: "routing", label: "AI 先理解请求并选择受控工具", result: agentLoopResult.decision.tool }],
         };
       } else if (agentLoopResult.decision.action === "final") {
-        agentLoopDecision = { route: "direct", answer: guardDirectWithoutEvidence(agentLoopResult.decision.answer), requestId: agentLoopResult.requestId };
+        agentLoopDecision = { route: "direct", answer: guardDirectWithoutEvidence(agentLoopResult.decision.answer), requestId: agentLoopResult.requestId,
+          trace: refinedKnowledgeAnswer ? knowledgeRefinement?.trace : undefined };
       } else {
         agentLoopDecision = { route: "clarify", answer: agentLoopResult.decision.answer, requestId: agentLoopResult.requestId };
       }

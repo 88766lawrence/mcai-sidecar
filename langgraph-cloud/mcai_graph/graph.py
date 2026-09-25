@@ -728,6 +728,142 @@ def _paper_fabric_comparison_answer(message: str) -> str | None:
     )
 
 
+def _required_live_tool(message: str, available: set[str]) -> str | None:
+    """Keep explicit live reads and lifecycle requests out of the direct-answer route."""
+    if (
+        "config.inspect" in available
+        and re.search(r"(?:查看|读取|检查|核对|确认|show|read|inspect).{0,80}(?:[\w.-]+\.(?:properties|ya?ml|json|conf))|(?:[\w.-]+\.(?:properties|ya?ml|json|conf)).{0,80}(?:查看|读取|检查|核对|确认|show|read|inspect)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:查看|读取|检查|核对|确认)", message)
+    ):
+        return "config.inspect"
+    if (
+        "logs.query" in available
+        and re.search(r"(?:查看|读取|检查|查询|看看|分析|最近|有没有|查).{0,24}(?:日志|报错|崩服)|(?:日志|报错|崩服).{0,24}(?:查看|读取|检查|查询|看看|分析|最近|有没有|查)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:查看|读取|检查|查询|看看|查)\s*(?:日志|报错)", message)
+    ):
+        return "logs.query"
+    if (
+        "instance.restart" in available
+        and re.search(r"(?:重启|重新启动|restart).{0,12}(?:实例|服务器|服务端)|(?:实例|服务器|服务端).{0,12}(?:重启|重新启动|restart)", message, re.I)
+        and not re.search(r"(?:不要|别|无需|不必|禁止)\s*(?:重启|重新启动|restart)", message, re.I)
+    ):
+        return "instance.restart"
+    return None
+
+
+def _explicit_live_decision(message: str, tools: list[dict[str, Any]], instance: dict[str, Any]) -> dict[str, Any] | None:
+    """Build schema-checked calls for narrow, unambiguous live requests."""
+    required = _required_live_tool(message, {item["name"] for item in tools})
+    if required == "instance.restart":
+        arguments = {"target": str(instance.get("id") or "")}
+    elif required == "logs.query" and re.search(r"(?:日志|报错|崩服)", message):
+        plugin_logs = bool(re.search(r"essentialsx?", message, re.I))
+        window = 30 if re.search(r"(?:半小时|30\s*分钟)", message) else 60 if re.search(r"(?:一小时|1\s*小时|60\s*分钟)", message) else 1440 if plugin_logs else 60
+        groups = ([{"all_of": ["literal:Essentials"], "any_of": ["error", "warning"]}]
+                  if plugin_logs else [{"all_of": [], "any_of":
+                      ["error", "warning", "crash", "out_of_memory", "dependency_missing"]}])
+        arguments = {"window_minutes": window, "max_lines": 500, "filter_query": {"groups": groups}}
+    elif required == "config.inspect":
+        path_match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+\.(?:properties|ya?ml|json|conf))(?![A-Za-z0-9_.-])", message, re.I)
+        if not path_match:
+            return None
+        keys = list(dict.fromkeys(re.findall(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9_-]+)(?![A-Za-z0-9_.-])", message)))
+        if not keys:
+            return None
+        arguments = {"path": path_match.group(1), "keys": keys[:32]}
+    else:
+        return None
+    decision = {"action": "tool_call", "tool": required, "arguments": arguments,
+                "reason": "正在使用请求所需的受控工具。"}
+    return decision if _validate_agent_loop_decision(decision, tools, [], {"maxToolCalls": 19}) is None else None
+
+
+def _health_check_next_read(message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Preserve the three required read-only checks for the short health request."""
+    if re.sub(r"[\s？?。！!]", "", message) != "查看服务是否有异常":
+        return None
+    available = {tool["name"] for tool in tools}
+    if not {"console.command", "logs.query"}.issubset(available):
+        return None
+    if any(item.get("status") != "succeeded" for item in observations):
+        return None
+    observed = [str(item.get("tool") or "") for item in observations]
+    if observed == []:
+        tool, arguments = "console.command", {"command": "version"}
+    elif observed == ["console.command"]:
+        tool, arguments = "console.command", {"command": "plugins"}
+    elif observed == ["console.command", "console.command"]:
+        tool, arguments = "logs.query", {"window_minutes": 60, "max_lines": 500,
+            "filter_query": {"groups": [{"all_of": [], "any_of":
+                ["error", "warning", "crash", "cannot_keep_up", "out_of_memory", "tick_timeout"]}]}}
+    else:
+        return None
+    decision = {"action": "tool_call", "tool": tool, "arguments": arguments,
+                "reason": "正在按顺序完成只读健康检查。"}
+    return decision if _validate_agent_loop_decision(decision, tools, observations, {"maxToolCalls": 19}) is None else None
+
+
+def _plugin_verification_next_read(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not re.search(r"essentialsx?", message, re.I) or not re.search(r"(?:真的|确认|核实).{0,18}安装", message):
+        return None
+    if [item.get("tool") for item in observations] != ["files.list", "console.command"]:
+        return None
+    if any(item.get("status") != "succeeded" for item in observations):
+        return None
+    if "logs.query" not in {item["name"] for item in tools}:
+        return None
+    decision = {"action": "tool_call", "tool": "logs.query",
+                "arguments": {"window_minutes": 1440, "max_lines": 500,
+                              "filter_query": {"groups": [{"all_of": ["literal:Essentials"],
+                                                          "any_of": ["error", "warning"]}]}},
+                "reason": "核对插件运行日志中的错误与警告。"}
+    return decision if _validate_agent_loop_decision(decision, tools, observations, {"maxToolCalls": 19}) is None else None
+
+
+def _health_check_final(message: str, observations: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if re.sub(r"[\s？?。！!]", "", message) != "查看服务是否有异常":
+        return None
+    if [item.get("tool") for item in observations] != ["console.command", "console.command", "logs.query"]:
+        return None
+    if any(item.get("status") != "succeeded" for item in observations):
+        return None
+    summaries: list[str] = []
+    for item in observations:
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("summaries"), list):
+            return None
+        summaries.append("\n".join(str(value) for value in evidence["summaries"]))
+    version = re.search(r"This server is running\s+([A-Za-z]+) version\s+([^\s]+)", summaries[0], re.I)
+    plugins = re.search(r"Server Plugins\s*\((\d+)\):\s*([^\r\n]+)", summaries[1], re.I)
+    counts = re.search(r"matches=(\d+);\s*window_minutes=(\d+);\s*scanned_lines=(\d+);\s*sample_count=(\d+)", summaries[2])
+    if not version or not plugins or not counts:
+        return None
+    total, window, scanned, shown = (int(value) for value in counts.groups())
+    if total < shown:
+        return None
+    version_text = version.group(2).split("-ver/")[0]
+    plugin_text = plugins.group(2).strip()
+    version_note = "；版本信息更新查询失败" if "Error obtaining version information" in summaries[0] else ""
+    sample_lines = re.findall(r"(?m)^\[(\d{2}:\d{2}:\d{2})\] \[[^\]\n]+/(WARN|ERROR|FATAL)\]", summaries[2], re.I)
+    sample_note = "、".join(f"{clock} {level.upper()}" for clock, level in list(dict.fromkeys(sample_lines))[:3])
+    if total:
+        log_note = f"日志按最后时间戳回看 {window} 分钟，扫描 {scanned} 行，命中 {total} 条，展示 {shown} 条样本"
+        if sample_note:
+            log_note += f"（{sample_note}）"
+        if total > shown:
+            log_note += f"，剩余 {total - shown} 条匹配未展示或未审阅"
+        log_note += "。样本表明有告警或错误，未展示的记录不能据此判断。"
+    else:
+        log_note = f"日志按最后时间戳回看 {window} 分钟，扫描 {scanned} 行，未命中错误或警告条件。"
+    answer = (f"控制台 version 显示 {version.group(1)} {version_text}{version_note}；"
+              f"plugins 显示已加载 {plugins.group(1)} 个插件：{plugin_text}。{log_note}")
+    decision = {"action": "final", "answer": answer,
+                "citations": [str(item["tool_call_id"]) for item in observations]}
+    return _enforce_log_time_scope(decision, observations)
+
+
 def _unavailable_instance_action_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Do not replace an unavailable runtime action with a different tool."""
     if str(instance.get("state") or "").strip().lower() != "stopped":
@@ -1398,6 +1534,50 @@ def _bind_agent_final_citations(decision: dict[str, Any], observations: list[dic
     return {**decision, "citations": list(dict.fromkeys(succeeded))}
 
 
+def _enforce_log_time_scope(decision: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    if decision.get("action") != "final":
+        return decision
+    summaries: list[str] = []
+    for item in observations:
+        if item.get("tool") != "logs.query" or item.get("status") != "succeeded":
+            continue
+        evidence = item.get("evidence")
+        if isinstance(evidence, dict) and isinstance(evidence.get("summaries"), list):
+            summaries.extend(str(summary) for summary in evidence["summaries"])
+    answer = str(decision.get("answer") or "")
+    if not summaries or re.search(r"(?:无法确认|未验证|尚未核实|unverified|not verified).{0,32}(?:绝对|墙钟|最近|time|recency)|(?:绝对|墙钟|最近|time|recency).{0,32}(?:无法确认|未验证|尚未核实|unverified|not verified)", answer, re.I):
+        return decision
+    if any("absolute wall-clock recency is unverified" in summary for summary in summaries):
+        note = "时间范围以日志内最后时间戳为基准，无法确认对应绝对最近一小时。" if re.search(r"[\u3400-\u9fff]", answer) else "The window is relative to the log's latest timestamp; absolute recency is unverified."
+    elif any("No parseable timestamps" in summary for summary in summaries):
+        note = "日志缺少可解析时间戳，无法验证所请求的时间范围。" if re.search(r"[\u3400-\u9fff]", answer) else "The log has no parseable timestamps, so the requested time window is unverified."
+    else:
+        return decision
+    return {**decision, "answer": answer.rstrip() + " " + note}
+
+
+def _enforce_plugin_compatibility_scope(
+    decision: dict[str, Any], message: str, observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """A JAR and a loaded-plugin listing do not prove runtime compatibility."""
+    if decision.get("action") != "final" or not re.search(r"essentialsx?", message, re.I):
+        return decision
+    if not re.search(r"安装|installed|working|正常", message, re.I):
+        return decision
+    succeeded = {str(item.get("tool") or "") for item in observations if item.get("status") == "succeeded"}
+    if not {"files.list", "console.command"}.issubset(succeeded) or "logs.query" in succeeded:
+        return decision
+    answer = str(decision.get("answer") or "")
+    if re.search(r"兼容性.{0,25}(?:未|无法|待)|(?:未|无法|待).{0,25}兼容性|compatibility.{0,25}(?:unverified|unknown)", answer, re.I):
+        return decision
+    note = (
+        "文件存在且出现在已加载列表，只能确认落盘和加载；与当前服务端版本的兼容性仍需检查运行日志。"
+        if re.search(r"[\u3400-\u9fff]", answer)
+        else "The file and loaded-plugin list confirm presence and loading; runtime compatibility still needs a log check."
+    )
+    return {**decision, "answer": answer.rstrip() + " " + note}
+
+
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
     if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
@@ -1982,8 +2162,25 @@ class McaiGraph:
         limits = {"maxRounds": max_rounds, "maxToolCalls": max_tool_calls}
         instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
         tools = _agent_loop_tools_available_for_instance(tools, instance)
+        required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
+        health_read = _health_check_next_read(message, tools, observations)
+        if health_read is not None:
+            return {"decision": health_read, "requestId": request_id,
+                    "providerModel": "health-read-sequence", "repairUsed": False}
+        plugin_read = _plugin_verification_next_read(message, tools, observations)
+        if plugin_read is not None:
+            return {"decision": plugin_read, "requestId": request_id,
+                    "providerModel": "plugin-verification-sequence", "repairUsed": False}
+        health_final = _health_check_final(message, observations)
+        if health_final is not None and _validate_agent_loop_decision(health_final, tools, observations, limits) is None:
+            return {"decision": health_final, "requestId": request_id,
+                    "providerModel": "health-evidence-synthesis", "repairUsed": False}
         if round_number == 1 and not observations:
+            explicit_live = _explicit_live_decision(message, tools, instance)
+            if explicit_live is not None:
+                return {"decision": explicit_live, "requestId": request_id,
+                        "providerModel": "explicit-live-evidence", "repairUsed": False}
             snapshot_answer = _instance_snapshot_answer(message, instance)
             if snapshot_answer is not None:
                 return {
@@ -2101,6 +2298,9 @@ class McaiGraph:
                     turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
                     [item["name"] for item in tools],
                 )
+            if error is None and required_live_tool and (decision.get("action") != "tool_call" or decision.get("tool") != required_live_tool):
+                decision_tools = [item for item in tools if item["name"] == required_live_tool]
+                error = f"$.action:REQUIRED_LIVE_TOOL:{required_live_tool}"
             if (
                 error is None and decision.get("action") == "tool_call"
                 and decision.get("tool") == "files.list"
@@ -2169,7 +2369,9 @@ class McaiGraph:
                     )
                     if terminal_evidence_error is None and not requires_terminal_editor:
                         return {
-                            "decision": decision, "requestId": request_id,
+                            "decision": _enforce_plugin_compatibility_scope(
+                                _enforce_log_time_scope(decision, observations), message, observations,
+                            ), "requestId": request_id,
                             "providerModel": terminal_provider_model, "repairUsed": repair_used,
                         }
                     # A complete native answer needs no extra model call. If its
@@ -2325,7 +2527,9 @@ class McaiGraph:
                         }])
             if error is None:
                 return {
-                    "decision": decision, "requestId": request_id,
+                    "decision": _enforce_plugin_compatibility_scope(
+                        _enforce_log_time_scope(decision, observations), message, observations,
+                    ), "requestId": request_id,
                     "providerModel": terminal_provider_model, "repairUsed": repair_used,
                 }
             attempts.append({"model": self.provider.config.model, "mode": "native_tools", "attempt": attempt, "code": error})
