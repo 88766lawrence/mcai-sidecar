@@ -33,10 +33,12 @@ from mcai_graph.graph import (
     _validate_agent_loop_decision,
     _unique_json_object,
     _planner_prompt,
+    _paper_fabric_comparison_answer,
     _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
     _thread_id,
+    _unavailable_instance_action_answer,
 )
 
 SOURCE_CATALOG = {
@@ -86,6 +88,23 @@ class GraphTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.graph.close()
         self.temp.cleanup()
+
+    def test_stopped_instance_does_not_substitute_lifecycle_or_plugin_tools(self):
+        instance = {"name": "测试", "state": "stopped"}
+        restart = _unavailable_instance_action_answer("重启这个测试实例", instance)
+        self.assertIn("无法执行重启", restart)
+        self.assertIn("没有替换为启动", restart)
+        inventory = _unavailable_instance_action_answer("查看服务器插件有哪些", instance)
+        self.assertIn("无法从控制台查询已加载的插件", inventory)
+        self.assertIsNone(_unavailable_instance_action_answer("查看插件目录里有哪些文件", instance))
+        self.assertIsNone(_unavailable_instance_action_answer("不要重启，查看日志", instance))
+
+    def test_paper_fabric_comparison_keeps_client_requirement_conditional(self):
+        answer = _paper_fabric_comparison_answer("Paper 和 Fabric 有什么区别？")
+        self.assertIn("原版客户端", answer)
+        self.assertIn("取决于具体模组", answer)
+        self.assertIn("纯服务端模组可以不要求", answer)
+        self.assertIsNone(_paper_fabric_comparison_answer("安装 Paper 1.21.1"))
 
     def test_direct_answers_reject_internal_reasoning_and_instance_identifiers(self):
         examples = (
