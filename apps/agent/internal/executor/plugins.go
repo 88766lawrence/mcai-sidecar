@@ -104,6 +104,10 @@ func (r *officialPluginResolver) resolve(ctx context.Context, project, loader, m
 		reportPluginProgress(progress, "Modrinth", pluginResolutionStatus(metadataOnly))
 		return artifact, nil
 	}
+	if !errors.Is(modrinthErr, errNoCompatiblePluginVersion) {
+		reportPluginProgress(progress, "Modrinth", "查询或校验失败，停止来源回退")
+		return resolvedPlugin{}, fmt.Errorf("Modrinth lookup failed: %w", modrinthErr)
+	}
 	var attempts []string
 	attempts = append(attempts, "Modrinth: "+modrinthErr.Error())
 	reportPluginProgress(progress, "Modrinth", "未找到可用制品，切换下一可信来源")
@@ -113,6 +117,10 @@ func (r *officialPluginResolver) resolve(ctx context.Context, project, loader, m
 		if hangarErr == nil {
 			reportPluginProgress(progress, "Hangar", pluginResolutionStatus(metadataOnly))
 			return artifact, nil
+		}
+		if !errors.Is(hangarErr, errNoCompatiblePluginVersion) {
+			reportPluginProgress(progress, "Hangar", "查询或校验失败，停止来源回退")
+			return resolvedPlugin{}, fmt.Errorf("Hangar lookup failed after Modrinth had no compatible version: %w", hangarErr)
 		}
 		attempts = append(attempts, "Hangar: "+hangarErr.Error())
 		reportPluginProgress(progress, "Hangar", "未找到可用制品，切换下一可信来源")
@@ -125,19 +133,14 @@ func (r *officialPluginResolver) resolve(ctx context.Context, project, loader, m
 			reportPluginProgress(progress, "official GitHub", pluginResolutionStatus(metadataOnly))
 			return official, nil
 		}
+		if !errors.Is(githubErr, errNoCompatiblePluginVersion) {
+			reportPluginProgress(progress, "official GitHub", "查询或校验失败，停止来源回退")
+			return resolvedPlugin{}, fmt.Errorf("official GitHub lookup failed after other sources had no compatible version: %w", githubErr)
+		}
 		attempts = append(attempts, "official GitHub: "+githubErr.Error())
 		reportPluginProgress(progress, "official GitHub", "没有可用的已校验发布制品")
 	}
-	if len(attempts) == 1 {
-		return resolvedPlugin{}, modrinthErr
-	}
-	// Preserve the typed business-absence classification across fallback
-	// sources. The caller may then report an auditable metadata result instead
-	// of turning "no compatible artifact" into an infrastructure failure.
-	if errors.Is(modrinthErr, errNoCompatiblePluginVersion) {
-		return resolvedPlugin{}, fmt.Errorf("%w: no trusted compatible artifact found after %d sources: %s", errNoCompatiblePluginVersion, len(attempts), strings.Join(attempts, "; "))
-	}
-	return resolvedPlugin{}, fmt.Errorf("no trusted compatible artifact found after %d sources: %s", len(attempts), strings.Join(attempts, "; "))
+	return resolvedPlugin{}, fmt.Errorf("%w: no trusted compatible artifact found after %d sources: %s", errNoCompatiblePluginVersion, len(attempts), strings.Join(attempts, "; "))
 }
 
 func pluginResolutionStatus(metadataOnly bool) string {
@@ -193,7 +196,10 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 				ExternalURL string `json:"externalUrl"`
 				DownloadURL string `json:"downloadUrl"`
 			} `json:"downloads"`
-			PluginDependencies   map[string]any      `json:"pluginDependencies"`
+			PluginDependencies map[string][]struct {
+				Name     string `json:"name"`
+				Required *bool  `json:"required"`
+			} `json:"pluginDependencies"`
 			PlatformDependencies map[string][]string `json:"platformDependencies"`
 		} `json:"result"`
 	}
@@ -204,9 +210,6 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 		if version.ID <= 0 || version.Name == "" || version.Visibility != "public" || !strings.EqualFold(version.Channel.Name, "Release") {
 			continue
 		}
-		if len(version.PluginDependencies) > 0 {
-			return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares plugin dependencies that require separate approval", version.Name)
-		}
 		compatible := false
 		for _, candidate := range version.PlatformDependencies["PAPER"] {
 			if candidate == minecraftVersion {
@@ -216,6 +219,11 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 		}
 		if !compatible {
 			continue
+		}
+		for _, dependency := range version.PluginDependencies["PAPER"] {
+			if dependency.Required == nil || *dependency.Required {
+				return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
+			}
 		}
 		download, ok := version.Downloads["PAPER"]
 		if !ok {
@@ -264,7 +272,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			Source: "hangar", Compatibility: "exact-game-version", Contents: contents,
 		}, nil
 	}
-	return resolvedPlugin{}, fmt.Errorf("Hangar has no release compatible with Minecraft %s", minecraftVersion)
+	return resolvedPlugin{}, fmt.Errorf("%w: Hangar has no release compatible with Minecraft %s", errNoCompatiblePluginVersion, minecraftVersion)
 }
 
 func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project string, versionID int64, versionNumber, externalURL string, metadataOnly bool) (resolvedPlugin, error) {
@@ -361,7 +369,7 @@ func (r *officialPluginResolver) findExactHangarProject(ctx context.Context, que
 			}
 		}
 	}
-	return "", fmt.Errorf("Hangar search found no exact public project compatible with Minecraft %s", minecraftVersion)
+	return "", fmt.Errorf("%w: Hangar search found no exact public project compatible with Minecraft %s", errNoCompatiblePluginVersion, minecraftVersion)
 }
 
 func normalizePluginIdentity(value string) string {
@@ -446,9 +454,12 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 		return resolvedPlugin{}, errors.New("Modrinth did not provide a primary JAR with a SHA-512 hash")
 	}
 	artifactURL, err := url.Parse(selected.URL)
+	if err != nil || artifactURL == nil {
+		return resolvedPlugin{}, errors.New("Modrinth returned an untrusted artifact URL")
+	}
 	trustedOfficial := artifactURL.Scheme == "https" && artifactURL.Hostname() == "cdn.modrinth.com"
 	trustedTest := r.apiBase != modrinthAPI && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
-	if err != nil || (!trustedOfficial && !trustedTest) {
+	if !trustedOfficial && !trustedTest {
 		return resolvedPlugin{}, errors.New("Modrinth returned an untrusted artifact URL")
 	}
 	declared := strings.ToLower(selected.Hashes.SHA512)
@@ -567,7 +578,7 @@ func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, proje
 		}
 		return resolvedPlugin{}, fmt.Errorf("official GitHub release %s has no expected core JAR", release.TagName)
 	}
-	return resolvedPlugin{}, fmt.Errorf("official GitHub releases do not declare support for Minecraft %s", minecraftVersion)
+	return resolvedPlugin{}, fmt.Errorf("%w: official GitHub releases do not declare support for Minecraft %s", errNoCompatiblePluginVersion, minecraftVersion)
 }
 
 func officialReleaseCompatibility(body, minecraftVersion string) (string, bool) {
@@ -681,6 +692,9 @@ func (r *officialPluginResolver) getHangarJSON(ctx context.Context, endpoint str
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w: Hangar API returned HTTP 404", errNoCompatiblePluginVersion)
+		}
 		return fmt.Errorf("Hangar API returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
@@ -706,6 +720,9 @@ func (r *officialPluginResolver) getJSON(ctx context.Context, endpoint string, o
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w: Modrinth returned HTTP 404", errNoCompatiblePluginVersion)
+		}
 		return fmt.Errorf("Modrinth returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
