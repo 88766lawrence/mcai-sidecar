@@ -745,6 +745,26 @@ def _required_live_tool(message: str, available: set[str]) -> str | None:
     return None
 
 
+def _explicit_live_decision(message: str, tools: list[dict[str, Any]], instance: dict[str, Any]) -> dict[str, Any] | None:
+    """Build schema-checked calls for narrow, unambiguous live requests."""
+    required = _required_live_tool(message, {item["name"] for item in tools})
+    if required == "instance.restart":
+        arguments = {"target": str(instance.get("id") or "")}
+    elif required == "config.inspect":
+        path_match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+\.(?:properties|ya?ml|json|conf))(?![A-Za-z0-9_.-])", message, re.I)
+        if not path_match:
+            return None
+        keys = list(dict.fromkeys(re.findall(r"(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9_-]+)(?![A-Za-z0-9_.-])", message)))
+        if not keys:
+            return None
+        arguments = {"path": path_match.group(1), "keys": keys[:32]}
+    else:
+        return None
+    decision = {"action": "tool_call", "tool": required, "arguments": arguments,
+                "reason": "正在使用请求所需的受控工具。"}
+    return decision if _validate_agent_loop_decision(decision, tools, [], {"maxToolCalls": 19}) is None else None
+
+
 def _unavailable_instance_action_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Do not replace an unavailable runtime action with a different tool."""
     if str(instance.get("state") or "").strip().lower() != "stopped":
@@ -2002,6 +2022,10 @@ class McaiGraph:
         required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
         if round_number == 1 and not observations:
+            explicit_live = _explicit_live_decision(message, tools, instance)
+            if explicit_live is not None:
+                return {"decision": explicit_live, "requestId": request_id,
+                        "providerModel": "explicit-live-evidence", "repairUsed": False}
             snapshot_answer = _instance_snapshot_answer(message, instance)
             if snapshot_answer is not None:
                 return {
