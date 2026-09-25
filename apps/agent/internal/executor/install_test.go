@@ -251,6 +251,28 @@ func TestLogsQueryReturnsSanitizedRecentEvidence(t *testing.T) {
 	}
 }
 
+func TestLogsQueryPrefersCurrentLogOverLongerPanelHistory(t *testing.T) {
+	p := &installProvider{
+		outputBefore: strings.Repeat("[01:00:00] [Server thread/ERROR]: old Watchdog timeout\n", 20),
+		logBefore:    "[12:00:00] [Server thread/WARN]: Essentials is running on an unsupported server version",
+	}
+	executor := NewWithReleaseResolver("", nil, nil)
+	var evidence string
+	err := executor.executeStep(context.Background(), p, protocol.TaskPlan{InstanceRef: "mcs:daemon:instance"}, protocol.TaskStep{
+		Tool: "logs.query", Risk: "read",
+	}, func(_, kind, summary string, _ ...map[string]any) {
+		if kind == "logs" {
+			evidence = summary
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(evidence, "unsupported server version") || strings.Contains(evidence, "old Watchdog timeout") || !strings.Contains(evidence, "matches=1") {
+		t.Fatalf("logs.query used stale panel history instead of the current log: %q", evidence)
+	}
+}
+
 func TestLogsQueryAppliesBoundedWindowAndFiltersWithTypedMetadata(t *testing.T) {
 	p := &installProvider{logBefore: strings.Join([]string{
 		"[10:00:00] [Server thread/INFO]: old connection timed out",

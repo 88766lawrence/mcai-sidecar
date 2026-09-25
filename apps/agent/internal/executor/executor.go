@@ -367,7 +367,9 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 		}
 		output, err := p.ReadOutput(ctx, plan.InstanceRef, 256)
 		latestLog, latestLogErr := p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
-		if latestLogErr == nil && len(latestLog) > len(output) {
+		// The panel output can retain an older run. latest.log is the
+		// current log source even when it is shorter than that output.
+		if latestLogErr == nil {
 			output = string(latestLog)
 			err = nil
 		}
