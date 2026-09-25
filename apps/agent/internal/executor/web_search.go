@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,11 @@ type braveWebSearcher struct {
 	apiKey     string
 }
 
+type githubOrgSiteWebSearcher struct {
+	httpClient  *http.Client
+	orgEndpoint string
+}
+
 type cachedWebSearchResponse struct {
 	response webSearchResponse
 	expires  time.Time
@@ -72,6 +78,7 @@ type cachedWebSearchResponse struct {
 
 type fallbackWebSearcher struct {
 	primary, secondary  webSearcher
+	tertiary            webSearcher
 	mu                  sync.Mutex
 	cache               map[string]cachedWebSearchResponse
 	primaryBlockedUntil time.Time
@@ -84,6 +91,22 @@ var (
 	webSearchClassRE        = regexp.MustCompile(`(?i)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 )
 
+func newPublicWebSearchClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = publicInternetDialContext
+	return &http.Client{
+		Transport: transport,
+		Timeout:   12 * time.Second,
+		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("web search exceeded five redirects")
+			}
+			return validatePublicDownloadURL(next.URL)
+		},
+	}
+}
+
 func newWebSearcherFromEnv() webSearcher {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("MCAI_SEARCH_PROVIDER")))
 	if provider == "" || provider == "auto" {
@@ -92,8 +115,12 @@ func newWebSearcherFromEnv() webSearcher {
 				httpClient: &http.Client{Timeout: 12 * time.Second},
 				endpoint:   "https://duckduckgo.com/html/",
 			},
-			secondary: &bingRSSWebSearcher{httpClient: &http.Client{Timeout: 12 * time.Second}},
-			cache:     make(map[string]cachedWebSearchResponse),
+			secondary: &githubOrgSiteWebSearcher{
+				httpClient:  newPublicWebSearchClient(),
+				orgEndpoint: "https://api.github.com/orgs/",
+			},
+			tertiary: &bingRSSWebSearcher{httpClient: &http.Client{Timeout: 12 * time.Second}},
+			cache:    make(map[string]cachedWebSearchResponse),
 		}
 	}
 	if provider == "duckduckgo-html" {
@@ -192,7 +219,7 @@ func validatedWebSearchQuery(args map[string]any) (string, error) {
 // results become evidence for the Agent.
 func relevantWebSearchResults(query string, results []webSearchResult) []webSearchResult {
 	siteHost, sitePath := "", ""
-	brand := ""
+	brand := distinctiveWebSearchBrand(query)
 	for _, field := range strings.Fields(query) {
 		token := strings.Trim(field, `"'(),;`)
 		if strings.HasPrefix(strings.ToLower(token), "site:") {
@@ -202,21 +229,6 @@ func relevantWebSearchResults(query string, results []webSearchResult) []webSear
 				sitePath = strings.TrimRight(strings.ToLower(candidate.Path), "/")
 			}
 			continue
-		}
-		if brand != "" {
-			continue
-		}
-		runes := []rune(token)
-		if len(runes) < 5 {
-			continue
-		}
-		lower, innerUpper := false, false
-		for index, letter := range runes {
-			lower = lower || unicode.IsLower(letter)
-			innerUpper = innerUpper || (index > 0 && unicode.IsUpper(letter))
-		}
-		if lower && innerUpper {
-			brand = strings.ToLower(token)
 		}
 	}
 	filtered := make([]webSearchResult, 0, len(results))
@@ -238,6 +250,28 @@ func relevantWebSearchResults(query string, results []webSearchResult) []webSear
 		filtered = append(filtered, result)
 	}
 	return filtered
+}
+
+func distinctiveWebSearchBrand(query string) string {
+	for _, field := range strings.Fields(query) {
+		token := strings.Trim(field, `"'(),;`)
+		if strings.HasPrefix(strings.ToLower(token), "site:") {
+			continue
+		}
+		runes := []rune(token)
+		if len(runes) < 5 {
+			continue
+		}
+		lower, innerUpper := false, false
+		for index, letter := range runes {
+			lower = lower || unicode.IsLower(letter)
+			innerUpper = innerUpper || (index > 0 && unicode.IsUpper(letter))
+		}
+		if lower && innerUpper {
+			return strings.ToLower(token)
+		}
+	}
+	return ""
 }
 
 func (s *fallbackWebSearcher) Search(ctx context.Context, query string) (webSearchResponse, error) {
@@ -278,9 +312,22 @@ func (s *fallbackWebSearcher) Search(ctx context.Context, query string) (webSear
 			s.store(query, response)
 			return response, nil
 		}
+		err = errors.New("github-org-site returned no relevant results")
+	}
+	if s.tertiary == nil {
+		return webSearchResponse{}, fmt.Errorf("web search failed: duckduckgo: %v; github-org-site: %w", primaryError, err)
+	}
+	secondaryError := err
+	response, err = s.tertiary.Search(ctx, query)
+	if err == nil {
+		response.Results = relevantWebSearchResults(query, response.Results)
+		if len(response.Results) > 0 {
+			s.store(query, response)
+			return response, nil
+		}
 		err = errors.New("bing-rss returned no relevant results")
 	}
-	return webSearchResponse{}, fmt.Errorf("web search failed: duckduckgo: %v; bing-rss: %w", primaryError, err)
+	return webSearchResponse{}, fmt.Errorf("web search failed: duckduckgo: %v; github-org-site: %v; bing-rss: %w", primaryError, secondaryError, err)
 }
 
 func (s *fallbackWebSearcher) store(query string, response webSearchResponse) {
@@ -326,6 +373,157 @@ func (s *duckDuckGoHTMLWebSearcher) Search(ctx context.Context, query string) (w
 		return webSearchResponse{}, errors.New("web search returned no organic results")
 	}
 	return webSearchResponse{Provider: "duckduckgo-html", Results: results}, nil
+}
+
+// GitHub organization profiles often link to the project's own website. When
+// an exact product name appears in the query, follow that link and return
+// matching same-site navigation links with their provenance intact.
+func (s *githubOrgSiteWebSearcher) Search(ctx context.Context, query string) (webSearchResponse, error) {
+	brand := distinctiveWebSearchBrand(query)
+	if brand == "" || s.httpClient == nil || s.orgEndpoint == "" {
+		return webSearchResponse{}, errors.New("github organization site search is unavailable for this query")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.orgEndpoint+url.PathEscape(brand), nil)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("create GitHub organization request: %w", err)
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "MCAI-Sidecar/0.1")
+	response, err := s.httpClient.Do(request)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("GitHub organization request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests {
+		return webSearchResponse{}, fmt.Errorf("%w: GitHub HTTP %d", errWebSearchRateLimited, response.StatusCode)
+	}
+	if response.StatusCode != http.StatusOK {
+		return webSearchResponse{}, fmt.Errorf("GitHub organization returned HTTP %d", response.StatusCode)
+	}
+	limited, err := io.ReadAll(io.LimitReader(response.Body, maxWebSearchResponseBytes+1))
+	if err != nil || len(limited) > maxWebSearchResponseBytes {
+		return webSearchResponse{}, errors.New("GitHub organization response is unreadable or too large")
+	}
+	var organization struct {
+		Login string `json:"login"`
+		Blog  string `json:"blog"`
+	}
+	if json.Unmarshal(limited, &organization) != nil || !strings.EqualFold(organization.Login, brand) {
+		return webSearchResponse{}, errors.New("GitHub organization did not match the project name")
+	}
+	home, err := url.Parse(strings.TrimSpace(organization.Blog))
+	if err != nil || home.Scheme != "https" || validatePublicDownloadURL(home) != nil {
+		return webSearchResponse{}, errors.New("GitHub organization has no public HTTPS website")
+	}
+	request, err = http.NewRequestWithContext(ctx, http.MethodGet, home.String(), nil)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("create project site request: %w", err)
+	}
+	request.Header.Set("Accept", "text/html")
+	request.Header.Set("User-Agent", "MCAI-Sidecar/0.1")
+	page, err := s.httpClient.Do(request)
+	if err != nil {
+		return webSearchResponse{}, fmt.Errorf("project site request failed: %w", err)
+	}
+	defer page.Body.Close()
+	if page.StatusCode != http.StatusOK || !strings.Contains(strings.ToLower(page.Header.Get("Content-Type")), "text/html") {
+		return webSearchResponse{}, fmt.Errorf("project site returned HTTP %d or non-HTML content", page.StatusCode)
+	}
+	limited, err = io.ReadAll(io.LimitReader(page.Body, maxWebSearchResponseBytes+1))
+	if err != nil || len(limited) > maxWebSearchResponseBytes {
+		return webSearchResponse{}, errors.New("project site response is unreadable or too large")
+	}
+	results := projectSiteLinks(page.Request.URL, string(limited), query, organization.Login)
+	if len(results) == 0 {
+		return webSearchResponse{}, errors.New("project site returned no matching links")
+	}
+	return webSearchResponse{Provider: "github-org-site", Results: results}, nil
+}
+
+func projectSiteLinks(home *url.URL, document, query, brand string) []webSearchResult {
+	terms := projectSiteSearchTerms(query, brand)
+	if home == nil {
+		return nil
+	}
+	type scoredLink struct {
+		result webSearchResult
+		score  int
+	}
+	links := make([]scoredLink, 0)
+	seen := make(map[string]bool)
+	for _, anchor := range webSearchAnchorRE.FindAllStringSubmatch(document, -1) {
+		raw := webSearchAttribute(webSearchHrefRE, anchor[1])
+		candidate, err := url.Parse(raw)
+		if err != nil || raw == "" || strings.HasPrefix(raw, "#") {
+			continue
+		}
+		link := home.ResolveReference(candidate)
+		if link.Scheme != "https" || !strings.EqualFold(link.Hostname(), home.Hostname()) || link.User != nil {
+			continue
+		}
+		link.Fragment = ""
+		if seen[link.String()] {
+			continue
+		}
+		label := boundedWebText(html.UnescapeString(stripWebMarkup(anchor[2])), 300)
+		matchText := strings.ToLower(label + " " + link.Path)
+		score := 0
+		for _, term := range terms {
+			if strings.Contains(matchText, term) {
+				score++
+			}
+		}
+		if score == 0 {
+			continue
+		}
+		seen[link.String()] = true
+		if label == "" {
+			label = link.Path
+		}
+		links = append(links, scoredLink{result: webSearchResult{
+			Title:   boundedWebText(brand+" — "+label, 300),
+			Link:    link.String(),
+			Snippet: "Linked from the project website listed on its matching GitHub organization profile.",
+		}, score: score})
+	}
+	sort.SliceStable(links, func(i, j int) bool { return links[i].score > links[j].score })
+	results := make([]webSearchResult, 0, maxWebSearchResults)
+	for _, link := range links {
+		if len(results) >= maxWebSearchResults {
+			break
+		}
+		results = append(results, link.result)
+	}
+	if len(results) == 0 {
+		results = append(results, webSearchResult{
+			Title:   brand + " — project website",
+			Link:    home.String(),
+			Snippet: "Project website listed on its matching GitHub organization profile.",
+		})
+	}
+	return results
+}
+
+func projectSiteSearchTerms(query, brand string) []string {
+	stopwords := map[string]bool{"official": true, "website": true, "site": true, "page": true, "link": true, "latest": true, "minecraft": true, "plugin": true, "server": true, "paper": true}
+	terms := make([]string, 0)
+	if strings.Contains(query, "下载") {
+		terms = append(terms, "download")
+	}
+	if strings.Contains(query, "文档") {
+		terms = append(terms, "doc")
+	}
+	for _, field := range strings.Fields(strings.ToLower(query)) {
+		term := strings.Trim(field, `"'(),;:.!?`)
+		if term == brand || stopwords[term] || strings.HasPrefix(term, "site:") || len(term) < 4 {
+			continue
+		}
+		term = strings.TrimSuffix(term, "s")
+		if term != "" {
+			terms = append(terms, term)
+		}
+	}
+	return terms
 }
 
 func parseDuckDuckGoHTMLResults(document string) []webSearchResult {
