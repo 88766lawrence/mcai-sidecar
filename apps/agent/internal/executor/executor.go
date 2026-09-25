@@ -396,6 +396,7 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 			filterLabel = "all"
 		}
 		summary := fmt.Sprintf("Log query result: matches=%d; window_minutes=%d; scanned_lines=%d; sample_count=%d; query_digest=%s; filters=%s", len(matches), windowMinutes, len(recent), len(sanitizedSamples), query.Digest, filterLabel)
+		summary += "\nTime window is relative to the latest timestamp in the available log; absolute wall-clock recency is unverified."
 		if len(sanitizedSamples) == 0 {
 			summary += "\nMatched samples: <none>"
 		} else {
