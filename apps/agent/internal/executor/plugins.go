@@ -29,6 +29,7 @@ const (
 )
 
 var pluginProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
+var pluginJarNamePattern = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9 ._()+-]{0,244}\.jar$`)
 var minecraftReleasePattern = regexp.MustCompile(`(?m)(?:^|[^0-9])(1\.\d+(?:\.\d+)?)(?:[^0-9]|$)`)
 var errNoCompatiblePluginVersion = errors.New("no compatible plugin version")
 
@@ -123,22 +124,7 @@ func (r *officialPluginResolver) resolve(ctx context.Context, project, loader, m
 			return resolvedPlugin{}, fmt.Errorf("Hangar lookup failed after Modrinth had no compatible version: %w", hangarErr)
 		}
 		attempts = append(attempts, "Hangar: "+hangarErr.Error())
-		reportPluginProgress(progress, "Hangar", "未找到可用制品，切换下一可信来源")
-	}
-	source, supported := githubPluginSources[project]
-	if supported {
-		reportPluginProgress(progress, "official GitHub", "正在查询项目官方发布页")
-		official, githubErr := r.resolveGitHubRelease(ctx, project, loader, minecraftVersion, source, metadataOnly)
-		if githubErr == nil {
-			reportPluginProgress(progress, "official GitHub", pluginResolutionStatus(metadataOnly))
-			return official, nil
-		}
-		if !errors.Is(githubErr, errNoCompatiblePluginVersion) {
-			reportPluginProgress(progress, "official GitHub", "查询或校验失败，停止来源回退")
-			return resolvedPlugin{}, fmt.Errorf("official GitHub lookup failed after other sources had no compatible version: %w", githubErr)
-		}
-		attempts = append(attempts, "official GitHub: "+githubErr.Error())
-		reportPluginProgress(progress, "official GitHub", "没有可用的已校验发布制品")
+		reportPluginProgress(progress, "Hangar", "没有可用的已审核兼容制品")
 	}
 	return resolvedPlugin{}, fmt.Errorf("%w: no trusted compatible artifact found after %d sources: %s", errNoCompatiblePluginVersion, len(attempts), strings.Join(attempts, "; "))
 }
@@ -206,6 +192,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 	if err := r.getHangarJSON(ctx, endpoint, &response); err != nil {
 		return resolvedPlugin{}, err
 	}
+	var lastIncompatibleTag error
 	for _, version := range response.Result {
 		if version.ID <= 0 || version.Name == "" || version.Visibility != "public" || !strings.EqualFold(version.Channel.Name, "Release") {
 			continue
@@ -217,7 +204,16 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 				break
 			}
 		}
-		if !compatible {
+		download, ok := version.Downloads["PAPER"]
+		if !ok {
+			continue
+		}
+		// A reviewed Hangar release may link to its official GitHub tag
+		// instead of declaring every compatible patch version. The exact
+		// asset and release-train compatibility are checked below.
+		reviewedTag := strings.EqualFold(version.ReviewState, "reviewed") && download.DownloadURL == "" &&
+			(strings.Contains(download.ExternalURL, "/releases/tag/") || strings.Contains(download.ExternalURL, "/releases/tags/"))
+		if !compatible && !reviewedTag {
 			continue
 		}
 		for _, dependency := range version.PluginDependencies["PAPER"] {
@@ -225,22 +221,29 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 				return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
 			}
 		}
-		download, ok := version.Downloads["PAPER"]
-		if !ok {
-			continue
-		}
 		if download.ExternalURL != "" && download.DownloadURL == "" {
-			return r.resolveReviewedHangarGitHubAsset(ctx, project, version.ID, version.Name, download.ExternalURL, metadataOnly)
+			if !strings.EqualFold(version.ReviewState, "reviewed") {
+				return resolvedPlugin{}, errors.New("Hangar external release is not reviewed")
+			}
+			artifact, err := r.resolveReviewedHangarGitHubAsset(ctx, project, minecraftVersion, version.ID, version.Name, download.ExternalURL, metadataOnly)
+			if errors.Is(err, errNoCompatiblePluginVersion) && !compatible {
+				lastIncompatibleTag = err
+				continue
+			}
+			return artifact, err
 		}
 		if download.DownloadURL == "" {
 			continue
 		}
-		if filepath.Base(download.FileInfo.Name) != download.FileInfo.Name || !strings.HasSuffix(strings.ToLower(download.FileInfo.Name), ".jar") {
+		if !pluginJarNamePattern.MatchString(download.FileInfo.Name) {
 			return resolvedPlugin{}, errors.New("Hangar did not provide a safe JAR filename")
 		}
 		declared256 := strings.ToLower(strings.TrimSpace(download.FileInfo.SHA256Hash))
 		if len(declared256) != 64 || download.FileInfo.SizeBytes <= 0 || download.FileInfo.SizeBytes > 64<<20 {
 			return resolvedPlugin{}, errors.New("Hangar release has incomplete artifact integrity metadata")
+		}
+		if _, err := hex.DecodeString(declared256); err != nil {
+			return resolvedPlugin{}, errors.New("Hangar release has an invalid SHA-256 digest")
 		}
 		artifactURL, err := url.Parse(download.DownloadURL)
 		trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "hangarcdn.papermc.io"
@@ -272,21 +275,42 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			Source: "hangar", Compatibility: "exact-game-version", Contents: contents,
 		}, nil
 	}
+	if lastIncompatibleTag != nil {
+		return resolvedPlugin{}, fmt.Errorf("%w: Hangar has no release compatible with Minecraft %s; %v", errNoCompatiblePluginVersion, minecraftVersion, lastIncompatibleTag)
+	}
 	return resolvedPlugin{}, fmt.Errorf("%w: Hangar has no release compatible with Minecraft %s", errNoCompatiblePluginVersion, minecraftVersion)
 }
 
-func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project string, versionID int64, versionNumber, externalURL string, metadataOnly bool) (resolvedPlugin, error) {
+func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Context, project, minecraftVersion string, versionID int64, versionNumber, externalURL string, metadataOnly bool) (resolvedPlugin, error) {
 	artifactURL, err := url.Parse(externalURL)
-	if err != nil || artifactURL.Scheme != "https" || artifactURL.Hostname() != "github.com" {
+	if err != nil || artifactURL.Scheme != "https" || artifactURL.Host != "github.com" || artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.Fragment != "" {
 		return resolvedPlugin{}, errors.New("reviewed Hangar release points to an unsupported external host")
 	}
 	parts := strings.Split(strings.Trim(artifactURL.Path, "/"), "/")
-	if len(parts) < 6 || parts[2] != "releases" || parts[3] != "download" {
-		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL is not a release asset")
+	if len(parts) < 5 || parts[2] != "releases" || parts[0] == "" || parts[1] == "" || parts[4] == "" {
+		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL is not a release asset or tag")
 	}
 	owner, repository, tag := parts[0], parts[1], parts[4]
-	assetName, err := url.PathUnescape(strings.Join(parts[5:], "/"))
-	if err != nil || filepath.Base(assetName) != assetName || !strings.HasSuffix(strings.ToLower(assetName), ".jar") {
+	assetName, expectedURL := "", ""
+	compatibility := "exact-game-version"
+	switch {
+	case len(parts) == 6 && parts[3] == "download":
+		assetName = parts[5]
+		expectedURL = externalURL
+	case len(parts) == 5 && (parts[3] == "tag" || parts[3] == "tags"):
+		// A tag page is not a downloadable artifact. Accept it only when a
+		// reviewed Hangar record and a registered project identity agree on
+		// the repository and exact core JAR name.
+		source, ok := githubPluginSources[project]
+		if !ok || !strings.EqualFold(owner, source.Owner) || !strings.EqualFold(repository, source.Repository) || strings.TrimPrefix(tag, "v") != strings.TrimPrefix(versionNumber, "v") {
+			return resolvedPlugin{}, errors.New("reviewed Hangar tag does not identify a registered official release")
+		}
+		assetName = source.AssetPrefix + strings.TrimPrefix(tag, "v") + ".jar"
+		expectedURL = "https://github.com/" + owner + "/" + repository + "/releases/download/" + tag + "/" + assetName
+	default:
+		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL is not a release asset or tag")
+	}
+	if !pluginJarNamePattern.MatchString(assetName) {
 		return resolvedPlugin{}, errors.New("reviewed Hangar GitHub URL has an unsafe asset name")
 	}
 	if r.githubBase == "" {
@@ -294,8 +318,10 @@ func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Co
 	}
 	endpoint := strings.TrimRight(r.githubBase, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository) + "/releases/tags/" + url.PathEscape(tag)
 	var release struct {
-		Draft      bool `json:"draft"`
-		Prerelease bool `json:"prerelease"`
+		TagName    string `json:"tag_name"`
+		Body       string `json:"body"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
 		Assets     []struct {
 			Name               string `json:"name"`
 			BrowserDownloadURL string `json:"browser_download_url"`
@@ -306,23 +332,33 @@ func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Co
 	if err := r.getGitHubJSON(ctx, endpoint, &release); err != nil {
 		return resolvedPlugin{}, fmt.Errorf("verify reviewed Hangar external release: %w", err)
 	}
-	if release.Draft || release.Prerelease {
+	if release.Draft || release.Prerelease || release.TagName != tag {
 		return resolvedPlugin{}, errors.New("reviewed Hangar external release is not stable")
 	}
+	if len(parts) == 5 {
+		var compatible bool
+		compatibility, compatible = officialReleaseCompatibility(release.Body, minecraftVersion)
+		if !compatible {
+			return resolvedPlugin{}, fmt.Errorf("%w: reviewed GitHub release %s does not declare support for Minecraft %s", errNoCompatiblePluginVersion, tag, minecraftVersion)
+		}
+	}
 	for _, asset := range release.Assets {
-		if asset.Name != assetName || asset.BrowserDownloadURL != externalURL {
+		if asset.Name != assetName || asset.BrowserDownloadURL != expectedURL {
 			continue
 		}
 		declared256 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.Digest)), "sha256:")
 		if len(declared256) != 64 || asset.Size <= 0 || asset.Size > 64<<20 {
 			return resolvedPlugin{}, errors.New("GitHub release asset has incomplete integrity metadata")
 		}
+		if _, err := hex.DecodeString(declared256); err != nil {
+			return resolvedPlugin{}, errors.New("GitHub release asset has an invalid SHA-256 digest")
+		}
 		if metadataOnly {
 			return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(versionID, 10), VersionNumber: versionNumber,
-				FileName: assetName, SourceURL: externalURL, LocalSHA256: declared256,
-				Source: "hangar-reviewed-github", Compatibility: "exact-game-version"}, nil
+				FileName: assetName, SourceURL: expectedURL, LocalSHA256: declared256,
+				Source: "hangar-reviewed-github", Compatibility: compatibility}, nil
 		}
-		contents, err := r.downloadPluginArtifact(ctx, externalURL)
+		contents, err := r.downloadPluginArtifact(ctx, expectedURL)
 		if err != nil {
 			return resolvedPlugin{}, err
 		}
@@ -336,8 +372,8 @@ func (r *officialPluginResolver) resolveReviewedHangarGitHubAsset(ctx context.Co
 		actual512 := sha512.Sum512(contents)
 		return resolvedPlugin{
 			Project: project, VersionID: strconv.FormatInt(versionID, 10), VersionNumber: versionNumber,
-			FileName: assetName, SourceURL: externalURL, SourceSHA512: hex.EncodeToString(actual512[:]),
-			LocalSHA256: declared256, Source: "hangar-reviewed-github", Compatibility: "exact-game-version", Contents: contents,
+			FileName: assetName, SourceURL: expectedURL, SourceSHA512: hex.EncodeToString(actual512[:]),
+			LocalSHA256: declared256, Source: "hangar-reviewed-github", Compatibility: compatibility, Contents: contents,
 		}, nil
 	}
 	return resolvedPlugin{}, errors.New("GitHub release API did not contain the exact Hangar-linked asset")
@@ -450,8 +486,11 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 			}
 		}
 	}
-	if selected == nil || filepath.Base(selected.Filename) != selected.Filename || len(selected.Hashes.SHA512) != 128 {
+	if selected == nil || !pluginJarNamePattern.MatchString(selected.Filename) || len(selected.Hashes.SHA512) != 128 {
 		return resolvedPlugin{}, errors.New("Modrinth did not provide a primary JAR with a SHA-512 hash")
+	}
+	if _, err := hex.DecodeString(selected.Hashes.SHA512); err != nil {
+		return resolvedPlugin{}, errors.New("Modrinth returned an invalid SHA-512 digest")
 	}
 	artifactURL, err := url.Parse(selected.URL)
 	if err != nil || artifactURL == nil {
@@ -499,86 +538,6 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 		LocalSHA256: hex.EncodeToString(actual256[:]), Source: "modrinth",
 		Compatibility: "exact-game-version", Contents: contents,
 	}, nil
-}
-
-func (r *officialPluginResolver) resolveGitHubRelease(ctx context.Context, project, loader, minecraftVersion string, source githubPluginSource, metadataOnly bool) (resolvedPlugin, error) {
-	loader = strings.ToLower(strings.TrimSpace(loader))
-	if loader == "purpur" || loader == "spigot" || loader == "bukkit" {
-		loader = "paper"
-	}
-	if loader != "paper" {
-		return resolvedPlugin{}, fmt.Errorf("official plugin source supports Paper-compatible servers; got %q", loader)
-	}
-	if !minecraftVersionPattern.MatchString(minecraftVersion) {
-		return resolvedPlugin{}, errors.New("official plugin resolution requires a valid Minecraft version")
-	}
-	endpoint := strings.TrimRight(r.githubBase, "/") + "/repos/" + url.PathEscape(source.Owner) + "/" + url.PathEscape(source.Repository) + "/releases?per_page=20"
-	var releases []struct {
-		ID         int64  `json:"id"`
-		TagName    string `json:"tag_name"`
-		Body       string `json:"body"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Digest             string `json:"digest"`
-		} `json:"assets"`
-	}
-	if err := r.getGitHubJSON(ctx, endpoint, &releases); err != nil {
-		return resolvedPlugin{}, err
-	}
-	for _, release := range releases {
-		if release.Draft || release.Prerelease || release.ID <= 0 || release.TagName == "" {
-			continue
-		}
-		compatibility, ok := officialReleaseCompatibility(release.Body, minecraftVersion)
-		if !ok {
-			continue
-		}
-		version := strings.TrimPrefix(release.TagName, "v")
-		expectedName := source.AssetPrefix + version + ".jar"
-		for _, asset := range release.Assets {
-			if asset.Name != expectedName || filepath.Base(asset.Name) != asset.Name {
-				continue
-			}
-			declared256 := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(asset.Digest)), "sha256:")
-			if len(declared256) != 64 {
-				return resolvedPlugin{}, errors.New("official GitHub release asset has no SHA-256 digest")
-			}
-			if _, err := hex.DecodeString(declared256); err != nil {
-				return resolvedPlugin{}, errors.New("official GitHub release asset has an invalid SHA-256 digest")
-			}
-			artifactURL, err := url.Parse(asset.BrowserDownloadURL)
-			trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "github.com"
-			trustedTest := r.githubBase != githubAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
-			if !trustedOfficial && !trustedTest {
-				return resolvedPlugin{}, errors.New("official GitHub release returned an untrusted artifact URL")
-			}
-			if metadataOnly {
-				return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(release.ID, 10), VersionNumber: version,
-					FileName: asset.Name, SourceURL: asset.BrowserDownloadURL, LocalSHA256: declared256,
-					Source: "github-official", Compatibility: compatibility}, nil
-			}
-			contents, err := r.downloadPluginArtifact(ctx, artifactURL.String())
-			if err != nil {
-				return resolvedPlugin{}, err
-			}
-			actual256 := sha256.Sum256(contents)
-			if hex.EncodeToString(actual256[:]) != declared256 {
-				return resolvedPlugin{}, errors.New("official GitHub release artifact SHA-256 does not match metadata")
-			}
-			actual512 := sha512.Sum512(contents)
-			return resolvedPlugin{
-				Project: project, VersionID: strconv.FormatInt(release.ID, 10), VersionNumber: version,
-				FileName: asset.Name, SourceURL: asset.BrowserDownloadURL,
-				SourceSHA512: hex.EncodeToString(actual512[:]), LocalSHA256: declared256,
-				Source: "github-official", Compatibility: compatibility, Contents: contents,
-			}, nil
-		}
-		return resolvedPlugin{}, fmt.Errorf("official GitHub release %s has no expected core JAR", release.TagName)
-	}
-	return resolvedPlugin{}, fmt.Errorf("%w: official GitHub releases do not declare support for Minecraft %s", errNoCompatiblePluginVersion, minecraftVersion)
 }
 
 func officialReleaseCompatibility(body, minecraftVersion string) (string, bool) {
