@@ -656,7 +656,7 @@ export interface ConversationMessage {
   task_id?: string;
   task_phase?: "request" | "completion";
   trace?: Array<{
-    stage: "routing" | "delegation" | "tool" | "review" | "revision" | "final";
+    stage: "routing" | "planning" | "delegation" | "tool" | "review" | "revision" | "final";
     label: string;
     result: string;
     approved?: boolean;
