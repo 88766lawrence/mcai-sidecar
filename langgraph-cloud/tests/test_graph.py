@@ -36,6 +36,7 @@ from mcai_graph.graph import (
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
     _health_check_next_read,
+    _health_check_final,
     _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
@@ -76,6 +77,25 @@ class LogWindowScopeTests(unittest.TestCase):
         self.assertEqual(third["tool"], "logs.query")
         self.assertEqual(third["arguments"]["window_minutes"], 60)
         self.assertEqual(third["arguments"]["max_lines"], 500)
+
+    def test_health_final_uses_all_three_observations_and_limits_log_scope(self):
+        observations = [
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "version",
+             "evidence": {"summaries": ["This server is running Paper version 1.21.1-133-ver/x\nError obtaining version information"]}},
+            {"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins",
+             "evidence": {"summaries": ["Server Plugins (2): Essentials, LuckPerms"]}},
+            {"tool": "logs.query", "status": "succeeded", "tool_call_id": "logs",
+             "evidence": {"summaries": ["Log query result: matches=8; window_minutes=60; scanned_lines=105; sample_count=5\n"
+                 "Time window is relative to the latest timestamp in the available log; absolute wall-clock recency is unverified.\n"
+                 "Matched samples:\n[04:55:05] [Server thread/ERROR]: Unsupported version"]}},
+        ]
+        decision = _health_check_final("查看服务是否有异常", observations)
+        self.assertEqual(decision["citations"], ["version", "plugins", "logs"])
+        self.assertIn("Paper 1.21.1-133", decision["answer"])
+        self.assertIn("Essentials, LuckPerms", decision["answer"])
+        self.assertIn("命中 8 条", decision["answer"])
+        self.assertIn("剩余 3 条匹配未展示或未审阅", decision["answer"])
+        self.assertIn("绝对最近一小时", decision["answer"])
 
 SOURCE_CATALOG = {
     "schema_version": "intent-source-catalog/v1",
