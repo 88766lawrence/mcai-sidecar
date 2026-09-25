@@ -35,6 +35,7 @@ from mcai_graph.graph import (
     _planner_prompt,
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
+    _health_check_next_read,
     _readonly_health_skill_intent,
     _router_prompt,
     _should_plan_request,
@@ -53,6 +54,28 @@ class LogWindowScopeTests(unittest.TestCase):
         result = _enforce_log_time_scope(decision, observations)
         self.assertIn("无法确认对应绝对最近一小时", result["answer"])
         self.assertEqual(result["citations"], ["call-log"])
+
+    def test_short_health_request_keeps_version_plugins_logs_order(self):
+        tools = [
+            {"name": "console.command", "input_schema": {"type": "object", "additionalProperties": False,
+                "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+            {"name": "logs.query", "input_schema": {"type": "object", "additionalProperties": False,
+                "properties": {"window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                    "filter_query": {"type": "object", "additionalProperties": False,
+                        "properties": {"groups": {"type": "array"}}, "required": ["groups"]}},
+                "required": ["window_minutes", "max_lines", "filter_query"]}},
+        ]
+        observations: list[dict] = []
+        first = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(first["arguments"], {"command": "version"})
+        observations.append({"tool": "console.command", "status": "succeeded", "tool_call_id": "version"})
+        second = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(second["arguments"], {"command": "plugins"})
+        observations.append({"tool": "console.command", "status": "succeeded", "tool_call_id": "plugins"})
+        third = _health_check_next_read("查看服务是否有异常", tools, observations)
+        self.assertEqual(third["tool"], "logs.query")
+        self.assertEqual(third["arguments"]["window_minutes"], 60)
+        self.assertEqual(third["arguments"]["max_lines"], 500)
 
 SOURCE_CATALOG = {
     "schema_version": "intent-source-catalog/v1",
