@@ -67,9 +67,18 @@ func configInspectObservation(contents []byte, normalizedPath string, keys []str
 			value, present := values[strings.ToLower(key)]
 			entries = append(entries, configObservationEntry(key, present, value))
 		}
-	case ".yml", ".yaml", ".json":
+	case ".yml", ".yaml":
 		var document any
 		if err := yaml.Unmarshal(contents, &document); err != nil {
+			return nil, fmt.Errorf("parse configuration for typed inspection: %w", err)
+		}
+		for _, key := range keys {
+			value, present := nestedConfigurationValue(document, strings.Split(key, "."))
+			entries = append(entries, configObservationEntry(key, present, value))
+		}
+	case ".json":
+		document, err := decodeJSONObject(contents)
+		if err != nil {
 			return nil, fmt.Errorf("parse configuration for typed inspection: %w", err)
 		}
 		for _, key := range keys {
@@ -138,7 +147,7 @@ func safeConfigScalar(value any) (any, bool) {
 		return typed, true
 	case bool:
 		return typed, true
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
 		encoded, err := json.Marshal(typed)
 		if err != nil {
 			return nil, false
