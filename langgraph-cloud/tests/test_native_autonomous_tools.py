@@ -116,6 +116,14 @@ async def test_model_receives_complete_catalog_and_owns_tool_selection():
     }
 
 
+async def test_plugin_install_is_exposed_only_after_successful_resolution():
+    tools = [{"name": "plugin.resolve"}, {"name": "plugin.install"}, {"name": "config.patch"}]
+    available = graph_module._agent_loop_tools_available_for_observations
+    assert [item["name"] for item in available(tools, [])] == ["plugin.resolve", "config.patch"]
+    assert [item["name"] for item in available(tools, [{"tool": "plugin.resolve", "status": "failed"}])] == ["plugin.resolve", "config.patch"]
+    assert [item["name"] for item in available(tools, [{"tool": "plugin.resolve", "status": "succeeded"}])] == ["plugin.resolve", "plugin.install", "config.patch"]
+
+
 async def test_natural_answer_requires_no_tool_call():
     provider = FakeNativeProvider({"content": "我是 MCAI，可以协助管理这个实例。", "tool_calls": []})
     graph = object.__new__(McaiGraph)
@@ -1013,6 +1021,7 @@ async def test_bound_instance_metadata_answers_without_model_or_internal_ids():
 async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
+        test_plugin_install_is_exposed_only_after_successful_resolution,
         test_natural_answer_requires_no_tool_call,
         test_explicit_config_read_repairs_unsupported_direct_answer,
         test_explicit_restart_repairs_unexecuted_progress_claim,

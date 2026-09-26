@@ -703,6 +703,14 @@ def _agent_loop_tools_available_for_instance(
     return [item for item in tools if item["name"] not in unavailable]
 
 
+def _agent_loop_tools_available_for_observations(
+    tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    resolved = any(item.get("tool") == "plugin.resolve" and item.get("status") == "succeeded"
+                   for item in observations)
+    return tools if resolved else [item for item in tools if item["name"] != "plugin.install"]
+
+
 def _instance_snapshot_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Answer narrow metadata questions from the bound instance snapshot."""
     query = re.sub(r"[\s？?。！!]", "", message)
@@ -2158,7 +2166,7 @@ class McaiGraph:
             raise ValueError("INVALID_LIMITS")
         max_rounds = limits_value.get("maxRounds")
         max_tool_calls = limits_value.get("maxToolCalls")
-        if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or not 1 <= max_rounds <= 8:
+        if not isinstance(max_rounds, int) or isinstance(max_rounds, bool) or not 1 <= max_rounds <= 16:
             raise ValueError("INVALID_LIMITS")
         if not isinstance(max_tool_calls, int) or isinstance(max_tool_calls, bool) or not 1 <= max_tool_calls <= 19:
             raise ValueError("INVALID_LIMITS")
@@ -2168,6 +2176,7 @@ class McaiGraph:
         limits = {"maxRounds": max_rounds, "maxToolCalls": max_tool_calls}
         instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
         tools = _agent_loop_tools_available_for_instance(tools, instance)
+        tools = _agent_loop_tools_available_for_observations(tools, observations)
         required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
         health_read = _health_check_next_read(message, tools, observations)

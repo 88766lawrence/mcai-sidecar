@@ -5,10 +5,31 @@ describe("agent loop wire boundary", () => {
   it("canonicalizes a root-hinted instance path before policy and approval binding", () => {
     const checked = validateAgentToolCall({
       action: "tool_call", tool: "config.patch",
-      arguments: { path: "/server.properties", patch: [{ key: "view-distance", value: "9" }], expected_revision: "revision-1" },
+      arguments: { path: "/server.properties", patch: [{ op: "replace", key: "view-distance", value: 9 }] },
       reason: "Update one setting",
-    }, "mcs:test");
-    expect(checked).toMatchObject({ ok: true, value: { arguments: { path: "server.properties" } } });
+    }, "mcs:test", "revision-1");
+    expect(checked).toMatchObject({ ok: true, value: { arguments: { path: "server.properties", expected_revision: "revision-1" } } });
+  });
+
+  it("keeps the current revision Cloud-owned and validates every proposed change before approval", () => {
+    const patch = AGENT_LOOP_TOOL_CATALOG.find((entry) => entry.name === "config.patch");
+    expect(patch?.input_schema.required).toEqual(["path", "patch"]);
+    expect(JSON.stringify(patch?.input_schema)).not.toContain("expected_revision");
+    const base = { action: "tool_call" as const, tool: "config.patch" as const, reason: "Update configuration" };
+    expect(validateAgentToolCall({ ...base, arguments: { path: "plugins/Lobby/config.yml", patch: [
+      { op: "replace", key: "welcome.message", value: "欢迎回来" },
+      { op: "add", key: "welcome.enabled", value: true },
+    ] } }, "mcs:test", "current-revision")).toMatchObject({
+      ok: true, value: { arguments: { expected_revision: "current-revision" } },
+    });
+    for (const argumentsValue of [
+      { path: "plugins/Lobby/config.yml", patch: [{ key: "welcome.message", value: "hello" }] },
+      { path: "plugins/Lobby/config.yml", patch: [{ op: "replace", key: "welcome..message", value: "hello" }] },
+      { path: "plugins/Lobby/config.yml", patch: [{ op: "replace", key: "welcome.message", value: "hello" }], expected_revision: "model-guessed" },
+    ]) {
+      expect(validateAgentToolCall({ ...base, arguments: argumentsValue }, "mcs:test", "current-revision"))
+        .toMatchObject({ ok: false, code: "AGENT_LOOP_INVALID_ARGUMENTS" });
+    }
   });
 
   it("binds plugin installation to one successful resolve observation from the same run", () => {
@@ -83,9 +104,9 @@ describe("agent loop wire boundary", () => {
     (path) => {
       const checked = validateAgentToolCall({
         action: "tool_call", tool: "config.patch",
-        arguments: { path, patch: [{ key: "view-distance", value: "9" }], expected_revision: "revision-1" },
+        arguments: { path, patch: [{ op: "replace", key: "view-distance", value: 9 }] },
         reason: "Update one setting",
-      }, "mcs:test");
+      }, "mcs:test", "revision-1");
       expect(checked).toMatchObject({ ok: false, code: "AGENT_LOOP_INVALID_ARGUMENTS" });
     },
   );

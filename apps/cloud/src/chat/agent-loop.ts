@@ -2,13 +2,15 @@ import { intrinsicToolPolicy, policyTarget, type ToolPolicy } from "@mcai/contra
 import { canonicalizeLogFilterGroups, logEventFilters, LOG_FILTER_CONDITION_TOKENS } from "../tasks/log-filter-query";
 
 export const AGENT_LOOP_SCHEMA_VERSION = "agent-loop-decision/v1" as const;
+export const AGENT_LOOP_MAX_ROUNDS = 16;
+export const AGENT_LOOP_MAX_TOOL_CALLS = 19;
 
 export const AGENT_LOOP_TOOL_CATALOG = [
   tool("console.command", "Run one canonical Minecraft console command. Read-only examples include version, list, plugins, tps, mspt, and gamerule <rule>. TPS and MSPT are separate observations, so call them one at a time. Writes remain subject to canonical risk and confirmation policy.", {
     type: "object", additionalProperties: false, required: ["command"],
     properties: { command: { type: "string", minLength: 1, maxLength: 256 } },
   }),
-  tool("config.inspect", "Read exact keys and the current revision from one instance configuration file. Use its revision as the prerequisite for a later config.patch.", {
+  tool("config.inspect", "Read exact keys and their current values from one instance configuration file. Inspect first when a requested change depends on the existing value or the exact file path.", {
     type: "object", additionalProperties: false, required: ["path", "keys"],
     properties: { path: { type: "string" }, keys: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } } },
   }),
@@ -61,9 +63,15 @@ export const AGENT_LOOP_TOOL_CATALOG = [
       sha256: { type: "string", pattern: "^[A-Fa-f0-9]{64}$" },
     },
   }),
-  tool("config.patch", "Apply one bounded configuration patch after confirmation.", {
-    type: "object", additionalProperties: false, required: ["path", "patch", "expected_revision"],
-    properties: { path: { type: "string" }, patch: { type: "array", minItems: 1, maxItems: 16 }, expected_revision: { type: "string" } },
+  tool("config.patch", "Apply bounded configuration changes after confirmation. Supply the instance-relative file path and exact key/value changes; Cloud binds the current instance revision. Inspect first when the existing value or path is uncertain.", {
+    type: "object", additionalProperties: false, required: ["path", "patch"],
+    properties: {
+      path: { type: "string" },
+      patch: { type: "array", minItems: 1, maxItems: 16, items: {
+        type: "object", additionalProperties: false, required: ["op", "key", "value"],
+        properties: { op: { enum: ["add", "replace"] }, key: { type: "string", minLength: 1, maxLength: 240 }, value: {} },
+      } },
+    },
   }),
   tool("plugin.install", "Install one previously resolved artifact after confirmation.", {
     type: "object", additionalProperties: false, required: ["project", "artifact_ref", "expected_integrity"],
@@ -154,9 +162,9 @@ export function extractAgentLoopDecision(content: string, successfulCallIds?: It
   catch { return invalid("AGENT_LOOP_INVALID_JSON", "model content contains invalid JSON"); }
 }
 
-export function validateAgentToolCall(decision: AgentLoopToolCall, instanceRef: string): AgentLoopValidation<AgentLoopToolCall & { policy: ToolPolicy; target: string }> {
+export function validateAgentToolCall(decision: AgentLoopToolCall, instanceRef: string, inventoryRevision?: string): AgentLoopValidation<AgentLoopToolCall & { policy: ToolPolicy; target: string }> {
   const args = canonicalArguments(decision.arguments);
-  const schemaError = validateToolArguments(decision.tool, args, instanceRef);
+  const schemaError = validateToolArguments(decision.tool, args, instanceRef, inventoryRevision);
   if (schemaError) return schemaError;
   const policy = intrinsicToolPolicy(decision.tool, args);
   if (policy.risk === "forbidden") return invalid("AGENT_LOOP_TOOL_RISK_REJECTED", "forbidden or unknown operations are not executable from the agent loop");
@@ -213,7 +221,7 @@ export function canonicalAgentToolCallKey(call: Pick<AgentLoopToolCall, "tool" |
   return `${call.tool}:${JSON.stringify(canonical(call.arguments))}`;
 }
 
-function validateToolArguments(toolName: AgentLoopToolName, args: Record<string, unknown>, instanceRef: string): AgentLoopValidation<never> | undefined {
+function validateToolArguments(toolName: AgentLoopToolName, args: Record<string, unknown>, instanceRef: string, inventoryRevision?: string): AgentLoopValidation<never> | undefined {
   if (toolName === "console.command") {
     if (!exactKeys(args, ["command"]) || typeof args.command !== "string" || !args.command.trim() || args.command.length > 256 || /[\r\n\0]/u.test(args.command)) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "console.command requires one safe command string");
     args.command = args.command.trim().replace(/^\//u, "");
@@ -260,8 +268,14 @@ function validateToolArguments(toolName: AgentLoopToolName, args: Record<string,
     args.timeout_seconds ??= 120;
   } else if (toolName === "config.patch") {
     const path = canonicalInstancePath(args.path);
-    if (!exactKeys(args, ["path", "patch", "expected_revision"]) || !path || !Array.isArray(args.patch) || args.patch.length < 1 || args.patch.length > 16 || !shortText(args.expected_revision, 256)) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "config.patch arguments are invalid");
+    if (!exactKeys(args, ["path", "patch"]) || !path || !Array.isArray(args.patch) || args.patch.length < 1 || args.patch.length > 16
+      || !shortText(inventoryRevision, 256)
+      || !args.patch.every((item) => plainObject(item) && exactKeys(item, ["op", "key", "value"])
+        && ["add", "replace"].includes(String(item.op)) && typeof item.key === "string"
+        && item.key.length <= 240 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/u.test(item.key))
+      || JSON.stringify(args.patch).length > 8_192) return invalid("AGENT_LOOP_INVALID_ARGUMENTS", "config.patch arguments are invalid");
     args.path = path;
+    args.expected_revision = inventoryRevision;
   } else if (toolName === "plugin.install") {
     const integrity = plainObject(args.expected_integrity) ? args.expected_integrity : undefined;
     const algorithm = integrity?.algorithm;

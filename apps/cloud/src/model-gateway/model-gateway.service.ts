@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import type { ChatRoute, ConversationMessage, IntentCandidateV2, IntentSemanticFrameBatch, IntentSourceCatalog, ServerProfile, TaskRecord } from "@mcai/contracts";
 import { buildIntentSemanticFramePlan, INTENT_CAPABILITIES, mergeIntentSemanticFrames, type IntentIRValidationError } from "../tasks/intent-ir";
 import { validateConfirmedWriteWireShape, type ConfirmedWriteProposalDecision } from "../tasks/confirmed-write-proposal";
-import { AGENT_LOOP_TOOL_CATALOG, validateAgentLoopDecision, type AgentLoopDecision, type AgentLoopObservation } from "../chat/agent-loop";
+import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATALOG, validateAgentLoopDecision, type AgentLoopDecision, type AgentLoopObservation } from "../chat/agent-loop";
 import { groundedQa0144WebFinal } from "../tasks/qa0144-read-observation";
 
 interface GatewayResponse {
@@ -84,7 +84,7 @@ export class ModelGatewayService {
           toolCatalog: AGENT_LOOP_TOOL_CATALOG,
           observations: input.observations ?? [],
           round: input.round ?? 1,
-          limits: { maxRounds: 8, maxToolCalls: 19 },
+          limits: { maxRounds: AGENT_LOOP_MAX_ROUNDS, maxToolCalls: AGENT_LOOP_MAX_TOOL_CALLS },
         }),
         signal: AbortSignal.timeout(45_000),
       });
