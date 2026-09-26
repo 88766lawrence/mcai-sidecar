@@ -78,6 +78,34 @@ func TestJSONInspectionReadsNestedValues(t *testing.T) {
 	}
 }
 
+func TestYAMLConfigurationRejectsAdditionalDocuments(t *testing.T) {
+	for _, input := range []string{
+		"welcome: old\n---\nwelcome: new\n",
+		"welcome: old\n---\nwelcome: [\n",
+	} {
+		if _, err := patchConfiguration([]byte(input), "plugins/Example/config.yml", "welcome", "updated"); err == nil {
+			t.Fatal("patch accepted an additional YAML document")
+		}
+		if _, err := configInspectObservation([]byte(input), "plugins/Example/config.yml", []string{"welcome"}); err == nil {
+			t.Fatal("inspection accepted an additional YAML document")
+		}
+	}
+}
+
+func TestPatchEmptyYAMLConfiguration(t *testing.T) {
+	updated, err := patchConfiguration(nil, "plugins/Example/config.yml", "welcome.message", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := yaml.Unmarshal(updated, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed["welcome"].(map[string]any)["message"] != "hello" {
+		t.Fatalf("unexpected YAML result: %s", updated)
+	}
+}
+
 func TestPatchConfigurationRejectsCrossingScalar(t *testing.T) {
 	_, err := patchConfiguration([]byte("welcome: disabled\n"), "/plugins/Example/config.yml", "welcome.message", "hello")
 	if err == nil || !strings.Contains(err.Error(), "non-mapping") {

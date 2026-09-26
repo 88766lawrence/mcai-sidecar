@@ -30,10 +30,13 @@ func patchConfiguration(input []byte, target, key string, value any) ([]byte, er
 
 func patchYAML(input []byte, key string, value any) ([]byte, error) {
 	var document yaml.Node
-	if err := yaml.Unmarshal(input, &document); err != nil {
+	if err := decodeYAMLDocument(input, &document); err != nil {
 		return nil, fmt.Errorf("parse YAML configuration: %w", err)
 	}
 	if len(document.Content) == 0 {
+		if document.Kind == 0 {
+			document.Kind = yaml.DocumentNode
+		}
 		document.Content = append(document.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
 	}
 	root := document.Content[0]
@@ -70,6 +73,24 @@ func patchYAML(input []byte, key string, value any) ([]byte, error) {
 	}
 	_ = encoder.Close()
 	return output.Bytes(), nil
+}
+
+func decodeYAMLDocument(input []byte, document any) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(input))
+	if err := decoder.Decode(document); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("YAML configuration contains multiple documents")
+		}
+		return fmt.Errorf("YAML configuration has trailing content: %w", err)
+	}
+	return nil
 }
 
 func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {

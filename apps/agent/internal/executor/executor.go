@@ -15,8 +15,6 @@ import (
 	"time"
 	"unicode"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/mcai/sidecar-agent/internal/audit"
 	"github.com/mcai/sidecar-agent/internal/logquery"
 	"github.com/mcai/sidecar-agent/internal/protocol"
@@ -792,7 +790,7 @@ func selectConfigurationKeys(contents []byte, path string, keys []string) string
 		if strings.HasSuffix(strings.ToLower(path), ".json") {
 			document, err = decodeJSONObject(contents)
 		} else {
-			err = yaml.Unmarshal(contents, &document)
+			err = decodeYAMLDocument(contents, &document)
 		}
 		if err == nil {
 			for _, key := range keys {
