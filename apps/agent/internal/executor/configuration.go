@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -93,10 +94,8 @@ func setYAMLMappingValue(mapping *yaml.Node, key string, value *yaml.Node) {
 }
 
 func patchJSON(input []byte, key string, value any) ([]byte, error) {
-	var root map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(input))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
+	root, err := decodeJSONObject(input)
+	if err != nil {
 		return nil, fmt.Errorf("parse JSON configuration: %w", err)
 	}
 	parts, err := configurationPath(key)
@@ -124,6 +123,26 @@ func patchJSON(input []byte, key string, value any) ([]byte, error) {
 		return nil, fmt.Errorf("encode JSON configuration: %w", err)
 	}
 	return append(output, '\n'), nil
+}
+
+func decodeJSONObject(input []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	decoder.UseNumber()
+	var root map[string]any
+	if err := decoder.Decode(&root); err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, errors.New("JSON configuration root must be an object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("JSON configuration contains multiple values")
+		}
+		return nil, fmt.Errorf("JSON configuration has trailing content: %w", err)
+	}
+	return root, nil
 }
 
 func configurationPath(key string) ([]string, error) {
