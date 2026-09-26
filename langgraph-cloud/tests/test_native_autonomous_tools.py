@@ -124,6 +124,43 @@ async def test_plugin_install_is_exposed_only_after_successful_resolution():
     assert [item["name"] for item in available(tools, [{"tool": "plugin.resolve", "status": "succeeded"}])] == ["plugin.resolve", "plugin.install", "config.patch"]
 
 
+async def test_repeated_plugin_resolution_repairs_to_next_project():
+    def resolve_call(project):
+        return {"tool_calls": [{"id": f"call-{project}", "type": "function", "function": {
+            "name": "plugin.resolve", "arguments": json.dumps({"project": project}),
+        }}]}
+
+    provider = FakeNativeProvider([resolve_call("LuckPerms"), resolve_call("EssentialsX")])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("Resolve LuckPerms and EssentialsX")
+    request["round"] = 2
+    request["toolCatalog"] = [{"name": "plugin.resolve", "description": "Resolve a plugin", "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"project": {"type": "string"}}, "required": ["project"],
+    }}]
+    request["observations"] = [{
+        "tool_call_id": "call-1", "tool": "plugin.resolve", "status": "succeeded",
+        "data": {"goal_results": [{"observed": {"project": "LuckPerms"}}]},
+        "evidence": {"summaries": ["LuckPerms resolved"]},
+    }]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["tool"] == "plugin.resolve"
+    assert result["decision"]["arguments"] == {"project": "EssentialsX"}
+    assert result["repairUsed"] is True
+    assert "already resolved successfully" in provider.seen_messages[1][-1]["content"]
+    assert graph_module._agent_loop_repeats_resolved_project(
+        {"action": "tool_call", "tool": "plugin.resolve", "arguments": {
+            "project": "LuckPerms", "source": "modrinth",
+        }}, [{"tool": "plugin.resolve", "status": "succeeded", "data": {
+            "goal_results": [{"observed": {"project": "LuckPerms"}}],
+            "observations": [{"observed": {"project": "LuckPerms", "source": "hangar"}}],
+        }}],
+    ) is False
+
+
 async def test_natural_answer_requires_no_tool_call():
     provider = FakeNativeProvider({"content": "我是 MCAI，可以协助管理这个实例。", "tool_calls": []})
     graph = object.__new__(McaiGraph)
@@ -1022,6 +1059,7 @@ async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
         test_plugin_install_is_exposed_only_after_successful_resolution,
+        test_repeated_plugin_resolution_repairs_to_next_project,
         test_natural_answer_requires_no_tool_call,
         test_explicit_config_read_repairs_unsupported_direct_answer,
         test_explicit_restart_repairs_unexecuted_progress_claim,
