@@ -24,7 +24,7 @@ describe("ModelGatewayService typed intent adapter", () => {
     expect(url.pathname).toBe("/v1/agent-loop/decide");
     const body = JSON.parse(String(init.body));
     expect(body.toolCatalog.find((item: { name: string }) => item.name === "files.list").input_schema.required).toContain("path");
-    expect(body.limits).toEqual({ maxRounds: 8, maxToolCalls: 19 });
+    expect(body.limits).toEqual({ maxRounds: 16, maxToolCalls: 19 });
   });
 
   it("accepts a final answer only when every cited URL came from the typed search observation", async () => {
