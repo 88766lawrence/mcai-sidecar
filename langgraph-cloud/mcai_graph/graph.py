@@ -711,6 +711,40 @@ def _agent_loop_tools_available_for_observations(
     return tools if resolved else [item for item in tools if item["name"] != "plugin.install"]
 
 
+def _agent_loop_repeats_resolved_project(
+    decision: dict[str, Any], observations: list[dict[str, Any]],
+) -> bool:
+    if decision.get("action") != "tool_call" or decision.get("tool") != "plugin.resolve":
+        return False
+    arguments = decision.get("arguments")
+    project = str(arguments.get("project") or "").strip().casefold() if isinstance(arguments, dict) else ""
+    source = str(arguments.get("source") or "").strip().casefold() if isinstance(arguments, dict) else ""
+    if not project:
+        return False
+    matched_source = False
+    matched_unknown_source = False
+    saw_known_source = False
+    for item in observations:
+        if item.get("tool") != "plugin.resolve" or item.get("status") != "succeeded":
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        results = data.get("goal_results") if isinstance(data.get("goal_results"), list) else []
+        facts = data.get("observations") if isinstance(data.get("observations"), list) else []
+        for result in [*results, *facts]:
+            observed = result.get("observed") if isinstance(result, dict) else None
+            if not isinstance(observed, dict) or str(observed.get("project") or "").strip().casefold() != project:
+                continue
+            observed_source = str(observed.get("source") or "").strip().casefold()
+            if observed_source:
+                saw_known_source = True
+                matched_source = matched_source or not source or observed_source == source
+            else:
+                matched_unknown_source = True
+    return matched_source or (matched_unknown_source and not saw_known_source)
+
+
 def _instance_snapshot_answer(message: str, instance: dict[str, Any]) -> str | None:
     """Answer narrow metadata questions from the bound instance snapshot."""
     query = re.sub(r"[\s？?。！!]", "", message)
@@ -2313,6 +2347,8 @@ class McaiGraph:
                     turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
                     [item["name"] for item in tools],
                 )
+            if error is None and _agent_loop_repeats_resolved_project(decision, observations):
+                error = "$.tool_calls[0]:ALREADY_RESOLVED_PROJECT"
             if error is None and required_live_tool and (decision.get("action") != "tool_call" or decision.get("tool") != required_live_tool):
                 decision_tools = [item for item in tools if item["name"] == required_live_tool]
                 error = f"$.action:REQUIRED_LIVE_TOOL:{required_live_tool}"
@@ -2551,7 +2587,15 @@ class McaiGraph:
             if attempt == 4 or (attempt == 2 and selected_continuation_tool is None):
                 break
             repair_used = True
-            if error == "$.action:MORE_TOOLS_REQUIRED":
+            if error == "$.tool_calls[0]:ALREADY_RESOLVED_PROJECT":
+                repair_instruction = (
+                    "The requested plugin was already resolved successfully in the supplied observations. "
+                    "Do not resolve that same project again. If only a compatible version was requested, "
+                    "finish from the existing evidence. If installation was requested, choose the next "
+                    "distinct step, using plugin.install when its prerequisite evidence is complete. "
+                    "For a different requested plugin, resolve that different project."
+                )
+            elif error == "$.action:MORE_TOOLS_REQUIRED":
                 repair_instruction = (
                     f"The evidence-routing pass selected {selected_continuation_tool} as the exact next application function for the earliest missing evidence. Call that exposed function with schema-valid arguments; do not reinterpret or replace the selection."
                 )
