@@ -18,7 +18,7 @@ import { conditionalFirstPlayerGamemodeIntent, configIdentifierScope, extractLog
 import { extractGameruleReadIntent } from "../tasks/gamerule-read-intent";
 import { classifyOperationalLanguage, extractActionbarConsoleCommand, extractBroadcastConsoleCommand, extractTitleConsoleCommand, extractTransientPlayerEffectCommand, hasInstanceLifecycleLanguage, isRuntimeVersionReadIntent, performanceReadMetrics, resolveConsoleOperation, resolveInstanceLifecycleIntent } from "../tasks/operation-intent";
 import { answerEvidenceQuestion, guardDirectWithoutEvidence, isEvidenceQuestion, safeTaskAnswer, safeUserText } from "./user-safe-response";
-import { AGENT_LOOP_TOOL_CATALOG, bindAgentToolCallToObservations, canonicalAgentToolCallKey, type AgentLoopObservation, type AgentLoopToolCall } from "./agent-loop";
+import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATALOG, bindAgentToolCallToObservations, canonicalAgentToolCallKey, type AgentLoopObservation, type AgentLoopToolCall } from "./agent-loop";
 import { AgentRunStore } from "../agents/agent-run.store";
 import { groundedQa0144WebFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
@@ -312,7 +312,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     if (result.status === "answered" && result.decision.action === "tool_call") {
       const boundDecision = bindAgentToolCallToObservations(result.decision, restoredObservations);
       const callKey = boundDecision ? canonicalAgentToolCallKey(boundDecision) : "";
-      if (boundDecision && canExecuteAgentCall(run, boundDecision, restoredObservations) && run.tool_call_count < 19) {
+      if (boundDecision && canExecuteAgentCall(run, boundDecision, restoredObservations) && run.tool_call_count < AGENT_LOOP_MAX_TOOL_CALLS) {
         const toolCallId = `call_${randomUUID()}`;
         const nextTask = await this.tasks.create({
           tenantId, instanceRef: session.instance_ref, intent: run.original_user_message,
@@ -870,7 +870,7 @@ export function agentRunBudgetExhausted(run: Pick<AgentRunRecord, "round_count" 
   // Slow successful tools must still get a final model turn. Round/call caps
   // bound work, while each gateway call keeps its own strict timeout.
   void now;
-  return run.round_count >= 8 || run.tool_call_count >= 19;
+  return run.round_count >= AGENT_LOOP_MAX_ROUNDS || run.tool_call_count >= AGENT_LOOP_MAX_TOOL_CALLS;
 }
 
 export function transientAgentDecisionError(code: string) {
