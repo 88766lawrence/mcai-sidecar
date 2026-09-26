@@ -711,38 +711,89 @@ def _agent_loop_tools_available_for_observations(
     return tools if resolved else [item for item in tools if item["name"] != "plugin.install"]
 
 
-def _agent_loop_repeats_resolved_project(
-    decision: dict[str, Any], observations: list[dict[str, Any]],
-) -> bool:
-    if decision.get("action") != "tool_call" or decision.get("tool") != "plugin.resolve":
-        return False
-    arguments = decision.get("arguments")
-    project = str(arguments.get("project") or "").strip().casefold() if isinstance(arguments, dict) else ""
-    source = str(arguments.get("source") or "").strip().casefold() if isinstance(arguments, dict) else ""
-    if not project:
-        return False
-    matched_source = False
-    matched_unknown_source = False
-    saw_known_source = False
+def _plugin_install_after_resolution(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Continue an authorized install after a trusted artifact has been resolved."""
+    if not any(item["name"] == "plugin.install" for item in tools):
+        return None
+    if re.search(r"(?:不要|无需|不必|禁止|别|仅|只)[^，。；;\r\n]{0,16}(?:安装|装|部署|更新|升级)|(?:do not|don't|without)\s+install", message, re.I):
+        return None
+    if not re.search(r"安装|装上|给.{0,16}装|部署|更新|升级|帮我安排|\binstall\b|\bdeploy\b|\bupdate\b", message, re.I):
+        return None
+    installed = {
+        str(item.get("data", {}).get("call_arguments", {}).get("project") or "").lower()
+        for item in observations if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"
+        and isinstance(item.get("data"), dict)
+        and isinstance(item["data"].get("call_arguments"), dict)
+    }
+    candidates: list[dict[str, Any]] = []
     for item in observations:
         if item.get("tool") != "plugin.resolve" or item.get("status") != "succeeded":
             continue
-        data = item.get("data")
-        if not isinstance(data, dict):
-            continue
-        results = data.get("goal_results") if isinstance(data.get("goal_results"), list) else []
-        facts = data.get("observations") if isinstance(data.get("observations"), list) else []
-        for result in [*results, *facts]:
-            observed = result.get("observed") if isinstance(result, dict) else None
-            if not isinstance(observed, dict) or str(observed.get("project") or "").strip().casefold() != project:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for observation in data.get("observations", []):
+            if not isinstance(observation, dict) or observation.get("kind") != "plugin":
                 continue
-            observed_source = str(observed.get("source") or "").strip().casefold()
-            if observed_source:
-                saw_known_source = True
-                matched_source = matched_source or not source or observed_source == source
-            else:
-                matched_unknown_source = True
-    return matched_source or (matched_unknown_source and not saw_known_source)
+            result = observation.get("observed")
+            if not isinstance(result, dict):
+                continue
+            project = str(result.get("project") or "").lower()
+            artifact = str(result.get("artifact") or "")
+            sha256 = str(result.get("sha256") or "").lower()
+            sha512 = str(result.get("source_sha512") or "").lower()
+            if not project or project in installed or not artifact or not re.search(rf"\b{re.escape(project)}\b", message, re.I):
+                continue
+            integrity = ({"algorithm": "sha256", "value": sha256} if re.fullmatch(r"[a-f0-9]{64}", sha256)
+                         else {"algorithm": "sha512", "value": sha512} if re.fullmatch(r"[a-f0-9]{128}", sha512)
+                         else None)
+            if integrity and data.get("task_id") and item.get("tool_call_id"):
+                candidates.append({
+                    "project": project, "artifact_ref": artifact, "expected_integrity": integrity,
+                })
+    if len(candidates) != 1:
+        return None
+    return {
+        "action": "tool_call", "tool": "plugin.install", "arguments": candidates[0],
+        "reason": "已找到兼容制品，继续执行用户要求的插件安装。",
+    }
+
+
+def _paper_plugin_guidance_search(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not any(item["name"] == "web.search" for item in tools):
+        return None
+    if not (re.search(r"\bPaper\b", message, re.I)
+            and re.search(r"插件|plugin", message, re.I)
+            and re.search(r"兼容|compatib", message, re.I)
+            and re.search(r"网上|网络|搜索|查一下|search|web", message, re.I)):
+        return None
+    searches = [item for item in observations if item.get("tool") == "web.search"]
+    if searches:
+        return None
+    version = re.search(r"\b1\.\d+(?:\.\d+)?\b", message)
+    query = f"PaperMC Paper {version.group(0) if version else ''} plugin compatibility adding updating Java requirements site:docs.papermc.io".strip()
+    return {"action": "tool_call", "tool": "web.search", "arguments": {"query": query},
+            "reason": "先检索 PaperMC 官方文档中的插件兼容与更新建议。"}
+
+
+def _agent_loop_repeats_successful_call(
+    decision: dict[str, Any], observations: list[dict[str, Any]],
+) -> bool:
+    if decision.get("action") != "tool_call":
+        return False
+    arguments = decision.get("arguments")
+    if not isinstance(arguments, dict):
+        return False
+    for item in observations:
+        if item.get("tool") != decision.get("tool") or item.get("status") != "succeeded":
+            continue
+        data = item.get("data")
+        prior = data.get("call_arguments") if isinstance(data, dict) else None
+        if isinstance(prior, dict) and prior == arguments:
+            return True
+    return False
 
 
 def _instance_snapshot_answer(message: str, instance: dict[str, Any]) -> str | None:
@@ -960,12 +1011,15 @@ def _agent_loop_decision_schema(tool_names: list[str]) -> dict[str, Any]:
 def _terminal_review_observations(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     remaining_chars = 5_000
-    for item in observations:
+    for index, item in enumerate(observations):
+        item_budget = remaining_chars // max(1, len(observations) - index)
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
         summaries = evidence.get("summaries") if isinstance(evidence.get("summaries"), list) else []
         structured = item.get("observed", item.get("data", item.get("output")))
+        call_arguments = structured.get("call_arguments") if isinstance(structured, dict) else None
+        structured_facts = {key: value for key, value in structured.items() if key != "call_arguments"} if isinstance(structured, dict) else structured
         try:
-            structured_text = json.dumps(structured, ensure_ascii=False, separators=(",", ":")) if structured is not None else ""
+            structured_text = json.dumps(structured_facts, ensure_ascii=False, separators=(",", ":")) if structured_facts is not None else ""
         except (TypeError, ValueError):
             structured_text = ""
         succeeded = item.get("status") == "succeeded"
@@ -987,16 +1041,40 @@ def _terminal_review_observations(observations: list[dict[str, Any]]) -> list[di
             "summaries": [str(value)[:320] for value in selected_summaries],
             "structured_result": structured_text[:900] if succeeded else "",
         }
+        if isinstance(call_arguments, dict):
+            projection["called_with"] = json.dumps(call_arguments, ensure_ascii=False, separators=(",", ":"))[:240]
         encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) > remaining_chars:
+        if len(encoded) > item_budget:
             projection["summaries"] = [str(value)[:160] for value in selected_summaries[-1:]]
             projection["error_message"] = str(error.get("message") or "")[:160]
             projection["structured_result"] = structured_text[:400] if succeeded else ""
+            if "called_with" in projection:
+                projection["called_with"] = projection["called_with"][:120]
             encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) > remaining_chars:
-            projection["summaries"] = []
+        if len(encoded) > item_budget:
+            projection["summaries"] = [str(value)[:80] for value in selected_summaries[-1:]]
+            projection["error_message"] = str(error.get("message") or "")[:80]
+            projection["structured_result"] = structured_text[:160] if succeeded else ""
+            if "called_with" in projection:
+                projection["called_with"] = projection["called_with"][:80]
             encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) > remaining_chars:
+        if len(encoded) > item_budget:
+            projection = {
+                "tool_call_id": projection["tool_call_id"][:64],
+                "tool": projection["tool"][:32],
+                "status": projection["status"][:16],
+                "summaries": [],
+                "structured_result": structured_text[:80] if succeeded else "",
+                **({"error_message": projection["error_message"][:80]} if projection["error_message"] else {}),
+                **({"called_with": projection["called_with"][:80]} if projection.get("called_with") else {}),
+            }
+            encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > item_budget:
+            projection["structured_result"] = ""
+            projection.pop("called_with", None)
+            projection.pop("error_message", None)
+            encoded = json.dumps(projection, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > item_budget:
             raise ValueError("TERMINAL_REVIEW_OBSERVATION_BUDGET")
         projected.append(projection)
         remaining_chars -= len(encoded)
@@ -1626,6 +1704,55 @@ def _enforce_plugin_compatibility_scope(
     return {**decision, "answer": answer.rstrip() + " " + note}
 
 
+def _enforce_plugin_install_evidence(
+    decision: dict[str, Any], message: str, observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """An existing JAR cannot stand in for a successful install in this run."""
+    if decision.get("action") != "final" or not re.search(r"安装|装上|帮我安排|install", message, re.I):
+        return decision
+    installed: dict[str, str] = {}
+    unresolved: dict[str, str] = {}
+    for item in observations:
+        if item.get("status") != "succeeded":
+            continue
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        arguments = data.get("call_arguments") if isinstance(data.get("call_arguments"), dict) else {}
+        project = str(arguments.get("project") or "").strip().lower()
+        if item.get("tool") == "plugin.install" and project:
+            installed[project] = str(arguments.get("artifact_ref") or "").strip()
+        if item.get("tool") != "plugin.resolve":
+            continue
+        for observation in data.get("observations", []):
+            if not isinstance(observation, dict) or observation.get("kind") != "plugin":
+                continue
+            result = observation.get("observed")
+            if not isinstance(result, dict) or result.get("resolution") != "no-compatible-artifact":
+                continue
+            resolved_project = str(result.get("project") or project).strip().lower()
+            if resolved_project:
+                unresolved[resolved_project] = str(result.get("requested_minecraft_version") or "").strip()
+    missing = {project: version for project, version in unresolved.items() if project not in installed}
+    if not missing:
+        return decision
+    answer = str(decision.get("answer") or "")
+    # Preserve a final answer that already makes the partial result explicit.
+    if all(re.search(rf"{re.escape(project)}.{{0,90}}(?:未安装|没有安装|未找到|no compatible|not installed)", answer, re.I | re.S)
+           for project in missing):
+        return decision
+    chinese = bool(re.search(r"[\u3400-\u9fff]", message))
+    if chinese:
+        completed = "、".join(f"{project}（{artifact}）" if artifact else project for project, artifact in installed.items())
+        pending = "、".join(f"{project}（目标 Minecraft {version}）" if version else project for project, version in missing.items())
+        corrected = (f"本轮已安装：{completed}。" if completed else "本轮没有完成插件安装。")
+        corrected += f"\n未安装：{pending}。兼容版本解析未找到可用制品；目录里已有的 JAR 不代表本轮安装成功，也不能证明与当前服务端兼容。"
+    else:
+        completed = ", ".join(f"{project} ({artifact})" if artifact else project for project, artifact in installed.items())
+        pending = ", ".join(f"{project} (Minecraft {version})" if version else project for project, version in missing.items())
+        corrected = (f"Installed in this run: {completed}." if completed else "No plugin installation completed in this run.")
+        corrected += f"\nNot installed: {pending}. Resolution found no compatible artifact; an existing JAR does not prove this run installed it or that it is compatible."
+    return {**decision, "answer": corrected}
+
+
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
     if {"clauses", "goals", "scopes", "constraints", "predicates"}.issubset(required):
@@ -2213,6 +2340,14 @@ class McaiGraph:
         tools = _agent_loop_tools_available_for_observations(tools, observations)
         required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
+        pending_install = _plugin_install_after_resolution(message, tools, observations)
+        if pending_install is not None and _validate_agent_loop_decision(pending_install, tools, observations, limits) is None:
+            return {"decision": pending_install, "requestId": request_id,
+                    "providerModel": "resolved-plugin-install", "repairUsed": False}
+        source_search = _paper_plugin_guidance_search(message, tools, observations)
+        if source_search is not None and _validate_agent_loop_decision(source_search, tools, observations, limits) is None:
+            return {"decision": source_search, "requestId": request_id,
+                    "providerModel": "official-paper-search", "repairUsed": False}
         health_read = _health_check_next_read(message, tools, observations)
         if health_read is not None:
             return {"decision": health_read, "requestId": request_id,
@@ -2347,8 +2482,8 @@ class McaiGraph:
                     turn, observations, bool(re.search(r"[\u3400-\u9fff]", message)),
                     [item["name"] for item in tools],
                 )
-            if error is None and _agent_loop_repeats_resolved_project(decision, observations):
-                error = "$.tool_calls[0]:ALREADY_RESOLVED_PROJECT"
+            if error is None and _agent_loop_repeats_successful_call(decision, observations):
+                error = "$.tool_calls[0]:ALREADY_COMPLETED_CALL"
             if error is None and required_live_tool and (decision.get("action") != "tool_call" or decision.get("tool") != required_live_tool):
                 decision_tools = [item for item in tools if item["name"] == required_live_tool]
                 error = f"$.action:REQUIRED_LIVE_TOOL:{required_live_tool}"
@@ -2420,8 +2555,10 @@ class McaiGraph:
                     )
                     if terminal_evidence_error is None and not requires_terminal_editor:
                         return {
-                            "decision": _enforce_plugin_compatibility_scope(
-                                _enforce_log_time_scope(decision, observations), message, observations,
+                            "decision": _enforce_plugin_install_evidence(
+                                _enforce_plugin_compatibility_scope(
+                                    _enforce_log_time_scope(decision, observations), message, observations,
+                                ), message, observations,
                             ), "requestId": request_id,
                             "providerModel": terminal_provider_model, "repairUsed": repair_used,
                         }
@@ -2578,8 +2715,10 @@ class McaiGraph:
                         }])
             if error is None:
                 return {
-                    "decision": _enforce_plugin_compatibility_scope(
-                        _enforce_log_time_scope(decision, observations), message, observations,
+                    "decision": _enforce_plugin_install_evidence(
+                        _enforce_plugin_compatibility_scope(
+                            _enforce_log_time_scope(decision, observations), message, observations,
+                        ), message, observations,
                     ), "requestId": request_id,
                     "providerModel": terminal_provider_model, "repairUsed": repair_used,
                 }
@@ -2587,13 +2726,11 @@ class McaiGraph:
             if attempt == 4 or (attempt == 2 and selected_continuation_tool is None):
                 break
             repair_used = True
-            if error == "$.tool_calls[0]:ALREADY_RESOLVED_PROJECT":
+            if error == "$.tool_calls[0]:ALREADY_COMPLETED_CALL":
                 repair_instruction = (
-                    "The requested plugin was already resolved successfully in the supplied observations. "
-                    "Do not resolve that same project again. If only a compatible version was requested, "
-                    "finish from the existing evidence. If installation was requested, choose the next "
-                    "distinct step, using plugin.install when its prerequisite evidence is complete. "
-                    "For a different requested plugin, resolve that different project."
+                    "That exact function call already succeeded. Do not repeat it. Use the supplied "
+                    "result and choose the next distinct function required by the current user request, "
+                    "or finish if all requested facts and actions are complete."
                 )
             elif error == "$.action:MORE_TOOLS_REQUIRED":
                 repair_instruction = (

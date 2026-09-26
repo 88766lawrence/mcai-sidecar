@@ -46,11 +46,22 @@ interface PersistedChat {
   messages: ConversationMessage[];
 }
 
-function renderConcreteAgentFailure(request: string, observations: AgentLoopObservation[]) {
+export function renderConcreteAgentFailure(request: string, observations: AgentLoopObservation[]) {
   const failed = [...observations].reverse().find((item) => ["failed", "indeterminate"].includes(item.status));
   if (!failed) return undefined;
   const summaries = [...failed.evidence.summaries].reverse();
   const candidates = [...summaries, failed.error?.message ?? ""];
+  const completedWrites = [...new Set(observations.flatMap((item) => {
+    if (item.status !== "succeeded" || item.side_effect !== "applied") return [];
+    const args = (item.data as { call_arguments?: Record<string, unknown> } | undefined)?.call_arguments;
+    if (item.tool === "plugin.install" && typeof args?.project === "string"
+      && /^[a-z0-9_-]{2,64}$/iu.test(args.project)) return [`plugin:${args.project}`];
+    if (item.tool === "config.patch" && typeof args?.path === "string") return [`config:${args.path}`];
+    return [`operation:${item.tool}`];
+  }))];
+  const failedArgs = (failed.data as { call_arguments?: Record<string, unknown> } | undefined)?.call_arguments;
+  const failedProject = typeof failedArgs?.project === "string" && /^[a-z0-9_-]{2,64}$/iu.test(failedArgs.project)
+    ? failedArgs.project : undefined;
   const toolNames = AGENT_LOOP_TOOL_CATALOG.map((entry) => entry.name);
   for (const candidate of candidates) {
     let fact = String(candidate ?? "").trim();
@@ -67,12 +78,23 @@ function renderConcreteAgentFailure(request: string, observations: AgentLoopObse
     if (!fact || !/(?:\b(?:HTTP\s*)?[45]\d\d\b|不存在|未找到|拒绝|超时|不可用|错误|失败|not found|no exact|denied|timeout|unavailable|error|fail)/iu.test(fact)) continue;
     const chinese = /[\u3400-\u9fff]/u.test(request);
     const period = /[。.!！?？]$/u.test(fact) ? "" : chinese ? "。" : ".";
-    const noSideEffect = failed.side_effect === "none"
+    const noSideEffect = failed.side_effect === "none" && completedWrites.length === 0
       ? chinese ? "本次失败未产生修改。" : " The failed attempt made no changes."
       : "";
+    const completed = completedWrites.map((item) => {
+      const [kind, value] = item.split(":", 2);
+      if (kind === "plugin") return chinese ? `已安装 ${value}` : `installed ${value}`;
+      if (kind === "config") return chinese ? `已修改 ${value}` : `updated ${value}`;
+      return chinese ? "已有操作执行成功" : "an operation succeeded";
+    }).join(chinese ? "；" : "; ");
+    const partial = completedWrites.length > 0
+      ? chinese
+        ? `部分完成：${completed}。${failedProject ? `${failedProject} 未完成。` : ""}`
+        : `Partially completed: ${completed}.${failedProject ? ` ${failedProject} remains incomplete.` : ""} `
+      : chinese ? "任务未完成。" : "The task could not be completed. ";
     return chinese
-      ? `任务未完成。具体失败原因：${fact}${period}${noSideEffect}`
-      : `The task could not be completed. Specific failure: ${fact}${period}${noSideEffect}`;
+      ? `${partial}具体失败原因：${fact}${period}${noSideEffect}`
+      : `${partial}Specific failure: ${fact}${period}${noSideEffect}`;
   }
   return undefined;
 }
@@ -301,7 +323,9 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     // One bounded retry only asks the model to decide from the same facts when
     // the decision endpoint is transiently unavailable.
     if (!exhausted && result.status === "unavailable"
-      && (transientAgentDecisionError(result.error) || result.error === "AGENT_TERMINAL_EVIDENCE_INCOMPLETE")) {
+      && (transientAgentDecisionError(result.error)
+        || result.error === "AGENT_TERMINAL_EVIDENCE_INCOMPLETE"
+        || result.error === "AGENT_TERMINAL_REVIEW_INVALID")) {
       result = await this.modelGateway.decideAgentLoop(decisionInput);
     }
     if (result.status === "answered") await this.agentRuns.recordDecision(run.run_id, run.round_count + 1, result.decision);
@@ -339,25 +363,32 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     const modelFinalAnswer = result.status === "answered" && result.decision.action === "final"
       ? result.decision.answer
       : undefined;
+    const verifiedConfigChange = renderReadThenPatchFinal(run.original_user_message, restoredObservations);
+    const verifiedPerformance = renderPerformanceFinal(run.original_user_message, restoredObservations);
     const canonicalReadAnswer = renderQa0144ReadFinal(run.original_user_message, restoredObservations);
+    const canonicalInventoryAnswer = restoredObservations.length === 1 && restoredObservations[0]?.tool === "files.list"
+      ? canonicalReadAnswer : undefined;
     const canonicalDownloadAnswer = renderVerifiedFileDownloadFinal(run.original_user_message, restoredObservations);
     const webOnly = restoredObservations.length > 0 && restoredObservations.every((item) => item.tool === "web.search");
+    const officialPaperAdvice = webOnly ? renderOfficialPaperPluginGuidance(run.original_user_message, restoredObservations) : undefined;
     // A search-result projection is evidence, not an answer. Preserve a grounded
     // model final when available; otherwise close honestly with observed links.
-    // The native Agent owns the user-facing synthesis. Deterministic rendering
-    // is only a fail-closed fallback when the Agent did not produce a final;
-    // it must never overwrite an evidence-bound answer that already passed the
-    // model gateway's citation and tool-result validation.
+    // Prefer verified structured facts for exact inventories, config writes,
+    // and numeric metrics. Search advice is limited to vetted official guides.
+    // Other completed tool results retain the model's evidence-bound synthesis.
     const groundedModelAnswer = modelFinalAnswer
       && (!webOnly || groundedQa0144WebFinal(modelFinalAnswer, restoredObservations))
       ? modelFinalAnswer
       : undefined;
-    const groundedAnswer = groundedModelAnswer ?? (webOnly ? undefined : canonicalReadAnswer ?? canonicalDownloadAnswer);
-    const cannotProceedAnswer = result.status === "answered" && result.decision.action === "cannot_proceed"
+    const groundedAnswer = verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? officialPaperAdvice ?? groundedModelAnswer
+      ?? (webOnly ? undefined : canonicalReadAnswer ?? canonicalDownloadAnswer);
+    const cannotProceedAnswer = !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
       ? result.decision.answer
       : undefined;
     const concreteFailureAnswer = renderConcreteAgentFailure(run.original_user_message, restoredObservations);
-    const answer = cannotProceedAnswer ?? groundedAnswer ?? completedWebSearchAnswer ?? concreteFailureAnswer ?? (result.status === "answered"
+    const partialFailureAnswer = restoredObservations.some((item) => item.status === "succeeded" && item.side_effect === "applied")
+      ? concreteFailureAnswer : undefined;
+    const answer = partialFailureAnswer ?? cannotProceedAnswer ?? groundedAnswer ?? completedWebSearchAnswer ?? concreteFailureAnswer ?? (result.status === "answered"
       ? "我没有重复执行相同操作；目前无法继续安全完成这条请求。"
       : observation.status === "succeeded"
         ? "已取得真实工具结果，但暂时无法生成可靠的最终说明。"
@@ -836,6 +867,62 @@ function agentToolValidationRejectionCode(cause: unknown) {
   return match?.[1];
 }
 
+export function renderReadThenPatchFinal(message: string, observations: AgentLoopObservation[]): string | undefined {
+  if (observations.some((item) => item.status !== "succeeded")) return undefined;
+  const patched = [...observations].reverse().find((item) => item.tool === "config.patch");
+  if (!patched) return undefined;
+  const writeData = patched.data as { call_arguments?: { path?: string; patch?: Array<{ op?: string; key?: string; value?: unknown }> } } | undefined;
+  const write = writeData?.call_arguments;
+  if (!write || !Array.isArray(write.patch) || write.patch.length !== 1 || !write.path) return undefined;
+  const change = write.patch[0];
+  if (change?.op !== "replace" || !["string", "number", "boolean"].includes(typeof change.value)
+    || !/^[A-Za-z0-9._-]{1,128}$/u.test(change.key ?? "")
+    || /password|secret|token|api[_-]?key/iu.test(change.key ?? "")) return undefined;
+  const inspected = observations.slice(0, observations.indexOf(patched)).reverse().find((item) => item.tool === "config.inspect");
+  const readData = inspected?.data as { qa0144_read_result?: { output_schema_id?: string; value?: { path?: string; entries?: Array<{ key?: string; present?: boolean; value?: unknown }> } } } | undefined;
+  const read = readData?.qa0144_read_result;
+  const before = read?.output_schema_id === "config-inspect-result/v1" && read.value?.path === write.path
+    ? read.value.entries?.find((entry) => entry.key === change.key && entry.present === true)
+    : undefined;
+  const verified = patched.evidence?.summaries?.some((summary) => /Patched .+ verified sha256:/iu.test(summary));
+  if (!verified) return undefined;
+  const restarted = observations.slice(observations.indexOf(patched) + 1).some((item) => item.tool === "instance.restart");
+  const oldValue = before && typeof before.value === "string" ? before.value : undefined;
+  return /[\u3400-\u9fff]/u.test(message)
+    ? `${oldValue === undefined ? "" : `已读取 ${write.path}：${change.key} 原值为「${oldValue}」。`}已将文件中的 ${change.key} 改为「${String(change.value)}」，写入后校验成功。${restarted ? "实例重启已完成。" : ""}`
+    : `${oldValue === undefined ? "" : `Read ${write.path}: ${change.key} was "${oldValue}". `}Changed ${change.key} to "${String(change.value)}" in ${write.path} and verified the write.${restarted ? " The instance restart completed." : ""}`;
+}
+
+export function renderPerformanceFinal(message: string, observations: AgentLoopObservation[]): string | undefined {
+  if (!/\bTPS\b/iu.test(message) || !/\bCPU\b/iu.test(message) || !/(?:内存|memory)/iu.test(message)
+    || observations.some((item) => item.status !== "succeeded")) return undefined;
+  const consoleRead = observations.find((item) => item.tool === "console.command"
+    && (item.data as { call_arguments?: { command?: string } } | undefined)?.call_arguments?.command === "tps");
+  const metricsRead = observations.find((item) => item.tool === "instance.metrics");
+  if (!consoleRead || !metricsRead) return undefined;
+  const tpsText = consoleRead.evidence.summaries.join("\n");
+  const metricsText = metricsRead.evidence.summaries.join("\n");
+  const tps = /TPS from last 1m, 5m, 15m:\s*([0-9.]+),\s*([0-9.]+),\s*([0-9.]+)/iu.exec(tpsText);
+  const cpu = /\bcpu_percent=([0-9.]+)/iu.exec(metricsText);
+  const memory = /\bmemory_bytes=(\d+)/iu.exec(metricsText);
+  const limit = /\bmemory_limit_bytes=(\d+)/iu.exec(metricsText);
+  if (!tps || !cpu || !memory || !limit) return undefined;
+  const samples = tps.slice(1).map(Number);
+  const cpuPercent = Number(cpu[1]);
+  const usedBytes = Number(memory[1]);
+  const limitBytes = Number(limit[1]);
+  if (samples.some((value) => !Number.isFinite(value) || value < 0 || value > 20)
+    || !Number.isFinite(cpuPercent) || cpuPercent < 0 || cpuPercent > 100
+    || !Number.isSafeInteger(usedBytes) || !Number.isSafeInteger(limitBytes)
+    || usedBytes < 0 || limitBytes <= 0 || usedBytes > limitBytes) return undefined;
+  const usedGiB = (usedBytes / 2 ** 30).toFixed(2);
+  const limitGiB = (limitBytes / 2 ** 30).toFixed(2);
+  const ratio = (100 * usedBytes / limitBytes).toFixed(1);
+  return /[\u3400-\u9fff]/u.test(message)
+    ? `TPS（1/5/15 分钟）：${samples.map((value) => value.toFixed(1)).join(" / ")}；CPU：${cpuPercent.toFixed(2)}%；内存：${usedGiB} / ${limitGiB} GiB（${ratio}%）。`
+    : `TPS (1/5/15 minutes): ${samples.map((value) => value.toFixed(1)).join(" / ")}; CPU: ${cpuPercent.toFixed(2)}%; memory: ${usedGiB} / ${limitGiB} GiB (${ratio}%).`;
+}
+
 function renderCompletedWebSearch(message: string, observations: AgentLoopObservation[]): string | undefined {
   const results = observations.flatMap((observation) => {
     if (observation.tool !== "web.search" || observation.status !== "succeeded"
@@ -864,6 +951,25 @@ function renderCompletedWebSearch(message: string, observations: AgentLoopObserv
   return chinese
     ? `现有搜索结果摘要不足以可靠确认问题中的具体结论；我不会根据查询词猜测。已检索来源：\n${sources}`
     : `The available search-result snippets are insufficient to confirm the specific conclusion reliably, so I will not infer it from the query. Sources searched:\n${sources}`;
+}
+
+export function renderOfficialPaperPluginGuidance(message: string, observations: AgentLoopObservation[]): string | undefined {
+  if (!/\bPaper\b/iu.test(message) || !/(?:插件|plugin)/iu.test(message)
+    || !/(?:兼容|compatib)/iu.test(message)
+    || observations.length === 0 || observations.some((item) => item.tool !== "web.search" || item.status !== "succeeded")) return undefined;
+  const urls = new Set(observations.flatMap((item) => {
+    const projected = (item.data as { qa0144_read_result?: { output_schema_id?: string; value?: { results?: Array<{ url?: string }> } } } | undefined)?.qa0144_read_result;
+    return projected?.output_schema_id === "web-search-result/v1" && Array.isArray(projected.value?.results)
+      ? projected.value.results.flatMap((result) => typeof result.url === "string" ? [result.url] : []) : [];
+  }));
+  const adding = "https://docs.papermc.io/paper/adding-plugins/";
+  const updating = "https://docs.papermc.io/paper/updating/";
+  if (!urls.has(adding) || !urls.has(updating)) return undefined;
+  const version = /\b1\.\d+(?:\.\d+)?\b/u.exec(message)?.[0];
+  const scope = version ? ` ${version}` : "";
+  return /[\u3400-\u9fff]/u.test(message)
+    ? `Paper${scope} 的插件兼容建议：\n- 从可信来源获取插件，并在插件发布页核对目标版本与服务端版本；PaperMC 推荐 Hangar，也列出 Modrinth 等来源。[添加插件](${adding})\n- 更新前备份世界、配置和插件；不要在服务器运行时直接覆盖 JAR。更新后重启并查看启动日志中的插件加载错误。[更新指南](${updating})\n- 这些是通用步骤；某个插件是否兼容仍需核对该插件的发布说明和实际加载日志。`
+    : `Paper${scope} plugin compatibility guidance:\n- Use trusted sources and check the plugin release against the server version; PaperMC recommends Hangar and also lists Modrinth. [Adding plugins](${adding})\n- Back up worlds, configuration, and plugin files before updating. Do not replace JARs on a running server; restart and inspect startup logs. [Updating guide](${updating})\n- Verify each specific plugin against its release notes and actual loading logs.`;
 }
 
 export function agentRunBudgetExhausted(run: Pick<AgentRunRecord, "round_count" | "tool_call_count" | "created_at">, now: number) {

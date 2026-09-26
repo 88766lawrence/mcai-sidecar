@@ -78,7 +78,10 @@ describe("TasksService recovery events", () => {
     expect(service.agentLoopObservation(task.id, "tenant-1")).toBeUndefined();
     await service.recordAgentEvent({ task_id: task.id, kind: "console", step_id: "s1", tool: "console.command", summary: "mobGriefing = true", result: "match", tool_calls: 1 });
     await service.recordAgentEvent({ task_id: task.id, state: "SUCCEEDED", kind: "execution", summary: "read complete", tool_calls: 1 });
-    expect(service.agentLoopObservation(task.id, "tenant-1")).toEqual(expect.objectContaining({ tool_call_id: "call-1", tool: "console.command", status: "succeeded" }));
+    expect(service.agentLoopObservation(task.id, "tenant-1")).toMatchObject({
+      tool_call_id: "call-1", tool: "console.command", status: "succeeded",
+      data: { call_arguments: { command: "gamerule mobGriefing" } },
+    });
   });
 
   it("preserves a resolved GitHub artifact as typed agent-loop evidence", async () => {

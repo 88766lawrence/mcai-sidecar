@@ -390,6 +390,7 @@ export class TasksService {
       data: {
         task_id: task.id,
         task_state: task.state,
+        call_arguments: bound.call.arguments,
         goal_results: task.goal_results.map((result) => ({
           result_kind: result.result_kind,
           status: result.status,
