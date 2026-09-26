@@ -14,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/mcai/sidecar-agent/internal/provider"
-	"gopkg.in/yaml.v3"
 )
 
 const readResultDigestDomain = "read-tool-result/v1\x00"
@@ -69,7 +68,7 @@ func configInspectObservation(contents []byte, normalizedPath string, keys []str
 		}
 	case ".yml", ".yaml":
 		var document any
-		if err := yaml.Unmarshal(contents, &document); err != nil {
+		if err := decodeYAMLDocument(contents, &document); err != nil {
 			return nil, fmt.Errorf("parse configuration for typed inspection: %w", err)
 		}
 		for _, key := range keys {
