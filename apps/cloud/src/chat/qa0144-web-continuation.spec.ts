@@ -51,7 +51,9 @@ describe("QA0144 autonomous web search continuation", () => {
     const restartedStore = new CloudStore(); populate(restartedStore);
     const restarted = new ChatService(restartedStore, continuedModel, tasks, new AgentRunStore(runPath), chatPath);
     await restarted.onModuleInit();
-    await vi.waitFor(() => expect(tasks.create).toHaveBeenCalledTimes(2), { timeout: 5_000, interval: 25 });
+    await vi.waitFor(async () => expect((await restarted.messages(session.id, "tenant-1")).at(-1)).toMatchObject({
+      task_id: secondTask.id, task_phase: "request", route: "tool",
+    }), { timeout: 5_000, interval: 25 });
     const messages = await restarted.messages(session.id, "tenant-1");
     expect(messages.at(-1)).toMatchObject({ task_id: secondTask.id, task_phase: "request", route: "tool" });
     expect(messages.some((item) => item.task_phase === "completion")).toBe(false);

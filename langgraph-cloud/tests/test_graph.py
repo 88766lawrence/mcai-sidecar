@@ -36,6 +36,9 @@ from mcai_graph.graph import (
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
     _enforce_plugin_compatibility_scope,
+    _enforce_plugin_install_evidence,
+    _plugin_install_after_resolution,
+    _paper_plugin_guidance_search,
     _explicit_live_decision,
     _plugin_verification_next_read,
     _health_check_next_read,
@@ -88,6 +91,58 @@ class LogWindowScopeTests(unittest.TestCase):
         )
         self.assertIn("兼容性仍需检查运行日志", result["answer"])
         self.assertEqual(result["citations"], ["files", "plugins"])
+
+    def test_existing_jar_cannot_be_claimed_as_new_install(self):
+        observations = [
+            {"tool": "plugin.install", "status": "succeeded", "data": {
+                "call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms.jar"}}},
+            {"tool": "plugin.resolve", "status": "succeeded", "data": {
+                "call_arguments": {"project": "EssentialsX"}, "observations": [{
+                    "kind": "plugin", "observed": {"project": "essentialsx", "resolution": "no-compatible-artifact",
+                                                   "requested_minecraft_version": "1.21.1"}}]}},
+            {"tool": "files.list", "status": "succeeded", "data": {"observations": [{
+                "kind": "files", "observed": {"entries": [{"name": "EssentialsX-2.22.0.jar"}]}}]}},
+        ]
+        decision = {"action": "final", "answer": "LuckPerms 和 EssentialsX 均已安装。", "citations": ["install", "resolve", "files"]}
+        result = _enforce_plugin_install_evidence(decision, "请安装 LuckPerms 和 EssentialsX", observations)
+        self.assertIn("本轮已安装：luckperms", result["answer"])
+        self.assertIn("未安装：essentialsx", result["answer"])
+        self.assertEqual(result["citations"], decision["citations"])
+
+    def test_plugin_install_clears_prior_unresolved_resolution(self):
+        observations = [
+            {"tool": "plugin.resolve", "status": "succeeded", "data": {
+                "call_arguments": {"project": "EssentialsX"}, "observations": [{
+                    "kind": "plugin", "observed": {"project": "essentialsx", "resolution": "no-compatible-artifact"}}]}},
+            {"tool": "plugin.install", "status": "succeeded", "data": {
+                "call_arguments": {"project": "essentialsx", "artifact_ref": "EssentialsX.jar"}}},
+        ]
+        decision = {"action": "final", "answer": "EssentialsX 已安装。", "citations": ["install"]}
+        self.assertEqual(_enforce_plugin_install_evidence(decision, "安装 EssentialsX", observations), decision)
+
+    def test_install_request_continues_after_compatible_resolution(self):
+        tools = [{"name": "plugin.install"}]
+        resolved = {"tool_call_id": "call-resolve", "tool": "plugin.resolve", "status": "succeeded", "data": {
+            "task_id": "task-resolve", "observations": [{"kind": "plugin", "observed": {
+                "project": "luckperms", "artifact": "LuckPerms.jar", "source_sha512": "a" * 128,
+            }}],
+        }}
+        result = _plugin_install_after_resolution("给这台 Paper 服装 LuckPerms，先找匹配的版本。", tools, [resolved])
+        self.assertEqual(result["tool"], "plugin.install")
+        self.assertEqual(result["arguments"], {"project": "luckperms", "artifact_ref": "LuckPerms.jar",
+                                                "expected_integrity": {"algorithm": "sha512", "value": "a" * 128}})
+        installed = {"tool": "plugin.install", "status": "succeeded", "data": {"call_arguments": {"project": "luckperms"}}}
+        self.assertIsNone(_plugin_install_after_resolution("给这台 Paper 服装 LuckPerms", tools, [resolved, installed]))
+        self.assertIsNone(_plugin_install_after_resolution("只找 LuckPerms 匹配版本，不要安装", tools, [resolved]))
+
+    def test_paper_plugin_web_guidance_starts_with_official_docs(self):
+        tools = [{"name": "web.search"}]
+        decision = _paper_plugin_guidance_search("查一下网上 Paper 1.21.1 的插件兼容建议", tools, [])
+        self.assertEqual(decision["tool"], "web.search")
+        self.assertIn("1.21.1", decision["arguments"]["query"])
+        self.assertIn("site:docs.papermc.io", decision["arguments"]["query"])
+        self.assertIsNone(_paper_plugin_guidance_search("查一下网上 Paper 1.21.1 的插件兼容建议", tools,
+                                                        [{"tool": "web.search", "status": "succeeded"}]))
 
     def test_unverified_wall_clock_scope_is_visible_in_final_answer(self):
         decision = {"action": "final", "answer": "日志匹配 8 条错误或警告。", "citations": ["call-log"]}

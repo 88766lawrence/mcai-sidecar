@@ -100,7 +100,8 @@ describe("QA0153 durable validation and download finalization", () => {
     expect((await service.messages(session.id, "tenant-1")).filter((message) => message.role === "assistant")).toHaveLength(0);
   });
 
-  it("renders a byte-exact public download when terminal model finalization is unavailable", async () => {
+  it.each(["AGENT_TERMINAL_EVIDENCE_INCOMPLETE", "AGENT_TERMINAL_REVIEW_INVALID"])(
+    "renders a byte-exact public download when terminal model finalization returns %s", async (errorCode) => {
     const directory = await mkdtemp(join(tmpdir(), "mcai-qa0153-download-final-"));
     directories.push(directory);
     const cloud = cloudWithInstance();
@@ -127,7 +128,7 @@ describe("QA0153 durable validation and download finalization", () => {
         arguments: { url: "https://example.org/release.bin", target: observed.target },
         reason: "Download the requested public artifact without executing it.",
       } })
-      .mockResolvedValue({ status: "unavailable", error: "AGENT_TERMINAL_EVIDENCE_INCOMPLETE" });
+      .mockResolvedValue({ status: "unavailable", error: errorCode });
     const model = { decideAgentLoop, route: vi.fn(), routeStream: vi.fn() } as unknown as ModelGatewayService;
     const runs = new AgentRunStore(join(directory, "runs.json"));
     const finish = vi.spyOn(runs, "finish");

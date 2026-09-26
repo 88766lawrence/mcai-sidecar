@@ -516,6 +516,7 @@ type pluginProvider struct {
 	output     string
 	listing    string
 	latestLog  []byte
+	existing   []string
 }
 
 func (p *pluginProvider) ListInstances(context.Context) ([]provider.Instance, error) { return nil, nil }
@@ -530,6 +531,9 @@ func (p *pluginProvider) ListFiles(context.Context, string, string) (string, err
 		return p.listing, nil
 	}
 	return "共 1 项：" + p.uploadName, nil
+}
+func (p *pluginProvider) ListFileEntries(context.Context, string, string) (provider.FileListing, error) {
+	return provider.FileListing{Names: append([]string(nil), p.existing...), Total: len(p.existing)}, nil
 }
 func (p *pluginProvider) DownloadFromURL(context.Context, string, string, string) error { return nil }
 func (p *pluginProvider) UpdateStartConfig(context.Context, string, provider.StartConfig) error {
@@ -595,6 +599,34 @@ func TestPluginResolveInstallAndRollback(t *testing.T) {
 	executor.rollbackPlugin(context.Background(), provider, installPlan, func(string, string, string, ...map[string]any) {})
 	if len(provider.deleted) != 1 || provider.deleted[0] != "plugins/EssentialsX-2.21.0.jar" {
 		t.Fatalf("unexpected rollback targets: %#v", provider.deleted)
+	}
+}
+
+func TestPluginInstallRefusesDuplicateExistingVersion(t *testing.T) {
+	contents := []byte("verified-plugin")
+	hash256 := sha256.Sum256(contents)
+	hash512 := sha512.Sum512(contents)
+	executor := New(t.TempDir(), nil)
+	executor.pluginResolver = staticPluginResolver{artifact: resolvedPlugin{
+		Project: "luckperms", VersionID: "new", VersionNumber: "5.5.71",
+		FileName: "LuckPerms-Bukkit-5.5.71.jar", SourceURL: "https://cdn.modrinth.com/data/test.jar",
+		SourceSHA512: hex.EncodeToString(hash512[:]), LocalSHA256: hex.EncodeToString(hash256[:]), Contents: contents,
+		Source: "modrinth", Compatibility: "exact-game-version",
+	}}
+	resolvePlan := protocol.TaskPlan{TaskID: "task-duplicate-resolve", InstanceRef: "mcs:daemon:instance"}
+	installPlan := protocol.TaskPlan{TaskID: "task-duplicate-install", InstanceRef: "mcs:daemon:instance"}
+	p := &pluginProvider{existing: []string{"LuckPerms-Bukkit-5.5.53.jar", "WorldEdit.jar"}}
+	if err := executor.executeStep(context.Background(), p, resolvePlan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
+		"project": "luckperms", "loader": "paper", "minecraft_version": "1.21.1",
+	}}, func(string, string, string, ...map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	err := executor.executeStep(context.Background(), p, installPlan, protocol.TaskStep{Tool: "plugin.install", Args: map[string]any{
+		"project": "luckperms", "expected_integrity": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(hash256[:])},
+		"source_task_id": resolvePlan.TaskID,
+	}}, func(string, string, string, ...map[string]any) {})
+	if err == nil || !strings.Contains(err.Error(), "already has a JAR") || p.uploadName != "" {
+		t.Fatalf("duplicate installation was not stopped before upload: err=%v uploaded=%q", err, p.uploadName)
 	}
 }
 

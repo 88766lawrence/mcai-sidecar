@@ -141,7 +141,8 @@ async def test_repeated_plugin_resolution_repairs_to_next_project():
     }}]
     request["observations"] = [{
         "tool_call_id": "call-1", "tool": "plugin.resolve", "status": "succeeded",
-        "data": {"goal_results": [{"observed": {"project": "LuckPerms"}}]},
+        "data": {"call_arguments": {"project": "LuckPerms"},
+                 "goal_results": [{"observed": {"project": "LuckPerms"}}]},
         "evidence": {"summaries": ["LuckPerms resolved"]},
     }]
 
@@ -150,15 +151,52 @@ async def test_repeated_plugin_resolution_repairs_to_next_project():
     assert result["decision"]["tool"] == "plugin.resolve"
     assert result["decision"]["arguments"] == {"project": "EssentialsX"}
     assert result["repairUsed"] is True
-    assert "already resolved successfully" in provider.seen_messages[1][-1]["content"]
-    assert graph_module._agent_loop_repeats_resolved_project(
+    assert "exact function call already succeeded" in provider.seen_messages[1][-1]["content"]
+    assert graph_module._agent_loop_repeats_successful_call(
         {"action": "tool_call", "tool": "plugin.resolve", "arguments": {
             "project": "LuckPerms", "source": "modrinth",
         }}, [{"tool": "plugin.resolve", "status": "succeeded", "data": {
-            "goal_results": [{"observed": {"project": "LuckPerms"}}],
-            "observations": [{"observed": {"project": "LuckPerms", "source": "hangar"}}],
+            "call_arguments": {"project": "LuckPerms", "source": "hangar"},
         }}],
     ) is False
+
+
+async def test_repeated_tps_read_repairs_to_resource_metrics():
+    def call(name, arguments):
+        return {"tool_calls": [{"id": f"call-{name}", "type": "function", "function": {
+            "name": name, "arguments": json.dumps(arguments),
+        }}]}
+
+    provider = FakeNativeProvider([
+        call("console.command", {"command": "tps"}),
+        call("instance.metrics", {"schema_version": "instance-metrics/v2", "metrics": ["cpu", "memory"], "include_capacity": True}),
+    ])
+    graph = object.__new__(McaiGraph)
+    graph.provider = provider
+    request = payload("看 TPS、CPU 和内存")
+    request["round"] = 2
+    request["toolCatalog"] = [
+        {"name": "console.command", "description": "Run a console command", "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"command": {"type": "string"}}, "required": ["command"],
+        }},
+        {"name": "instance.metrics", "description": "Read CPU and memory", "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"schema_version": {"type": "string"}, "metrics": {"type": "array", "items": {"type": "string"}}, "include_capacity": {"type": "boolean"}},
+            "required": ["schema_version", "metrics", "include_capacity"],
+        }},
+    ]
+    request["observations"] = [{
+        "tool_call_id": "call-1", "tool": "console.command", "status": "succeeded",
+        "data": {"call_arguments": {"command": "tps"}},
+        "evidence": {"summaries": ["TPS: 20.0"]},
+    }]
+
+    result = await graph.decide_agent_loop(request)
+
+    assert result["decision"]["tool"] == "instance.metrics"
+    assert result["repairUsed"] is True
+    assert "exact function call already succeeded" in provider.seen_messages[1][-1]["content"]
 
 
 async def test_natural_answer_requires_no_tool_call():
@@ -489,6 +527,25 @@ async def test_terminal_review_projection_keeps_all_attempts_with_bounded_high_s
     assert all(projected[index]["structured_result"] == "" for index in (1, 2, 3))
     assert all(projected[index]["structured_result"] for index in (0, 4, 5))
     assert [item["tool"] for item in projected] == [item["tool"] for item in observations]
+
+
+async def test_multi_step_success_projection_reserves_space_for_later_calls():
+    observations = [{
+        "tool_call_id": f"call-{index}",
+        "tool": "plugin.resolve" if index % 2 == 0 else "plugin.install",
+        "status": "succeeded", "side_effect": "none",
+        "data": {
+            "call_arguments": {"project": f"plugin-{index}", "source": "modrinth"},
+            "goal_results": [{"observed": {"project": f"plugin-{index}", "metadata": "x" * 2_000}}],
+        },
+        "evidence": {"summaries": ["resolved " + "y" * 600, "verified " + "z" * 600]},
+    } for index in range(12)]
+
+    projected = graph_module._terminal_review_observations(observations)
+
+    assert len(projected) == 12
+    assert len(json.dumps(projected, ensure_ascii=False, separators=(",", ":"))) <= 5_000
+    assert [item["tool_call_id"] for item in projected] == [item["tool_call_id"] for item in observations]
 
 
 async def test_evidence_routing_projection_folds_only_older_recovered_failures():
@@ -1060,6 +1117,7 @@ async def main():
         test_model_receives_complete_catalog_and_owns_tool_selection,
         test_plugin_install_is_exposed_only_after_successful_resolution,
         test_repeated_plugin_resolution_repairs_to_next_project,
+        test_repeated_tps_read_repairs_to_resource_metrics,
         test_natural_answer_requires_no_tool_call,
         test_explicit_config_read_repairs_unsupported_direct_answer,
         test_explicit_restart_repairs_unexecuted_progress_claim,
@@ -1077,6 +1135,7 @@ async def main():
         test_multiple_native_calls_are_serialized_in_provider_order,
         test_total_decision_deadline_caps_router_and_answer_chain,
         test_terminal_review_projection_keeps_all_attempts_with_bounded_high_signal_results,
+        test_multi_step_success_projection_reserves_space_for_later_calls,
         test_evidence_routing_projection_folds_only_older_recovered_failures,
         test_terminal_answer_projection_keeps_user_facts_and_removes_protocol_details,
         test_evidence_routing_uses_primary_model,

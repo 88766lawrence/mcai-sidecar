@@ -849,6 +849,29 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 			return errors.New("plugin install integrity does not match the resolved artifact")
 		}
 	}
+	lister, ok := p.(provider.StructuredFileLister)
+	if !ok {
+		return errors.New("plugin install requires a structured plugins directory listing")
+	}
+	existing, err := lister.ListFileEntries(ctx, plan.InstanceRef, "/plugins")
+	if err != nil || existing.Truncated || existing.Total != len(existing.Names) {
+		return errors.New("cannot verify the complete plugins directory before installation")
+	}
+	projectKey := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(manifest.Project, "-", ""), "_", ""))
+	for _, name := range existing.Names {
+		if !strings.HasSuffix(strings.ToLower(name), ".jar") {
+			continue
+		}
+		base := strings.TrimSuffix(name, filepath.Ext(name))
+		parts := strings.FieldsFunc(base, func(r rune) bool { return r == '-' || r == '_' || r == '.' || r == ' ' || r == '(' })
+		if len(parts) == 0 {
+			continue
+		}
+		prefix := parts[0]
+		if strings.EqualFold(name, manifest.FileName) || strings.EqualFold(prefix, projectKey) {
+			return fmt.Errorf("plugin %s already has a JAR in plugins (%s); controlled replacement requires stopping the instance and removing the old version first", manifest.Project, name)
+		}
+	}
 	uploader, ok := p.(interface {
 		UploadFile(context.Context, string, string, string, []byte) error
 	})
