@@ -19,7 +19,8 @@ describe("agent loop budgets and repeat recovery", () => {
 
   it("stops at round or tool budget without dropping finalization after slow tools", () => {
     const now = Date.now();
-    expect(agentRunBudgetExhausted(budget(8, 1, now), now)).toBe(true);
+    expect(agentRunBudgetExhausted(budget(8, 1, now), now)).toBe(false);
+    expect(agentRunBudgetExhausted(budget(16, 1, now), now)).toBe(true);
     expect(agentRunBudgetExhausted(budget(2, 19, now), now)).toBe(true);
     expect(agentRunBudgetExhausted(budget(2, 2, now - 120_001), now)).toBe(false);
     expect(agentRunBudgetExhausted(budget(7, 18, now - 119_999), now)).toBe(false);
