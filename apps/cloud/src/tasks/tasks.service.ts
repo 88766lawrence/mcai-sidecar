@@ -106,7 +106,7 @@ export class TasksService {
     let plan: TaskPlan | undefined;
     let semanticFallback: TaskPlan | undefined;
     if (input.agentToolCall) {
-      const checked = validateAgentToolCall(input.agentToolCall, input.instanceRef);
+      const checked = validateAgentToolCall(input.agentToolCall, input.instanceRef, instance.profile_revision);
       if (!checked.ok) throw new BadRequestException(`${checked.code}: ${checked.message}`);
       plan = buildAgentDirectExecutionPlan(input.instanceRef, instance.profile_revision, intent, input.agentToolCall.toolCallId, checked.value);
     }
