@@ -788,7 +788,13 @@ func selectConfigurationKeys(contents []byte, path string, keys []string) string
 		}
 	} else {
 		var document any
-		if err := yaml.Unmarshal(contents, &document); err == nil {
+		var err error
+		if strings.HasSuffix(strings.ToLower(path), ".json") {
+			document, err = decodeJSONObject(contents)
+		} else {
+			err = yaml.Unmarshal(contents, &document)
+		}
+		if err == nil {
 			for _, key := range keys {
 				if value, ok := nestedConfigurationValue(document, strings.Split(key, ".")); ok {
 					encoded, err := json.Marshal(value)

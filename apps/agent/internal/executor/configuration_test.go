@@ -45,6 +45,39 @@ func TestPatchJSONCreatesNestedConfiguration(t *testing.T) {
 	}
 }
 
+func TestJSONConfigurationRejectsInvalidDocuments(t *testing.T) {
+	invalid := []string{
+		`null`,
+		`{} true`,
+		`{"welcome":"hello"} garbage`,
+		`{welcome: hello}`,
+	}
+	for _, input := range invalid {
+		t.Run(input, func(t *testing.T) {
+			if _, err := patchConfiguration([]byte(input), "plugins/Example/config.json", "welcome", "hello"); err == nil {
+				t.Fatal("patch accepted invalid JSON configuration")
+			}
+			if _, err := configInspectObservation([]byte(input), "plugins/Example/config.json", []string{"welcome"}); err == nil {
+				t.Fatal("inspection accepted invalid JSON configuration")
+			}
+		})
+	}
+}
+
+func TestJSONInspectionReadsNestedValues(t *testing.T) {
+	observed, err := configInspectObservation([]byte(`{"welcome":{"enabled":true,"limit":12},"api-key":"private"}`), "plugins/Example/config.json", []string{"welcome.enabled", "welcome.limit", "api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := observed["entries"].([]map[string]any)
+	if entries[0]["value"] != true || entries[1]["value"] != float64(12) || entries[2]["redacted"] != true {
+		t.Fatalf("unexpected inspected values: %#v", entries)
+	}
+	if _, exposed := entries[2]["value"]; exposed {
+		t.Fatal("sensitive value was exposed")
+	}
+}
+
 func TestPatchConfigurationRejectsCrossingScalar(t *testing.T) {
 	_, err := patchConfiguration([]byte("welcome: disabled\n"), "/plugins/Example/config.yml", "welcome.message", "hello")
 	if err == nil || !strings.Contains(err.Error(), "non-mapping") {
