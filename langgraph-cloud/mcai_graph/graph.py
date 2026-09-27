@@ -788,6 +788,92 @@ def _plugin_activation_after_install(
             "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。"}
 
 
+def _plugin_post_activation_verification(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Read the installed JAR and loaded-plugin inventory after activation."""
+    if not re.search(r"安装|装上|部署|更新|升级|\binstall\b|\bupdate\b", message, re.I):
+        return None
+    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+        return None
+    installs = [(index, item) for index, item in enumerate(observations)
+                if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
+    if len(installs) != 1:
+        return None
+    install_index, _ = installs[0]
+    activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
+                       if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
+    if activation is None:
+        return None
+    later = observations[activation[0] + 1:]
+    names = {item["name"] for item in tools}
+    if not any(item.get("tool") == "files.list" for item in later):
+        if "files.list" in names:
+            return {"action": "tool_call", "tool": "files.list", "arguments": {"path": "plugins", "suffix": ".jar"},
+                    "reason": "启动后核对新版与旧版插件文件。"}
+        return None
+    if not any(item.get("tool") == "files.list" and item.get("status") == "succeeded" for item in later):
+        return None
+    if not any(item.get("tool") == "console.command" and
+               (item.get("data") or {}).get("call_arguments", {}).get("command") == "plugins"
+               for item in later if isinstance(item.get("data"), dict)):
+        if "console.command" in names:
+            return {"action": "tool_call", "tool": "console.command", "arguments": {"command": "plugins"},
+                    "reason": "核对运行时是否已加载目标插件。"}
+    return None
+
+
+def _plugin_post_activation_final(
+    message: str, observations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+        return None
+    installs = [(index, item) for index, item in enumerate(observations)
+                if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
+    if len(installs) != 1:
+        return None
+    install_index, install = installs[0]
+    arguments = (install.get("data") or {}).get("call_arguments", {}) if isinstance(install.get("data"), dict) else {}
+    project = str(arguments.get("project") or "").strip()
+    artifact = str(arguments.get("artifact_ref") or "").strip()
+    if not project or not artifact or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(project)}(?![A-Za-z0-9_-])", message, re.I):
+        return None
+    activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
+                       if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
+    if activation is None:
+        return None
+    later = observations[activation[0] + 1:]
+    files = next((item for item in later if item.get("tool") == "files.list" and item.get("status") == "succeeded"), None)
+    console = next((item for item in later if item.get("tool") == "console.command" and item.get("status") == "succeeded"
+                    and isinstance(item.get("data"), dict)
+                    and item["data"].get("call_arguments", {}).get("command") == "plugins"), None)
+    if files is None or console is None:
+        return None
+    entries: list[str] = []
+    file_data = files.get("data") if isinstance(files.get("data"), dict) else {}
+    for fact in file_data.get("observations", []):
+        if not isinstance(fact, dict) or not isinstance(fact.get("observed"), dict):
+            continue
+        result = fact["observed"]
+        if result.get("schema_version") == "files-list-result/v1" and result.get("path") == "plugins" and result.get("truncated") is False:
+            entries = [str(entry.get("name")) for entry in result.get("entries", []) if isinstance(entry, dict)]
+            break
+    summaries = (console.get("evidence") or {}).get("summaries", []) if isinstance(console.get("evidence"), dict) else []
+    inventory = "\n".join(str(value) for value in summaries)
+    loaded = bool(re.search(rf"(?:Server\s+)?Plugins\s*\(\d+\)\s*:[^\r\n]*\b{re.escape(project)}\b", inventory, re.I))
+    matching = [name for name in entries if name.lower().endswith(".jar") and name.lower().startswith(project.lower())]
+    verified = artifact in matching and len(matching) == 1 and loaded
+    verb = "启动" if activation[1].get("tool") == "instance.start" else "重启"
+    display_name = artifact.split("-", 1)[0] if artifact.split("-", 1)[0].lower() == project.lower() else project
+    if verified:
+        answer = f"已安装 {display_name}（{artifact}）。实例{verb}后，插件目录只保留这一个同名 JAR，运行时插件列表确认已加载 {display_name}。"
+    else:
+        answer = f"已执行 {display_name} 的安装和实例{verb}，但启动后核验未能同时确认新版 JAR 唯一存在且插件已加载；本次不能判定安装完全生效。"
+    citations = list(dict.fromkeys(str(item["tool_call_id"]) for item in observations
+                                  if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)))
+    return {"action": "final", "answer": answer, "citations": citations}
+
+
 def _paper_plugin_guidance_search(
     message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -2377,6 +2463,14 @@ class McaiGraph:
         if pending_activation is not None and _validate_agent_loop_decision(pending_activation, tools, observations, limits) is None:
             return {"decision": pending_activation, "requestId": request_id,
                     "providerModel": "installed-plugin-activation", "repairUsed": False}
+        activation_read = _plugin_post_activation_verification(message, tools, observations)
+        if activation_read is not None and _validate_agent_loop_decision(activation_read, tools, observations, limits) is None:
+            return {"decision": activation_read, "requestId": request_id,
+                    "providerModel": "plugin-activation-verification", "repairUsed": False}
+        activation_final = _plugin_post_activation_final(message, observations)
+        if activation_final is not None and _validate_agent_loop_decision(activation_final, tools, observations, limits) is None:
+            return {"decision": activation_final, "requestId": request_id,
+                    "providerModel": "verified-plugin-activation", "repairUsed": False}
         source_search = _paper_plugin_guidance_search(message, tools, observations)
         if source_search is not None and _validate_agent_loop_decision(source_search, tools, observations, limits) is None:
             return {"decision": source_search, "requestId": request_id,
