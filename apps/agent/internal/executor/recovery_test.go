@@ -54,7 +54,10 @@ func (p *recoveryProvider) ListFiles(context.Context, string, string) (string, e
 	}
 	return "server.jar", nil
 }
-func (p *recoveryProvider) ListFileEntries(context.Context, string, string) (provider.FileListing, error) {
+func (p *recoveryProvider) ListFileEntries(_ context.Context, _ string, target string) (provider.FileListing, error) {
+	if target == "/plugins/update" {
+		return provider.FileListing{Names: []string{}, Total: 0}, nil
+	}
 	p.listCalls++
 	if p.listCalls <= p.listFailures {
 		return provider.FileListing{}, p.listError

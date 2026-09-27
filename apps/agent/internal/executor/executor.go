@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -599,10 +600,20 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 	case "instance.stop":
 		return e.stopInstance(ctx, p, plan.InstanceRef, emit)
 	case "instance.restart":
+		pending := pendingPluginUpdateJars(ctx, p, plan.InstanceRef)
+		var baselineOutput string
+		var baselineLog []byte
+		if len(pending) > 0 {
+			baselineOutput, _ = p.ReadOutput(ctx, plan.InstanceRef, 256)
+			baselineLog, _ = p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+		}
 		if err := p.Restart(ctx, plan.InstanceRef); err != nil {
 			return err
 		}
 		emit("", "instance", "Restart request accepted by the panel")
+		if len(pending) > 0 {
+			return waitForPluginUpdateActivation(ctx, p, plan.InstanceRef, pending, baselineOutput, string(baselineLog), emit)
+		}
 		return nil
 	case "plugin.resolve":
 		return e.resolvePlugin(ctx, p, plan, step, emit)
@@ -858,16 +869,96 @@ func (e *Executor) startInstance(ctx context.Context, p provider.Provider, insta
 		emit("", "instance", "实例已在启动中，正在等待进入运行状态")
 		return nil
 	}
+	pending := pendingPluginUpdateJars(ctx, p, instanceRef)
+	var baselineOutput string
+	var baselineLog []byte
+	if len(pending) > 0 {
+		baselineOutput, _ = p.ReadOutput(ctx, instanceRef, 256)
+		baselineLog, _ = p.ReadFile(ctx, instanceRef, "logs/latest.log")
+	}
 	if err := p.Start(ctx, instanceRef); err != nil {
 		after, stateErr := p.GetInstance(ctx, instanceRef)
 		if stateErr == nil && (after.State == "running" || after.State == "starting") {
 			emit("", "instance", "面板启动响应异常，但实例已进入启动流程")
+			if len(pending) > 0 {
+				return waitForPluginUpdateActivation(ctx, p, instanceRef, pending, baselineOutput, string(baselineLog), emit)
+			}
 			return nil
 		}
 		return err
 	}
 	emit("", "instance", "启动请求已由面板接受")
+	if len(pending) > 0 {
+		return waitForPluginUpdateActivation(ctx, p, instanceRef, pending, baselineOutput, string(baselineLog), emit)
+	}
 	return nil
+}
+
+func pendingPluginUpdateJars(ctx context.Context, p provider.Provider, instanceRef string) []string {
+	lister, ok := p.(provider.StructuredFileLister)
+	if !ok {
+		return nil
+	}
+	listing, err := lister.ListFileEntries(ctx, instanceRef, "/plugins/update")
+	if err != nil || listing.Truncated {
+		return nil
+	}
+	var jars []string
+	for _, name := range listing.Names {
+		if strings.HasSuffix(strings.ToLower(name), ".jar") {
+			jars = append(jars, name)
+		}
+	}
+	return jars
+}
+
+func waitForPluginUpdateActivation(ctx context.Context, p provider.Provider, instanceRef string, pending []string, baselineOutput, baselineLog string, emit EventSink) error {
+	lister, ok := p.(provider.StructuredFileLister)
+	if !ok {
+		return errors.New("cannot verify staged plugin update without structured file listing")
+	}
+	deadline := time.NewTimer(3 * time.Minute)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		output, outputErr := p.ReadOutput(ctx, instanceRef, 256)
+		logBytes, logErr := p.ReadFile(ctx, instanceRef, "logs/latest.log")
+		fresh := ""
+		if outputErr == nil {
+			fresh = consoleOutputDelta(baselineOutput, output)
+		}
+		if logErr == nil {
+			fresh += "\n" + consoleOutputDelta(baselineLog, string(logBytes))
+		}
+		if hasTerminalStartupFailure(fresh) {
+			return errors.New("server failed while applying staged plugin update")
+		}
+		if isServerReady(fresh) {
+			update, updateErr := lister.ListFileEntries(ctx, instanceRef, "/plugins/update")
+			installed, installedErr := lister.ListFileEntries(ctx, instanceRef, "/plugins")
+			if updateErr == nil && installedErr == nil && !update.Truncated && !installed.Truncated {
+				ready := true
+				for _, jar := range pending {
+					if slices.Contains(update.Names, jar) || !slices.Contains(installed.Names, jar) {
+						ready = false
+						break
+					}
+				}
+				if ready {
+					emit("", "instance", "服务端已完成启动，暂存插件已迁移到 plugins 目录")
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("server did not finish applying staged plugin update within three minutes")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (e *Executor) stopInstance(ctx context.Context, p provider.Provider, instanceRef string, emit EventSink) error {
