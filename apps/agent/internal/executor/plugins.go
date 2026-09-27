@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -689,16 +691,18 @@ func (r *officialPluginResolver) getJSON(ctx context.Context, endpoint string, o
 }
 
 type pluginManifest struct {
-	Project       string `json:"project"`
-	VersionID     string `json:"version_id"`
-	VersionNumber string `json:"version_number"`
-	FileName      string `json:"file_name"`
-	SourceURL     string `json:"source_url"`
-	SourceSHA512  string `json:"source_sha512"`
-	LocalSHA256   string `json:"local_sha256"`
-	Source        string `json:"source"`
-	Compatibility string `json:"compatibility"`
-	InstalledPath string `json:"installed_path,omitempty"`
+	Project        string `json:"project"`
+	VersionID      string `json:"version_id"`
+	VersionNumber  string `json:"version_number"`
+	FileName       string `json:"file_name"`
+	SourceURL      string `json:"source_url"`
+	SourceSHA512   string `json:"source_sha512"`
+	LocalSHA256    string `json:"local_sha256"`
+	Source         string `json:"source"`
+	Compatibility  string `json:"compatibility"`
+	InstalledPath  string `json:"installed_path,omitempty"`
+	ReplacesPath   string `json:"replaces_path,omitempty"`
+	ReplacesSHA256 string `json:"replaces_sha256,omitempty"`
 }
 
 func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
@@ -858,6 +862,7 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		return errors.New("cannot verify the complete plugins directory before installation")
 	}
 	projectKey := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(manifest.Project, "-", ""), "_", ""))
+	var oldJar string
 	for _, name := range existing.Names {
 		if !strings.HasSuffix(strings.ToLower(name), ".jar") {
 			continue
@@ -869,8 +874,63 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		}
 		prefix := parts[0]
 		if strings.EqualFold(name, manifest.FileName) || strings.EqualFold(prefix, projectKey) {
-			return fmt.Errorf("plugin %s already has a JAR in plugins (%s); controlled replacement requires stopping the instance and removing the old version first", manifest.Project, name)
+			if oldJar != "" {
+				return fmt.Errorf("plugin %s has multiple matching JARs in plugins; replacement is ambiguous", manifest.Project)
+			}
+			oldJar = name
 		}
+	}
+	uploadDir := "plugins"
+	if oldJar != "" {
+		if config, err := p.ReadFile(ctx, plan.InstanceRef, "bukkit.yml"); err == nil {
+			folder := regexp.MustCompile(`(?m)^\s*update-folder:\s*["']?([^\s#"']+)`).FindSubmatch(config)
+			if len(folder) == 2 && string(folder[1]) != "update" {
+				return errors.New("server config uses a nonstandard plugin update folder")
+			}
+		}
+		reader, ok := p.(provider.BinaryFileReader)
+		if !ok {
+			return errors.New("plugin replacement requires reading and backing up the existing JAR")
+		}
+		oldBytes, err := reader.ReadBinaryFile(ctx, plan.InstanceRef, "plugins/"+oldJar)
+		if err != nil {
+			return fmt.Errorf("read existing plugin JAR: %w", err)
+		}
+		oldName, err := pluginJarIdentity(oldBytes)
+		if err != nil {
+			return fmt.Errorf("existing plugin identity: %w", err)
+		}
+		newName, err := pluginJarIdentity(contents)
+		if err != nil {
+			return fmt.Errorf("replacement plugin identity: %w", err)
+		}
+		if !strings.EqualFold(oldName, newName) || !strings.EqualFold(strings.ReplaceAll(strings.ReplaceAll(oldName, "-", ""), "_", ""), projectKey) {
+			return fmt.Errorf("existing and replacement JAR plugin identities do not match %s", manifest.Project)
+		}
+		preparer, ok := p.(interface {
+			EnsurePluginUpdateDirectory(context.Context, string) error
+		})
+		if !ok {
+			return errors.New("provider cannot prepare Paper's plugin update directory")
+		}
+		if err := preparer.EnsurePluginUpdateDirectory(ctx, plan.InstanceRef); err != nil {
+			return err
+		}
+		updates, err := lister.ListFileEntries(ctx, plan.InstanceRef, "/plugins/update")
+		if err != nil || updates.Truncated || updates.Total != len(updates.Names) || len(updates.Names) != 0 {
+			return errors.New("Paper plugin update directory must be empty before replacement")
+		}
+		backupDir := e.pluginTaskDir(plan.TaskID)
+		if err := os.MkdirAll(backupDir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(backupDir, "replaced.jar"), oldBytes, 0o600); err != nil {
+			return err
+		}
+		oldHash := sha256.Sum256(oldBytes)
+		manifest.ReplacesPath = "plugins/" + oldJar
+		manifest.ReplacesSHA256 = hex.EncodeToString(oldHash[:])
+		uploadDir = "plugins/update"
 	}
 	uploader, ok := p.(interface {
 		UploadFile(context.Context, string, string, string, []byte) error
@@ -878,10 +938,10 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	if !ok {
 		return errors.New("provider does not support controlled file uploads")
 	}
-	if err := uploader.UploadFile(ctx, plan.InstanceRef, "plugins", manifest.FileName, contents); err != nil {
+	if err := uploader.UploadFile(ctx, plan.InstanceRef, uploadDir, manifest.FileName, contents); err != nil {
 		return err
 	}
-	manifest.InstalledPath = "plugins/" + manifest.FileName
+	manifest.InstalledPath = uploadDir + "/" + manifest.FileName
 	encoded, _ := json.MarshalIndent(manifest, "", "  ")
 	if err := os.MkdirAll(e.pluginTaskDir(plan.TaskID), 0o700); err != nil {
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
@@ -891,13 +951,21 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
 		return err
 	}
-	listing, err := p.ListFiles(ctx, plan.InstanceRef, "/plugins")
-	if err != nil || !strings.Contains(listing, manifest.FileName) {
+	listing, err := lister.ListFileEntries(ctx, plan.InstanceRef, "/"+uploadDir)
+	if err != nil || listing.Truncated || !containsPluginName(listing.Names, manifest.FileName) {
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
 		manifest.InstalledPath = ""
 		encoded, _ = json.MarshalIndent(manifest, "", "  ")
 		_ = os.WriteFile(filepath.Join(e.pluginTaskDir(plan.TaskID), "manifest.json"), encoded, 0o600)
 		return errors.New("plugin upload completed without file-list evidence")
+	}
+	if reader, ok := p.(provider.BinaryFileReader); ok {
+		readBack, err := reader.ReadBinaryFile(ctx, plan.InstanceRef, manifest.InstalledPath)
+		got := sha256.Sum256(readBack)
+		if err != nil || hex.EncodeToString(got[:]) != manifest.LocalSHA256 {
+			e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
+			return errors.New("uploaded plugin JAR failed read-back integrity verification")
+		}
 	}
 	_ = os.Remove(filepath.Join(e.pluginTaskDir(sourceTaskID), "artifact.jar"))
 	if e.audit != nil {
@@ -906,8 +974,50 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 			"source_sha512": manifest.SourceSHA512, "local_sha256": manifest.LocalSHA256,
 		})
 	}
-	emit("", "files", fmt.Sprintf("插件已落盘到 /plugins/%s（SHA-256：%s）", manifest.FileName, manifest.LocalSHA256))
+	if oldJar != "" {
+		emit("", "files", fmt.Sprintf("插件更新已暂存到 /%s，旧版 /plugins/%s 已备份；需获批重启后生效（SHA-256：%s）", manifest.InstalledPath, oldJar, manifest.LocalSHA256))
+	} else {
+		emit("", "files", fmt.Sprintf("插件已落盘到 /%s，需重启后加载（SHA-256：%s）", manifest.InstalledPath, manifest.LocalSHA256))
+	}
 	return nil
+}
+
+func containsPluginName(names []string, name string) bool {
+	for _, candidate := range names {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginJarIdentity(contents []byte) (string, error) {
+	jar, err := zip.NewReader(bytes.NewReader(contents), int64(len(contents)))
+	if err != nil {
+		return "", errors.New("JAR is not a valid ZIP archive")
+	}
+	for _, file := range jar.File {
+		if file.Name != "plugin.yml" && file.Name != "paper-plugin.yml" {
+			continue
+		}
+		if file.UncompressedSize64 > 64<<10 {
+			return "", errors.New("plugin descriptor is too large")
+		}
+		stream, err := file.Open()
+		if err != nil {
+			return "", err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(stream, (64<<10)+1))
+		_ = stream.Close()
+		if readErr != nil {
+			return "", readErr
+		}
+		match := regexp.MustCompile(`(?m)^name:\s*["']?([A-Za-z0-9_-]{2,64})["']?\s*(?:#.*)?$`).FindSubmatch(data)
+		if len(match) == 2 {
+			return string(match[1]), nil
+		}
+	}
+	return "", errors.New("plugin descriptor has no valid name")
 }
 
 func pluginExpectedIntegrity(args map[string]any) (string, string) {

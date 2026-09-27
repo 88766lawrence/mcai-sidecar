@@ -292,7 +292,7 @@ func (c *Client) UploadFile(ctx context.Context, ref, uploadDir, fileName string
 	}
 	daemonBase = strings.Replace(daemonBase, "ws://", "http://", 1)
 	daemonBase = strings.Replace(daemonBase, "wss://", "https://", 1)
-	uploadURL, err := url.Parse(strings.TrimRight(daemonBase, "/") + "/upload/" + url.PathEscape(passport.Data.Password) + "?overwrite=true")
+	uploadURL, err := url.Parse(strings.TrimRight(daemonBase, "/") + "/upload/" + url.PathEscape(passport.Data.Password) + "?overwrite=false")
 	if err != nil || (uploadURL.Scheme != "http" && uploadURL.Scheme != "https") {
 		return errors.New("panel returned an invalid daemon upload address")
 	}
@@ -324,6 +324,32 @@ func (c *Client) UploadFile(ctx context.Context, ref, uploadDir, fileName string
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || strings.TrimSpace(string(result)) != "OK" {
 		return fmt.Errorf("daemon upload failed with HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+// EnsurePluginUpdateDirectory prepares Paper's standard update folder without
+// modifying the live plugins. Only this exact directory is permitted.
+func (c *Client) EnsurePluginUpdateDirectory(ctx context.Context, ref string) error {
+	daemonID, uuid, err := parseRef(ref)
+	if err != nil {
+		return err
+	}
+	plugins, err := c.ListFileEntries(ctx, ref, "/plugins")
+	if err != nil || plugins.Truncated || plugins.Total != len(plugins.Names) {
+		return errors.New("cannot verify the plugins directory before preparing updates")
+	}
+	if !containsExactName(plugins.Names, "update") {
+		var response apiResponse[any]
+		if err := c.call(ctx, http.MethodPost, "/api/files/mkdir", url.Values{
+			"daemonId": {daemonID}, "uuid": {uuid},
+		}, map[string]string{"target": "/plugins/update"}, &response); err != nil {
+			return fmt.Errorf("create Paper plugin update directory: %w", err)
+		}
+	}
+	updates, err := c.ListFileEntries(ctx, ref, "/plugins/update")
+	if err != nil || updates.Truncated || updates.Total != len(updates.Names) {
+		return errors.New("cannot verify the Paper plugin update directory")
 	}
 	return nil
 }
