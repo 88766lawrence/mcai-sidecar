@@ -57,9 +57,9 @@ const eventDefinitions: MatchDefinition[] = [
 const definitions = [...subjectDefinitions, ...eventDefinitions];
 const knownTokens = new Set(["all", ...definitions.map((item) => item.token)]);
 const subjectTokens = new Set(subjectDefinitions.map((item) => item.token));
-// A bounded named-plugin literal allows the agent schema to target EssentialsX
-// without broadening the accepted tool arguments to arbitrary search strings.
-export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens, "literal:Essentials"].sort();
+// Bounded named-plugin literals let activation verification target specific
+// startup lines without broadening tool arguments to arbitrary search strings.
+export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens, "literal:Essentials", "literal:LuckPerms"].sort();
 
 export function compileLogFilterQuery(intent: string): LogFilterQueryV1 {
   const subjects = matchingDefinitions(intent, subjectDefinitions).map((item) => item.token);
