@@ -804,8 +804,6 @@ def _plugin_post_activation_verification(
     arguments = (install.get("data") or {}).get("call_arguments", {}) if isinstance(install.get("data"), dict) else {}
     project = str(arguments.get("project") or "").strip().lower()
     log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials"}.get(project)
-    if not log_literal:
-        return None
     activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
                        if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
     if activation is None:
@@ -819,15 +817,22 @@ def _plugin_post_activation_verification(
         return None
     if not any(item.get("tool") == "files.list" and item.get("status") == "succeeded" for item in later):
         return None
-    if not any(item.get("tool") == "logs.query" and
-               (item.get("data") or {}).get("call_arguments", {}).get("filter_query", {}).get("groups") ==
-               [{"all_of": [log_literal], "any_of": []}]
-               for item in later if isinstance(item.get("data"), dict)):
-        if "logs.query" in names:
-            return {"action": "tool_call", "tool": "logs.query", "arguments": {
-                "window_minutes": 60, "max_lines": 500,
-                "filter_query": {"groups": [{"all_of": [log_literal], "any_of": []}]},
-            }, "reason": "核对服务端启动日志中的插件启用结果。"}
+    if log_literal:
+        if not any(item.get("tool") == "logs.query" and
+                   (item.get("data") or {}).get("call_arguments", {}).get("filter_query", {}).get("groups") ==
+                   [{"all_of": [log_literal], "any_of": []}]
+                   for item in later if isinstance(item.get("data"), dict)):
+            if "logs.query" in names:
+                return {"action": "tool_call", "tool": "logs.query", "arguments": {
+                    "window_minutes": 60, "max_lines": 500,
+                    "filter_query": {"groups": [{"all_of": [log_literal], "any_of": []}]},
+                }, "reason": "核对服务端启动日志中的插件启用结果。"}
+    elif not any(item.get("tool") == "console.command" and
+                 (item.get("data") or {}).get("call_arguments", {}).get("command") == "plugins"
+                 for item in later if isinstance(item.get("data"), dict)):
+        if "console.command" in names:
+            return {"action": "tool_call", "tool": "console.command", "arguments": {"command": "plugins"},
+                    "reason": "核对运行时是否已加载目标插件。"}
     return None
 
 
@@ -857,7 +862,10 @@ def _plugin_post_activation_final(
                  and isinstance(item.get("data"), dict)
                  and item["data"].get("call_arguments", {}).get("filter_query", {}).get("groups") ==
                  [{"all_of": [log_literal], "any_of": []}]), None)
-    if files is None or logs is None or not log_literal:
+    console = next((item for item in later if item.get("tool") == "console.command" and item.get("status") == "succeeded"
+                    and isinstance(item.get("data"), dict)
+                    and item["data"].get("call_arguments", {}).get("command") == "plugins"), None)
+    if files is None or (logs is None if log_literal else console is None):
         return None
     entries: list[str] = []
     file_data = files.get("data") if isinstance(files.get("data"), dict) else {}
@@ -869,7 +877,7 @@ def _plugin_post_activation_final(
             entries = [str(entry.get("name")) for entry in result.get("entries", []) if isinstance(entry, dict)]
             break
     samples: list[str] = []
-    log_data = logs.get("data") if isinstance(logs.get("data"), dict) else {}
+    log_data = logs.get("data") if logs is not None and isinstance(logs.get("data"), dict) else {}
     for fact in log_data.get("observations", []):
         if not isinstance(fact, dict) or not isinstance(fact.get("observed"), dict):
             continue
@@ -878,12 +886,19 @@ def _plugin_post_activation_final(
             samples = [str(sample) for sample in result["samples"] if isinstance(sample, str)]
             break
     display_name = artifact.split("-", 1)[0] if artifact.split("-", 1)[0].lower() == project.lower() else project
-    loaded = any(re.search(rf"\[{re.escape(display_name)}\]\s+Successfully enabled\b", sample, re.I) for sample in samples)
+    if log_literal:
+        log_label = log_literal.split(":", 1)[1]
+        loaded = any(re.search(rf"\[{re.escape(log_label)}\]\s+Successfully enabled\b", sample, re.I) for sample in samples)
+    else:
+        summaries = (console.get("evidence") or {}).get("summaries", []) if isinstance(console.get("evidence"), dict) else []
+        inventory = "\n".join(str(value) for value in summaries)
+        loaded = bool(re.search(rf"(?:Server\s+)?Plugins\s*\(\d+\)\s*:[^\r\n]*\b{re.escape(project)}\b", inventory, re.I))
     matching = [name for name in entries if name.lower().endswith(".jar") and name.lower().startswith(project.lower())]
     verified = artifact in matching and len(matching) == 1 and loaded
     verb = "启动" if activation[1].get("tool") == "instance.start" else "重启"
     if verified:
-        answer = f"已安装 {display_name}（{artifact}）。实例{verb}后，插件目录只保留这一个同名 JAR，启动日志确认已加载 {display_name}。"
+        evidence_label = "启动日志" if log_literal else "运行时插件列表"
+        answer = f"已安装 {display_name}（{artifact}）。实例{verb}后，插件目录只保留这一个同名 JAR，{evidence_label}确认已加载 {display_name}。"
     else:
         answer = f"已执行 {display_name} 的安装和实例{verb}，但启动后核验未能同时确认新版 JAR 唯一存在且插件已加载；本次不能判定安装完全生效。"
     citations = list(dict.fromkeys(str(item["tool_call_id"]) for item in observations

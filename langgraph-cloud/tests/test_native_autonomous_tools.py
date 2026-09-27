@@ -245,6 +245,24 @@ async def test_plugin_activation_read_decisions_pass_full_agent_validation():
     assert "已加载 LuckPerms" in third["decision"]["answer"]
 
 
+async def test_other_plugins_keep_runtime_inventory_verification():
+    observations = [
+        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
+         "data": {"call_arguments": {"project": "WorldEdit", "artifact_ref": "WorldEdit-7.3.0.jar"}}},
+        {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
+        {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
+         "data": {"observations": [{"observed": {"schema_version": "files-list-result/v1",
+             "path": "plugins", "truncated": False, "entries": [{"name": "WorldEdit-7.3.0.jar"}]}}]}},
+    ]
+    tools = [{"name": "files.list"}, {"name": "logs.query"}, {"name": "console.command"}]
+    assert graph_module._plugin_post_activation_verification("安装 WorldEdit", tools, observations)["tool"] == "console.command"
+    observations.append({"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
+                         "data": {"call_arguments": {"command": "plugins"}},
+                         "evidence": {"summaries": ["Server Plugins (1): WorldEdit"]}})
+    answer = graph_module._plugin_post_activation_final("安装 WorldEdit", observations)
+    assert answer is not None and "运行时插件列表确认已加载 WorldEdit" in answer["answer"]
+
+
 async def test_repeated_plugin_resolution_repairs_to_next_project():
     def resolve_call(project):
         return {"tool_calls": [{"id": f"call-{project}", "type": "function", "function": {
