@@ -794,6 +794,8 @@ def _plugin_post_activation_verification(
     """Read the installed JAR and loaded-plugin inventory after activation."""
     if not re.search(r"安装|装上|部署|更新|升级|\binstall\b|\bupdate\b", message, re.I):
         return None
+    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+        return None
     installs = [(index, item) for index, item in enumerate(observations)
                 if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
     if len(installs) != 1:
@@ -824,6 +826,8 @@ def _plugin_post_activation_verification(
 def _plugin_post_activation_final(
     message: str, observations: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+        return None
     installs = [(index, item) for index, item in enumerate(observations)
                 if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
     if len(installs) != 1:

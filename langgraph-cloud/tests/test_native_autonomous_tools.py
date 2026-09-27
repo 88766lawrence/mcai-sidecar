@@ -166,6 +166,7 @@ async def test_plugin_activation_verifies_files_and_loaded_inventory_before_fina
         "action": "tool_call", "tool": "files.list", "arguments": {"path": "plugins", "suffix": ".jar"},
         "reason": "启动后核对新版与旧版插件文件。",
     }
+    assert next_read("同时安装 LuckPerms 和 EssentialsX", tools, observations) is None
     assert final("找到并安装 LuckPerms", observations) is None
     observations.append({"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
                          "data": {"call_arguments": {"path": "plugins", "suffix": ".jar"},
@@ -177,6 +178,7 @@ async def test_plugin_activation_verifies_files_and_loaded_inventory_before_fina
                          "data": {"call_arguments": {"command": "plugins"}},
                          "evidence": {"summaries": ["Server Plugins (1): LuckPerms"]}})
     assert next_read("找到并安装 LuckPerms", tools, observations) is None
+    assert final("同时安装 LuckPerms 和 EssentialsX", observations) is None
     answer = final("找到并安装 LuckPerms", observations)
     assert answer is not None and "已加载 LuckPerms" in answer["answer"]
     assert "重启" not in answer["answer"]
