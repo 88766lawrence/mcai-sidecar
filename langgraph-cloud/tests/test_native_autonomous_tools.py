@@ -153,13 +153,13 @@ async def test_single_plugin_install_continues_to_restart_decision():
     assert result["decision"]["arguments"] == {"target": "instance-1"}
 
 
-async def test_plugin_activation_verifies_files_and_loaded_inventory_before_final():
+async def test_plugin_activation_verifies_files_and_startup_log_before_final():
     observations = [
         {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
          "data": {"call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms-Bukkit-5.5.71.jar"}}},
         {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
     ]
-    tools = [{"name": "files.list"}, {"name": "console.command"}]
+    tools = [{"name": "files.list"}, {"name": "logs.query"}]
     next_read = graph_module._plugin_post_activation_verification
     final = graph_module._plugin_post_activation_final
     assert next_read("找到并安装 LuckPerms", tools, observations) == {
@@ -173,17 +173,28 @@ async def test_plugin_activation_verifies_files_and_loaded_inventory_before_fina
                                   "observations": [{"kind": "files", "observed": {
                                       "schema_version": "files-list-result/v1", "path": "plugins", "truncated": False,
                                       "entries": [{"name": "LuckPerms-Bukkit-5.5.71.jar"}]}}]}})
-    assert next_read("找到并安装 LuckPerms", tools, observations)["tool"] == "console.command"
-    observations.append({"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
-                         "data": {"call_arguments": {"command": "plugins"}},
-                         "evidence": {"summaries": ["Server Plugins (1): LuckPerms"]}})
+    assert next_read("找到并安装 LuckPerms", tools, observations) == {
+        "action": "tool_call", "tool": "logs.query", "arguments": {
+            "window_minutes": 60, "max_lines": 500,
+            "filter_query": {"groups": [{"all_of": ["literal:LuckPerms"], "any_of": []}]},
+        }, "reason": "核对服务端启动日志中的插件启用结果。",
+    }
+    observations.append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
+                         "data": {"call_arguments": {"filter_query": {"groups": [
+                             {"all_of": ["literal:LuckPerms"], "any_of": []}]}},
+                                  "observations": [{"kind": "logs", "observed": {
+                                      "schema_version": "logs-query-result/v1", "matches": 4,
+                                      "samples": ["[Server thread/INFO]: [LuckPerms] Successfully enabled. (took 922ms)"]}}]}})
     assert next_read("找到并安装 LuckPerms", tools, observations) is None
     assert final("同时安装 LuckPerms 和 EssentialsX", observations) is None
     answer = final("找到并安装 LuckPerms", observations)
     assert answer is not None and "已加载 LuckPerms" in answer["answer"]
     assert "重启" not in answer["answer"]
-    assert answer["citations"] == ["install-1", "start-1", "files-1", "plugins-1"]
+    assert answer["citations"] == ["install-1", "start-1", "files-1", "logs-1"]
     observations[2]["data"]["observations"][0]["observed"]["entries"].append({"name": "LuckPerms-Bukkit-5.5.53.jar"})
+    assert "不能判定安装完全生效" in final("找到并安装 LuckPerms", observations)["answer"]
+    observations[2]["data"]["observations"][0]["observed"]["entries"].pop()
+    observations[3]["data"]["observations"][0]["observed"]["samples"] = ["[LuckPerms] Loading storage provider..."]
     assert "不能判定安装完全生效" in final("找到并安装 LuckPerms", observations)["answer"]
 
 
@@ -196,9 +207,16 @@ async def test_plugin_activation_read_decisions_pass_full_agent_validation():
         {"name": "files.list", "description": "Read plugin files.", "input_schema": {
             "type": "object", "additionalProperties": False,
             "properties": {"path": {"type": "string"}, "suffix": {"type": "string"}}, "required": ["path"]}},
-        {"name": "console.command", "description": "Read loaded plugins.", "input_schema": {
-            "type": "object", "additionalProperties": False,
-            "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+        {"name": "logs.query", "description": "Read startup logs.", "input_schema": {
+            "type": "object", "additionalProperties": False, "properties": {
+                "window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
+                "filter_query": {"type": "object", "additionalProperties": False,
+                    "properties": {"groups": {"type": "array", "items": {"type": "object",
+                        "additionalProperties": False, "properties": {
+                            "all_of": {"type": "array", "items": {"enum": ["literal:LuckPerms"]}},
+                            "any_of": {"type": "array", "items": {"enum": ["literal:LuckPerms"]}},
+                        }, "required": ["all_of", "any_of"]}}}, "required": ["groups"]}},
+            "required": ["window_minutes", "max_lines", "filter_query"]}},
     ]
     request["observations"] = [
         {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
@@ -214,14 +232,35 @@ async def test_plugin_activation_read_decisions_pass_full_agent_validation():
                                                  "schema_version": "files-list-result/v1", "path": "plugins", "truncated": False,
                                                  "entries": [{"name": "LuckPerms-Bukkit-5.5.71.jar"}]}}]}})
     second = await graph.decide_agent_loop(request)
-    assert second["decision"]["tool"] == "console.command"
+    assert second["decision"]["tool"] == "logs.query"
     request["round"] = 6
-    request["observations"].append({"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
-                                    "data": {"call_arguments": {"command": "plugins"}},
-                                    "evidence": {"summaries": ["Server Plugins (1): LuckPerms"]}})
+    request["observations"].append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
+                                    "data": {"call_arguments": {"filter_query": {"groups": [
+                                        {"all_of": ["literal:LuckPerms"], "any_of": []}]}},
+                                             "observations": [{"kind": "logs", "observed": {
+                                                 "schema_version": "logs-query-result/v1", "matches": 1,
+                                                 "samples": ["[LuckPerms] Successfully enabled. (took 922ms)"]}}]}})
     third = await graph.decide_agent_loop(request)
     assert third["decision"]["action"] == "final"
     assert "已加载 LuckPerms" in third["decision"]["answer"]
+
+
+async def test_other_plugins_keep_runtime_inventory_verification():
+    observations = [
+        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
+         "data": {"call_arguments": {"project": "WorldEdit", "artifact_ref": "WorldEdit-7.3.0.jar"}}},
+        {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
+        {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
+         "data": {"observations": [{"observed": {"schema_version": "files-list-result/v1",
+             "path": "plugins", "truncated": False, "entries": [{"name": "WorldEdit-7.3.0.jar"}]}}]}},
+    ]
+    tools = [{"name": "files.list"}, {"name": "logs.query"}, {"name": "console.command"}]
+    assert graph_module._plugin_post_activation_verification("安装 WorldEdit", tools, observations)["tool"] == "console.command"
+    observations.append({"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
+                         "data": {"call_arguments": {"command": "plugins"}},
+                         "evidence": {"summaries": ["Server Plugins (1): WorldEdit"]}})
+    answer = graph_module._plugin_post_activation_final("安装 WorldEdit", observations)
+    assert answer is not None and "运行时插件列表确认已加载 WorldEdit" in answer["answer"]
 
 
 async def test_repeated_plugin_resolution_repairs_to_next_project():
@@ -1218,8 +1257,9 @@ async def main():
         test_plugin_install_is_exposed_only_after_successful_resolution,
         test_single_plugin_install_requests_approved_activation_once,
         test_single_plugin_install_continues_to_restart_decision,
-        test_plugin_activation_verifies_files_and_loaded_inventory_before_final,
+        test_plugin_activation_verifies_files_and_startup_log_before_final,
         test_plugin_activation_read_decisions_pass_full_agent_validation,
+        test_other_plugins_keep_runtime_inventory_verification,
         test_repeated_plugin_resolution_repairs_to_next_project,
         test_repeated_tps_read_repairs_to_resource_metrics,
         test_natural_answer_requires_no_tool_call,

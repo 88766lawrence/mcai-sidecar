@@ -13,6 +13,13 @@ describe("structured log filter query", () => {
     expect(matchesLogFilterQuery("[Essentials] You are running an unsupported server version! ERROR", result.query)).toBe(true);
     expect(matchesLogFilterQuery("[PaperVersionFetcher] Error while parsing version", result.query)).toBe(false);
   });
+  it("accepts the LuckPerms startup literal", () => {
+    const result = canonicalizeLogFilterGroups([{ all_of: ["literal:LuckPerms"], any_of: [] }]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(matchesLogFilterQuery("[LuckPerms] Successfully enabled. (took 922ms)", result.query)).toBe(true);
+    expect(matchesLogFilterQuery("[Essentials] Successfully enabled.", result.query)).toBe(false);
+  });
   it.each([
     ["检查组件初始化失败或依赖项缺失的近期记录", "software_component", ["initialization_failure", "dependency_missing"]],
     ["Were any module dependencies unavailable or extensions unable to initialize?", "software_component", ["initialization_failure", "dependency_missing"]],
