@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -517,6 +520,7 @@ type pluginProvider struct {
 	listing    string
 	latestLog  []byte
 	existing   []string
+	oldBinary  []byte
 }
 
 func (p *pluginProvider) ListInstances(context.Context) ([]provider.Instance, error) { return nil, nil }
@@ -532,8 +536,19 @@ func (p *pluginProvider) ListFiles(context.Context, string, string) (string, err
 	}
 	return "共 1 项：" + p.uploadName, nil
 }
-func (p *pluginProvider) ListFileEntries(context.Context, string, string) (provider.FileListing, error) {
-	return provider.FileListing{Names: append([]string(nil), p.existing...), Total: len(p.existing)}, nil
+func (p *pluginProvider) ListFileEntries(_ context.Context, _ string, target string) (provider.FileListing, error) {
+	var names []string
+	if target == "/plugins/update" {
+		if p.uploadDir == "plugins/update" {
+			names = []string{p.uploadName}
+		}
+	} else {
+		names = append([]string(nil), p.existing...)
+		if p.uploadDir == "plugins" {
+			names = append(names, p.uploadName)
+		}
+	}
+	return provider.FileListing{Names: names, Total: len(names)}, nil
 }
 func (p *pluginProvider) DownloadFromURL(context.Context, string, string, string) error { return nil }
 func (p *pluginProvider) UpdateStartConfig(context.Context, string, provider.StartConfig) error {
@@ -553,6 +568,21 @@ func (p *pluginProvider) GetInstance(context.Context, string) (provider.Instance
 func (p *pluginProvider) UploadFile(_ context.Context, _ string, directory, name string, contents []byte) error {
 	p.uploadDir, p.uploadName, p.uploaded = directory, name, append([]byte(nil), contents...)
 	return nil
+}
+func (p *pluginProvider) EnsurePluginUpdateDirectory(context.Context, string) error { return nil }
+func (p *pluginProvider) ReadBinaryFile(_ context.Context, _ string, target string) ([]byte, error) {
+	if target == "plugins/"+p.existingName() {
+		return append([]byte(nil), p.oldBinary...), nil
+	}
+	return append([]byte(nil), p.uploaded...), nil
+}
+func (p *pluginProvider) existingName() string {
+	for _, name := range p.existing {
+		if strings.HasSuffix(name, ".jar") {
+			return name
+		}
+	}
+	return ""
 }
 func (p *pluginProvider) DeleteFiles(_ context.Context, _ string, targets []string) error {
 	p.deleted = append([]string(nil), targets...)
@@ -602,8 +632,9 @@ func TestPluginResolveInstallAndRollback(t *testing.T) {
 	}
 }
 
-func TestPluginInstallRefusesDuplicateExistingVersion(t *testing.T) {
-	contents := []byte("verified-plugin")
+func TestPluginInstallStagesVerifiedReplacement(t *testing.T) {
+	oldContents := testPluginJar(t, "LuckPerms", "old")
+	contents := testPluginJar(t, "LuckPerms", "new")
 	hash256 := sha256.Sum256(contents)
 	hash512 := sha512.Sum512(contents)
 	executor := New(t.TempDir(), nil)
@@ -615,7 +646,7 @@ func TestPluginInstallRefusesDuplicateExistingVersion(t *testing.T) {
 	}}
 	resolvePlan := protocol.TaskPlan{TaskID: "task-duplicate-resolve", InstanceRef: "mcs:daemon:instance"}
 	installPlan := protocol.TaskPlan{TaskID: "task-duplicate-install", InstanceRef: "mcs:daemon:instance"}
-	p := &pluginProvider{existing: []string{"LuckPerms-Bukkit-5.5.53.jar", "WorldEdit.jar"}}
+	p := &pluginProvider{existing: []string{"LuckPerms-Bukkit-5.5.53.jar", "WorldEdit.jar"}, oldBinary: oldContents}
 	if err := executor.executeStep(context.Background(), p, resolvePlan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
 		"project": "luckperms", "loader": "paper", "minecraft_version": "1.21.1",
 	}}, func(string, string, string, ...map[string]any) {}); err != nil {
@@ -625,9 +656,69 @@ func TestPluginInstallRefusesDuplicateExistingVersion(t *testing.T) {
 		"project": "luckperms", "expected_integrity": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(hash256[:])},
 		"source_task_id": resolvePlan.TaskID,
 	}}, func(string, string, string, ...map[string]any) {})
-	if err == nil || !strings.Contains(err.Error(), "already has a JAR") || p.uploadName != "" {
-		t.Fatalf("duplicate installation was not stopped before upload: err=%v uploaded=%q", err, p.uploadName)
+	if err != nil || p.uploadDir != "plugins/update" || p.uploadName != "LuckPerms-Bukkit-5.5.71.jar" {
+		t.Fatalf("replacement was not staged for Paper update: err=%v dir=%q name=%q", err, p.uploadDir, p.uploadName)
 	}
+	backup, err := os.ReadFile(filepath.Join(executor.pluginTaskDir(installPlan.TaskID), "replaced.jar"))
+	if err != nil || !bytes.Equal(backup, oldContents) {
+		t.Fatalf("old JAR backup missing: %v", err)
+	}
+	executor.rollbackPlugin(context.Background(), p, installPlan, func(string, string, string, ...map[string]any) {})
+	if len(p.deleted) != 1 || p.deleted[0] != "plugins/update/LuckPerms-Bukkit-5.5.71.jar" {
+		t.Fatalf("rollback changed the wrong JAR: %v", p.deleted)
+	}
+}
+
+func TestPluginInstallRejectsDifferentPluginInMatchingFilename(t *testing.T) {
+	oldContents := testPluginJar(t, "LuckPerms", "old")
+	contents := testPluginJar(t, "OtherPlugin", "new")
+	hash256 := sha256.Sum256(contents)
+	hash512 := sha512.Sum512(contents)
+	executor := New(t.TempDir(), nil)
+	executor.pluginResolver = staticPluginResolver{artifact: resolvedPlugin{
+		Project: "luckperms", VersionID: "new", VersionNumber: "5.5.71",
+		FileName: "LuckPerms-Bukkit-5.5.71.jar", SourceURL: "https://cdn.modrinth.com/data/test.jar",
+		SourceSHA512: hex.EncodeToString(hash512[:]), LocalSHA256: hex.EncodeToString(hash256[:]), Contents: contents,
+		Source: "modrinth", Compatibility: "exact-game-version",
+	}}
+	resolvePlan := protocol.TaskPlan{TaskID: "task-mismatch-resolve", InstanceRef: "mcs:daemon:instance"}
+	installPlan := protocol.TaskPlan{TaskID: "task-mismatch-install", InstanceRef: "mcs:daemon:instance"}
+	p := &pluginProvider{existing: []string{"LuckPerms-Bukkit-5.5.53.jar"}, oldBinary: oldContents}
+	if err := executor.executeStep(context.Background(), p, resolvePlan, protocol.TaskStep{Tool: "plugin.resolve", Args: map[string]any{
+		"project": "luckperms", "loader": "paper", "minecraft_version": "1.21.1",
+	}}, func(string, string, string, ...map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	err := executor.executeStep(context.Background(), p, installPlan, protocol.TaskStep{Tool: "plugin.install", Args: map[string]any{
+		"project": "luckperms", "expected_integrity": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(hash256[:])}, "source_task_id": resolvePlan.TaskID,
+	}}, func(string, string, string, ...map[string]any) {})
+	if err == nil || !strings.Contains(err.Error(), "identities do not match") || p.uploadName != "" {
+		t.Fatalf("wrong plugin was staged: err=%v name=%q", err, p.uploadName)
+	}
+}
+
+func testPluginJar(t *testing.T, name, payload string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	descriptor, err := writer.Create("plugin.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptor.Write([]byte("name: " + name + "\nversion: 1\n")); err != nil {
+		t.Fatal(err)
+	}
+	file, err := writer.Create("payload.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
 
 func TestPluginMetadataOnlyResolveFetchesVerifiedArtifactDuringInstall(t *testing.T) {

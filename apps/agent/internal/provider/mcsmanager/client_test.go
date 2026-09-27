@@ -96,7 +96,7 @@ func TestUploadFileUsesOneTimeDaemonPassport(t *testing.T) {
 	var uploadedName string
 	var uploadedContents string
 	daemon := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/upload/passport-1" || request.URL.Query().Get("overwrite") != "true" {
+		if request.Method != http.MethodPost || request.URL.Path != "/upload/passport-1" || request.URL.Query().Get("overwrite") != "false" {
 			t.Fatalf("unexpected daemon request %s %s", request.Method, request.URL.String())
 		}
 		if err := request.ParseMultipartForm(1 << 20); err != nil {
