@@ -124,6 +124,34 @@ async def test_plugin_install_is_exposed_only_after_successful_resolution():
     assert [item["name"] for item in available(tools, [{"tool": "plugin.resolve", "status": "succeeded"}])] == ["plugin.resolve", "plugin.install", "config.patch"]
 
 
+async def test_single_plugin_install_requests_approved_activation_once():
+    tools = [{"name": "instance.restart"}, {"name": "instance.start"}]
+    observations = [{"tool": "plugin.install", "status": "succeeded",
+                     "data": {"call_arguments": {"project": "luckperms"}}}]
+    helper = graph_module._plugin_activation_after_install
+    assert helper("找到并安装 LuckPerms", tools, observations, {"id": "instance-1", "state": "running"}) == {
+        "action": "tool_call", "tool": "instance.restart", "arguments": {"target": "instance-1"},
+        "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。",
+    }
+    assert helper("找到并安装 LuckPerms", tools, observations, {"id": "instance-1", "state": "stopped"})["tool"] == "instance.start"
+    assert helper("找到并安装 LuckPerms 和 EssentialsX", tools, observations, {"id": "instance-1", "state": "running"}) is None
+    assert helper("安装 LuckPerms，但不要重启", tools, observations, {"id": "instance-1", "state": "running"}) is None
+    observations.append({"tool": "instance.restart", "status": "succeeded"})
+    assert helper("找到并安装 LuckPerms", tools, observations, {"id": "instance-1", "state": "running"}) is None
+
+
+async def test_single_plugin_install_continues_to_restart_decision():
+    graph = object.__new__(McaiGraph)
+    graph.provider = FakeNativeProvider({"content": "unused", "tool_calls": []})
+    request = payload("找到并安装 LuckPerms")
+    request["round"] = 2
+    request["observations"] = [{"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
+                                "data": {"call_arguments": {"project": "luckperms"}}}]
+    result = await graph.decide_agent_loop(request)
+    assert result["decision"]["tool"] == "instance.restart"
+    assert result["decision"]["arguments"] == {"target": "instance-1"}
+
+
 async def test_repeated_plugin_resolution_repairs_to_next_project():
     def resolve_call(project):
         return {"tool_calls": [{"id": f"call-{project}", "type": "function", "function": {
@@ -1116,6 +1144,8 @@ async def main():
     tests = [
         test_model_receives_complete_catalog_and_owns_tool_selection,
         test_plugin_install_is_exposed_only_after_successful_resolution,
+        test_single_plugin_install_requests_approved_activation_once,
+        test_single_plugin_install_continues_to_restart_decision,
         test_repeated_plugin_resolution_repairs_to_next_project,
         test_repeated_tps_read_repairs_to_resource_metrics,
         test_natural_answer_requires_no_tool_call,

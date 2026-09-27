@@ -759,6 +759,39 @@ def _plugin_install_after_resolution(
     }
 
 
+def _plugin_activation_after_install(
+    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]], instance: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Activate one installed plugin through the existing lifecycle approval."""
+    if re.search(r"(?:不要|别|无需|不必|禁止)[^，。；;\r\n]{0,16}(?:重启|启动|生效)|(?:do not|don't|without)\s+(?:restart|start)", message, re.I):
+        return None
+    if re.search(r"同时|以及|\b(?:and|both)\b|[、，,]|(?:和|与)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+        return None
+    installed = [(index, item) for index, item in enumerate(observations)
+                 if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
+    if len(installed) != 1:
+        return None
+    index, install = installed[0]
+    if any(item.get("tool") in {"instance.start", "instance.restart"} for item in observations[index + 1:]):
+        return None
+    data = install.get("data") if isinstance(install.get("data"), dict) else {}
+    args = data.get("call_arguments") if isinstance(data.get("call_arguments"), dict) else {}
+    project = str(args.get("project") or "").strip()
+    if not project or not re.search(rf"\b{re.escape(project)}\b", message, re.I):
+        return None
+    if any(item.get("tool") == "plugin.resolve" and item.get("status") == "succeeded"
+           and str((item.get("data") or {}).get("call_arguments", {}).get("project") or "").lower() != project.lower()
+           for item in observations if isinstance(item.get("data"), dict)):
+        return None
+    state = str(instance.get("state") or "").lower()
+    lifecycle = "instance.restart" if state == "running" else "instance.start" if state == "stopped" else ""
+    target = str(instance.get("id") or "")
+    if not lifecycle or not target or lifecycle not in {item["name"] for item in tools}:
+        return None
+    return {"action": "tool_call", "tool": lifecycle, "arguments": {"target": target},
+            "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。"}
+
+
 def _paper_plugin_guidance_search(
     message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -2344,6 +2377,10 @@ class McaiGraph:
         if pending_install is not None and _validate_agent_loop_decision(pending_install, tools, observations, limits) is None:
             return {"decision": pending_install, "requestId": request_id,
                     "providerModel": "resolved-plugin-install", "repairUsed": False}
+        pending_activation = _plugin_activation_after_install(message, tools, observations, instance)
+        if pending_activation is not None and _validate_agent_loop_decision(pending_activation, tools, observations, limits) is None:
+            return {"decision": pending_activation, "requestId": request_id,
+                    "providerModel": "installed-plugin-activation", "repairUsed": False}
         source_search = _paper_plugin_guidance_search(message, tools, observations)
         if source_search is not None and _validate_agent_loop_decision(source_search, tools, observations, limits) is None:
             return {"decision": source_search, "requestId": request_id,
