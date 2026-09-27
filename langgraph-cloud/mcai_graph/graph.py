@@ -765,7 +765,7 @@ def _plugin_activation_after_install(
     """Activate one installed plugin through the existing lifecycle approval."""
     if re.search(r"(?:不要|别|无需|不必|禁止)[^，。；;\r\n]{0,16}(?:重启|启动|生效)|(?:do not|don't|without)\s+(?:restart|start)", message, re.I):
         return None
-    if re.search(r"同时|以及|\b(?:and|both)\b|[、，,]|(?:和|与)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
+    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
         return None
     installed = [(index, item) for index, item in enumerate(observations)
                  if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
@@ -777,11 +777,7 @@ def _plugin_activation_after_install(
     data = install.get("data") if isinstance(install.get("data"), dict) else {}
     args = data.get("call_arguments") if isinstance(data.get("call_arguments"), dict) else {}
     project = str(args.get("project") or "").strip()
-    if not project or not re.search(rf"\b{re.escape(project)}\b", message, re.I):
-        return None
-    if any(item.get("tool") == "plugin.resolve" and item.get("status") == "succeeded"
-           and str((item.get("data") or {}).get("call_arguments", {}).get("project") or "").lower() != project.lower()
-           for item in observations if isinstance(item.get("data"), dict)):
+    if not project or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(project)}(?![A-Za-z0-9_-])", message, re.I):
         return None
     state = str(instance.get("state") or "").lower()
     lifecycle = "instance.restart" if state == "running" else "instance.start" if state == "stopped" else ""

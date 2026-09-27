@@ -134,6 +134,7 @@ async def test_single_plugin_install_requests_approved_activation_once():
         "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。",
     }
     assert helper("找到并安装 LuckPerms", tools, observations, {"id": "instance-1", "state": "stopped"})["tool"] == "instance.start"
+    assert helper("安装LuckPerms，完成后检查", tools, observations, {"id": "instance-1", "state": "running"})["tool"] == "instance.restart"
     assert helper("找到并安装 LuckPerms 和 EssentialsX", tools, observations, {"id": "instance-1", "state": "running"}) is None
     assert helper("安装 LuckPerms，但不要重启", tools, observations, {"id": "instance-1", "state": "running"}) is None
     observations.append({"tool": "instance.restart", "status": "succeeded"})
