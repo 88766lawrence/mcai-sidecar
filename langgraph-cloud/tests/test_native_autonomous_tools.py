@@ -263,6 +263,32 @@ async def test_other_plugins_keep_runtime_inventory_verification():
     assert answer is not None and "运行时插件列表确认已加载 WorldEdit" in answer["answer"]
 
 
+async def test_viaversion_activation_uses_startup_log():
+    observations = [
+        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
+         "data": {"call_arguments": {"project": "viaversion", "artifact_ref": "ViaVersion-5.12.1-SNAPSHOT.jar"}}},
+        {"tool_call_id": "restart-1", "tool": "instance.restart", "status": "succeeded"},
+        {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
+         "data": {"observations": [{"observed": {"schema_version": "files-list-result/v1",
+             "path": "plugins", "truncated": False, "entries": [{"name": "ViaVersion-5.12.1-SNAPSHOT.jar"}]}}]}},
+    ]
+    tools = [{"name": "files.list"}, {"name": "logs.query"}, {"name": "console.command"}]
+    next_read = graph_module._plugin_post_activation_verification("安装 ViaVersion", tools, observations)
+    assert next_read["tool"] == "logs.query"
+    assert next_read["arguments"]["filter_query"]["groups"] == [
+        {"all_of": ["literal:ViaVersion"], "any_of": []}]
+    observations.append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
+                         "data": {"call_arguments": {"filter_query": {"groups": [
+                             {"all_of": ["literal:ViaVersion"], "any_of": []}]}},
+                                  "observations": [{"observed": {"schema_version": "logs-query-result/v1",
+                                      "matches": 2, "samples": [
+                                          "[17:07:19] [Server thread/INFO]: [ViaVersion] Loading server plugin ViaVersion v5.12.1-SNAPSHOT",
+                                          "[17:07:19] [Server thread/INFO]: [ViaVersion] ViaVersion 5.12.1-SNAPSHOT is now loaded. Registering protocol transformers and injecting...",
+                                      ]}}]}})
+    answer = graph_module._plugin_post_activation_final("安装 ViaVersion", observations)
+    assert answer is not None and "启动日志确认已加载 ViaVersion" in answer["answer"]
+
+
 async def test_repeated_plugin_resolution_repairs_to_next_project():
     def resolve_call(project):
         return {"tool_calls": [{"id": f"call-{project}", "type": "function", "function": {
@@ -1260,6 +1286,7 @@ async def main():
         test_plugin_activation_verifies_files_and_startup_log_before_final,
         test_plugin_activation_read_decisions_pass_full_agent_validation,
         test_other_plugins_keep_runtime_inventory_verification,
+        test_viaversion_activation_uses_startup_log,
         test_repeated_plugin_resolution_repairs_to_next_project,
         test_repeated_tps_read_repairs_to_resource_metrics,
         test_natural_answer_requires_no_tool_call,

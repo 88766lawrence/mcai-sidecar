@@ -59,7 +59,7 @@ const knownTokens = new Set(["all", ...definitions.map((item) => item.token)]);
 const subjectTokens = new Set(subjectDefinitions.map((item) => item.token));
 // Bounded named-plugin literals let activation verification target specific
 // startup lines without broadening tool arguments to arbitrary search strings.
-export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens, "literal:Essentials", "literal:LuckPerms"].sort();
+export const LOG_FILTER_CONDITION_TOKENS = [...knownTokens, "literal:Essentials", "literal:LuckPerms", "literal:ViaVersion"].sort();
 
 export function compileLogFilterQuery(intent: string): LogFilterQueryV1 {
   const subjects = matchingDefinitions(intent, subjectDefinitions).map((item) => item.token);

@@ -803,7 +803,8 @@ def _plugin_post_activation_verification(
     install_index, install = installs[0]
     arguments = (install.get("data") or {}).get("call_arguments", {}) if isinstance(install.get("data"), dict) else {}
     project = str(arguments.get("project") or "").strip().lower()
-    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials"}.get(project)
+    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials",
+                   "viaversion": "literal:ViaVersion"}.get(project)
     activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
                        if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
     if activation is None:
@@ -857,7 +858,8 @@ def _plugin_post_activation_final(
         return None
     later = observations[activation[0] + 1:]
     files = next((item for item in later if item.get("tool") == "files.list" and item.get("status") == "succeeded"), None)
-    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials"}.get(project.lower())
+    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials",
+                   "viaversion": "literal:ViaVersion"}.get(project.lower())
     logs = next((item for item in later if item.get("tool") == "logs.query" and item.get("status") == "succeeded"
                  and isinstance(item.get("data"), dict)
                  and item["data"].get("call_arguments", {}).get("filter_query", {}).get("groups") ==
@@ -888,7 +890,10 @@ def _plugin_post_activation_final(
     display_name = artifact.split("-", 1)[0] if artifact.split("-", 1)[0].lower() == project.lower() else project
     if log_literal:
         log_label = log_literal.split(":", 1)[1]
-        loaded = any(re.search(rf"\[{re.escape(log_label)}\]\s+Successfully enabled\b", sample, re.I) for sample in samples)
+        loaded_pattern = (rf"\[{re.escape(log_label)}\]\s+ViaVersion\s+[^\r\n]+\s+is now loaded\b"
+                          if project.lower() == "viaversion"
+                          else rf"\[{re.escape(log_label)}\]\s+Successfully enabled\b")
+        loaded = any(re.search(loaded_pattern, sample, re.I) for sample in samples)
     else:
         summaries = (console.get("evidence") or {}).get("summaries", []) if isinstance(console.get("evidence"), dict) else []
         inventory = "\n".join(str(value) for value in summaries)
