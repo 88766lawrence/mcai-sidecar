@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeLogFilterGroups, compileLogFilterQuery, matchesLogFilterQuery, validateLogFilterQuery } from "./log-filter-query";
+import { canonicalizeLogFilterGroups, compileLogFilterQuery, LOG_FILTER_CONDITION_TOKENS, matchesLogFilterQuery, validateLogFilterQuery } from "./log-filter-query";
 import { draftPlan } from "./planner";
 import { validatePlanCompatibility } from "./plan-compatibility";
 
@@ -19,6 +19,14 @@ describe("structured log filter query", () => {
     if (!result.ok) return;
     expect(matchesLogFilterQuery("[LuckPerms] Successfully enabled. (took 922ms)", result.query)).toBe(true);
     expect(matchesLogFilterQuery("[Essentials] Successfully enabled.", result.query)).toBe(false);
+  });
+  it("offers a ViaVersion startup literal to the agent", () => {
+    expect(LOG_FILTER_CONDITION_TOKENS).toContain("literal:ViaVersion");
+    const result = canonicalizeLogFilterGroups([{ all_of: ["literal:ViaVersion"], any_of: [] }]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(matchesLogFilterQuery("[ViaVersion] ViaVersion 5.12.1-SNAPSHOT is now loaded.", result.query)).toBe(true);
+    expect(matchesLogFilterQuery("[LuckPerms] Successfully enabled.", result.query)).toBe(false);
   });
   it.each([
     ["检查组件初始化失败或依赖项缺失的近期记录", "software_component", ["initialization_failure", "dependency_missing"]],
