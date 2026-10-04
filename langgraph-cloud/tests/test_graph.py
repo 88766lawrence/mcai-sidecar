@@ -37,7 +37,6 @@ from mcai_graph.graph import (
     _enforce_log_time_scope,
     _enforce_plugin_compatibility_scope,
     _enforce_plugin_install_evidence,
-    _plugin_install_after_resolution,
     _paper_plugin_guidance_search,
     _explicit_live_decision,
     _plugin_verification_next_read,
@@ -49,6 +48,8 @@ from mcai_graph.graph import (
     _thread_id,
     _unavailable_instance_action_answer,
 )
+
+from mcai_graph.plugin_workflow import next_plugin_decision
 
 
 class LogWindowScopeTests(unittest.TestCase):
@@ -124,16 +125,16 @@ class LogWindowScopeTests(unittest.TestCase):
         tools = [{"name": "plugin.install"}]
         resolved = {"tool_call_id": "call-resolve", "tool": "plugin.resolve", "status": "succeeded", "data": {
             "task_id": "task-resolve", "observations": [{"kind": "plugin", "observed": {
-                "project": "luckperms", "artifact": "LuckPerms.jar", "source_sha512": "a" * 128,
+                "schema_version": "resolved-plugin/v1", "project": "luckperms", "artifact": "LuckPerms.jar", "source_sha512": "a" * 128,
             }}],
         }}
-        result = _plugin_install_after_resolution("给这台 Paper 服装 LuckPerms，先找匹配的版本。", tools, [resolved])
+        result = next_plugin_decision("给这台 Paper 服装 LuckPerms，先找匹配的版本。", tools, [resolved], {})[0]
         self.assertEqual(result["tool"], "plugin.install")
         self.assertEqual(result["arguments"], {"project": "luckperms", "artifact_ref": "LuckPerms.jar",
                                                 "expected_integrity": {"algorithm": "sha512", "value": "a" * 128}})
         installed = {"tool": "plugin.install", "status": "succeeded", "data": {"call_arguments": {"project": "luckperms"}}}
-        self.assertIsNone(_plugin_install_after_resolution("给这台 Paper 服装 LuckPerms", tools, [resolved, installed]))
-        self.assertIsNone(_plugin_install_after_resolution("只找 LuckPerms 匹配版本，不要安装", tools, [resolved]))
+        self.assertIsNone(next_plugin_decision("给这台 Paper 服装 LuckPerms", tools, [resolved, installed], {}))
+        self.assertIsNone(next_plugin_decision("只找 LuckPerms 匹配版本，不要安装", tools, [resolved], {}))
 
     def test_paper_plugin_web_guidance_starts_with_official_docs(self):
         tools = [{"name": "web.search"}]

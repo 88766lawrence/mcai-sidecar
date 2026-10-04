@@ -3,6 +3,7 @@ import json
 
 import mcai_graph.graph as graph_module
 from mcai_graph.graph import McaiGraph
+from mcai_graph.plugin_workflow import next_plugin_decision
 
 
 TOOLS = [
@@ -128,7 +129,9 @@ async def test_single_plugin_install_requests_approved_activation_once():
     tools = [{"name": "instance.restart"}, {"name": "instance.start"}]
     observations = [{"tool": "plugin.install", "status": "succeeded",
                      "data": {"call_arguments": {"project": "luckperms"}}}]
-    helper = graph_module._plugin_activation_after_install
+    def helper(message, tools, observations, instance):
+        step = next_plugin_decision(message, tools, observations, instance)
+        return step[0] if step else None
     assert helper("找到并安装 LuckPerms", tools, observations, {"id": "instance-1", "state": "running"}) == {
         "action": "tool_call", "tool": "instance.restart", "arguments": {"target": "instance-1"},
         "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。",
@@ -153,140 +156,90 @@ async def test_single_plugin_install_continues_to_restart_decision():
     assert result["decision"]["arguments"] == {"target": "instance-1"}
 
 
-async def test_plugin_activation_verifies_files_and_startup_log_before_final():
-    observations = [
-        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
-         "data": {"call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms-Bukkit-5.5.71.jar"}}},
-        {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
-    ]
-    tools = [{"name": "files.list"}, {"name": "logs.query"}]
-    next_read = graph_module._plugin_post_activation_verification
-    final = graph_module._plugin_post_activation_final
-    assert next_read("找到并安装 LuckPerms", tools, observations) == {
-        "action": "tool_call", "tool": "files.list", "arguments": {"path": "plugins", "suffix": ".jar"},
-        "reason": "启动后核对新版与旧版插件文件。",
-    }
-    assert next_read("同时安装 LuckPerms 和 EssentialsX", tools, observations) is None
-    assert final("找到并安装 LuckPerms", observations) is None
-    observations.append({"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
-                         "data": {"call_arguments": {"path": "plugins", "suffix": ".jar"},
-                                  "observations": [{"kind": "files", "observed": {
-                                      "schema_version": "files-list-result/v1", "path": "plugins", "truncated": False,
-                                      "entries": [{"name": "LuckPerms-Bukkit-5.5.71.jar"}]}}]}})
-    assert next_read("找到并安装 LuckPerms", tools, observations) == {
-        "action": "tool_call", "tool": "logs.query", "arguments": {
-            "window_minutes": 60, "max_lines": 500,
-            "filter_query": {"groups": [{"all_of": ["literal:LuckPerms"], "any_of": []}]},
-        }, "reason": "核对服务端启动日志中的插件启用结果。",
-    }
-    observations.append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
-                         "data": {"call_arguments": {"filter_query": {"groups": [
-                             {"all_of": ["literal:LuckPerms"], "any_of": []}]}},
-                                  "observations": [{"kind": "logs", "observed": {
-                                      "schema_version": "logs-query-result/v1", "matches": 4,
-                                      "samples": ["[Server thread/INFO]: [LuckPerms] Successfully enabled. (took 922ms)"]}}]}})
-    assert next_read("找到并安装 LuckPerms", tools, observations) is None
-    assert final("同时安装 LuckPerms 和 EssentialsX", observations) is None
-    answer = final("找到并安装 LuckPerms", observations)
-    assert answer is not None and "已加载 LuckPerms" in answer["answer"]
-    assert "重启" not in answer["answer"]
-    assert answer["citations"] == ["install-1", "start-1", "files-1", "logs-1"]
-    observations[2]["data"]["observations"][0]["observed"]["entries"].append({"name": "LuckPerms-Bukkit-5.5.53.jar"})
-    assert "不能判定安装完全生效" in final("找到并安装 LuckPerms", observations)["answer"]
+def plugin_observations(project="luckperms", name="LuckPerms"):
+    artifact = name + "-new.jar"
+    return [{"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
+             "data": {"call_arguments": {"project": project, "artifact_ref": artifact},
+                      "observations": [{"observed": {"schema_version": "plugin-install-result/v1",
+                          "plugin_name": name, "installed_path": "plugins/update/" + artifact,
+                          "replaces_path": "plugins/" + name + "-old.jar", "already_present": False}}]}},
+            {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"}]
+
+
+def plugin_file_observation(name="LuckPerms"):
+    return {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
+            "data": {"call_arguments": {"path": "plugins", "suffix": ".jar"}, "observations": [{"observed": {
+                "schema_version": "files-list-result/v1", "path": "plugins", "truncated": False,
+                "entries": [{"name": name + "-new.jar"}]}}]}}
+
+
+def plugin_inventory_observation(name="LuckPerms"):
+    return {"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
+            "data": {"call_arguments": {"command": "plugins"}, "observations": [{"observed": {
+                "schema_version": "loaded-plugins-result/v1", "total": 1, "names": [name]}}]}}
+
+
+async def test_plugin_workflow_uses_one_sequence_for_known_and_unknown_plugins():
+    tools = [{"name": "files.list"}, {"name": "console.command"}]
+    for project, name in [("luckperms", "LuckPerms"), ("viaversion", "ViaVersion"),
+                          ("essentialsx", "Essentials"), ("customplugin", "CustomPlugin")]:
+        message = "安装 " + project
+        observations = plugin_observations(project, name)
+        next_read = next_plugin_decision(message, tools, observations, {})[0]
+        assert next_read["tool"] == "files.list"
+        observations.append(plugin_file_observation(name))
+        assert next_plugin_decision(message, tools, observations, {})[0]["tool"] == "console.command"
+        observations.append(plugin_inventory_observation(name))
+        answer = next_plugin_decision(message, tools, observations, {})[0]
+        assert answer["action"] == "final" and "已加载 " + name in answer["answer"]
+        assert answer["citations"] == ["install-1", "start-1", "files-1", "plugins-1"]
+        assert next_plugin_decision("同时安装 " + project + " 和 OtherPlugin", tools, observations, {}) is None
+
+
+async def test_plugin_workflow_does_not_claim_success_from_partial_evidence():
+    observations = plugin_observations() + [plugin_file_observation(), plugin_inventory_observation()]
+    tools = [{"name": "files.list"}, {"name": "console.command"}]
+    observations[2]["data"]["observations"][0]["observed"]["entries"].append({"name": "LuckPerms-old.jar"})
+    assert "不能判定安装完全生效" in next_plugin_decision("安装 LuckPerms", tools, observations, {})[0]["answer"]
     observations[2]["data"]["observations"][0]["observed"]["entries"].pop()
-    observations[3]["data"]["observations"][0]["observed"]["samples"] = ["[LuckPerms] Loading storage provider..."]
-    assert "不能判定安装完全生效" in final("找到并安装 LuckPerms", observations)["answer"]
+    observations[3]["data"]["observations"][0]["observed"]["names"] = ["OtherPlugin"]
+    assert "不能判定安装完全生效" in next_plugin_decision("安装 LuckPerms", tools, observations, {})[0]["answer"]
+    observations[1]["status"] = "failed"
+    assert next_plugin_decision("安装 LuckPerms", tools, observations, {}) is None
+
+
+async def test_plugin_workflow_already_present_does_not_restart():
+    observations = plugin_observations()[:1]
+    fact = observations[0]["data"]["observations"][0]["observed"]
+    fact.update({"already_present": True, "installed_path": "plugins/LuckPerms-new.jar", "sha256": "a" * 64})
+    answer = next_plugin_decision("安装 LuckPerms", [{"name": "instance.restart"}], observations, {})[0]
+    assert answer["action"] == "final" and "无需重复安装" in answer["answer"]
+    assert "已加载" not in answer["answer"]
+    assert next_plugin_decision("同时安装 LuckPerms 和 EssentialsX", [], observations, {}) is None
 
 
 async def test_plugin_activation_read_decisions_pass_full_agent_validation():
     graph = object.__new__(McaiGraph)
     graph.provider = FakeNativeProvider({"content": "unused", "tool_calls": []})
-    request = payload("找到并安装 LuckPerms")
+    request = payload("安装 LuckPerms")
     request["round"] = 4
     request["toolCatalog"] = [
         {"name": "files.list", "description": "Read plugin files.", "input_schema": {
             "type": "object", "additionalProperties": False,
             "properties": {"path": {"type": "string"}, "suffix": {"type": "string"}}, "required": ["path"]}},
-        {"name": "logs.query", "description": "Read startup logs.", "input_schema": {
-            "type": "object", "additionalProperties": False, "properties": {
-                "window_minutes": {"type": "integer"}, "max_lines": {"type": "integer"},
-                "filter_query": {"type": "object", "additionalProperties": False,
-                    "properties": {"groups": {"type": "array", "items": {"type": "object",
-                        "additionalProperties": False, "properties": {
-                            "all_of": {"type": "array", "items": {"enum": ["literal:LuckPerms"]}},
-                            "any_of": {"type": "array", "items": {"enum": ["literal:LuckPerms"]}},
-                        }, "required": ["all_of", "any_of"]}}}, "required": ["groups"]}},
-            "required": ["window_minutes", "max_lines", "filter_query"]}},
+        {"name": "console.command", "description": "Read loaded plugins.", "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     ]
-    request["observations"] = [
-        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
-         "data": {"call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms-Bukkit-5.5.71.jar"}}},
-        {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
-    ]
-    first = await graph.decide_agent_loop(request)
-    assert first["decision"]["tool"] == "files.list"
+    request["observations"] = plugin_observations()
+    assert (await graph.decide_agent_loop(request))["decision"]["tool"] == "files.list"
     request["round"] = 5
-    request["observations"].append({"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
-                                    "data": {"call_arguments": {"path": "plugins", "suffix": ".jar"},
-                                             "observations": [{"kind": "files", "observed": {
-                                                 "schema_version": "files-list-result/v1", "path": "plugins", "truncated": False,
-                                                 "entries": [{"name": "LuckPerms-Bukkit-5.5.71.jar"}]}}]}})
-    second = await graph.decide_agent_loop(request)
-    assert second["decision"]["tool"] == "logs.query"
+    request["observations"].append(plugin_file_observation())
+    assert (await graph.decide_agent_loop(request))["decision"]["tool"] == "console.command"
     request["round"] = 6
-    request["observations"].append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
-                                    "data": {"call_arguments": {"filter_query": {"groups": [
-                                        {"all_of": ["literal:LuckPerms"], "any_of": []}]}},
-                                             "observations": [{"kind": "logs", "observed": {
-                                                 "schema_version": "logs-query-result/v1", "matches": 1,
-                                                 "samples": ["[LuckPerms] Successfully enabled. (took 922ms)"]}}]}})
-    third = await graph.decide_agent_loop(request)
-    assert third["decision"]["action"] == "final"
-    assert "已加载 LuckPerms" in third["decision"]["answer"]
-
-
-async def test_other_plugins_keep_runtime_inventory_verification():
-    observations = [
-        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
-         "data": {"call_arguments": {"project": "WorldEdit", "artifact_ref": "WorldEdit-7.3.0.jar"}}},
-        {"tool_call_id": "start-1", "tool": "instance.start", "status": "succeeded"},
-        {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
-         "data": {"observations": [{"observed": {"schema_version": "files-list-result/v1",
-             "path": "plugins", "truncated": False, "entries": [{"name": "WorldEdit-7.3.0.jar"}]}}]}},
-    ]
-    tools = [{"name": "files.list"}, {"name": "logs.query"}, {"name": "console.command"}]
-    assert graph_module._plugin_post_activation_verification("安装 WorldEdit", tools, observations)["tool"] == "console.command"
-    observations.append({"tool_call_id": "plugins-1", "tool": "console.command", "status": "succeeded",
-                         "data": {"call_arguments": {"command": "plugins"}},
-                         "evidence": {"summaries": ["Server Plugins (1): WorldEdit"]}})
-    answer = graph_module._plugin_post_activation_final("安装 WorldEdit", observations)
-    assert answer is not None and "运行时插件列表确认已加载 WorldEdit" in answer["answer"]
-
-
-async def test_viaversion_activation_uses_startup_log():
-    observations = [
-        {"tool_call_id": "install-1", "tool": "plugin.install", "status": "succeeded",
-         "data": {"call_arguments": {"project": "viaversion", "artifact_ref": "ViaVersion-5.12.1-SNAPSHOT.jar"}}},
-        {"tool_call_id": "restart-1", "tool": "instance.restart", "status": "succeeded"},
-        {"tool_call_id": "files-1", "tool": "files.list", "status": "succeeded",
-         "data": {"observations": [{"observed": {"schema_version": "files-list-result/v1",
-             "path": "plugins", "truncated": False, "entries": [{"name": "ViaVersion-5.12.1-SNAPSHOT.jar"}]}}]}},
-    ]
-    tools = [{"name": "files.list"}, {"name": "logs.query"}, {"name": "console.command"}]
-    next_read = graph_module._plugin_post_activation_verification("安装 ViaVersion", tools, observations)
-    assert next_read["tool"] == "logs.query"
-    assert next_read["arguments"]["filter_query"]["groups"] == [
-        {"all_of": ["literal:ViaVersion"], "any_of": []}]
-    observations.append({"tool_call_id": "logs-1", "tool": "logs.query", "status": "succeeded",
-                         "data": {"call_arguments": {"filter_query": {"groups": [
-                             {"all_of": ["literal:ViaVersion"], "any_of": []}]}},
-                                  "observations": [{"observed": {"schema_version": "logs-query-result/v1",
-                                      "matches": 2, "samples": [
-                                          "[17:07:19] [Server thread/INFO]: [ViaVersion] Loading server plugin ViaVersion v5.12.1-SNAPSHOT",
-                                          "[17:07:19] [Server thread/INFO]: [ViaVersion] ViaVersion 5.12.1-SNAPSHOT is now loaded. Registering protocol transformers and injecting...",
-                                      ]}}]}})
-    answer = graph_module._plugin_post_activation_final("安装 ViaVersion", observations)
-    assert answer is not None and "启动日志确认已加载 ViaVersion" in answer["answer"]
+    request["observations"].append(plugin_inventory_observation())
+    answer = (await graph.decide_agent_loop(request))["decision"]
+    assert answer["action"] == "final" and "已加载 LuckPerms" in answer["answer"]
 
 
 async def test_repeated_plugin_resolution_repairs_to_next_project():
@@ -1283,10 +1236,10 @@ async def main():
         test_plugin_install_is_exposed_only_after_successful_resolution,
         test_single_plugin_install_requests_approved_activation_once,
         test_single_plugin_install_continues_to_restart_decision,
-        test_plugin_activation_verifies_files_and_startup_log_before_final,
+        test_plugin_workflow_uses_one_sequence_for_known_and_unknown_plugins,
+        test_plugin_workflow_does_not_claim_success_from_partial_evidence,
+        test_plugin_workflow_already_present_does_not_restart,
         test_plugin_activation_read_decisions_pass_full_agent_validation,
-        test_other_plugins_keep_runtime_inventory_verification,
-        test_viaversion_activation_uses_startup_log,
         test_repeated_plugin_resolution_repairs_to_next_project,
         test_repeated_tps_read_repairs_to_resource_metrics,
         test_natural_answer_requires_no_tool_call,

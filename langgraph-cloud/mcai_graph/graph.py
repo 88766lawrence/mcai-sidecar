@@ -15,6 +15,8 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
+from .plugin_workflow import next_plugin_decision
+
 
 SUPPORTED_OPERATIONS = (
     "logs.query",
@@ -55,22 +57,6 @@ LOG_FILTER_TERMS = (
     "client_connection", "http_request", "backup", "world_storage", "software_component", "database_service", "proxy_service", "server_lag", "memory_resource",
     "authentication_failure", "connection_failure", "timeout", "resource_failure", "permission_failure", "disconnect", "warning", "crash", "error", "initialization_failure", "dependency_missing", "response_failure", "cannot_keep_up", "tick_timeout", "out_of_memory", "heap_exhaustion", "gc_overhead", "save_failure", "chunk_corruption", "chunk_read_failure",
 )
-LOG_FILTER_TERM_ALIASES = {
-    "proxy": "proxy_service", "gateway": "proxy_service", "reverse_proxy": "proxy_service",
-    "world": "world_storage", "world_snapshot": "world_storage", "snapshot": "world_storage",
-    "database": "database_service", "db": "database_service", "component": "software_component",
-    "plugin": "software_component", "memory": "memory_resource", "lag": "server_lag",
-    "auth_failure": "authentication_failure", "auth_rejection": "authentication_failure",
-    "connection_timeout": "timeout", "corruption": "chunk_corruption",
-}
-
-
-def _canonical_log_term(value: Any) -> str | None:
-    token = re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
-    token = LOG_FILTER_TERM_ALIASES.get(token, token)
-    if token in LOG_FILTER_TERMS:
-        return token
-    return None
 
 
 AFFIRMATIVE = re.compile(r"^(?:需要|要|可以|好的?|好|确认|继续|是|对|行|执行|读取|检查|查一下|重试|yes|ok|continue)[。.!！ ]*$", re.I)
@@ -709,206 +695,6 @@ def _agent_loop_tools_available_for_observations(
     resolved = any(item.get("tool") == "plugin.resolve" and item.get("status") == "succeeded"
                    for item in observations)
     return tools if resolved else [item for item in tools if item["name"] != "plugin.install"]
-
-
-def _plugin_install_after_resolution(
-    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Continue an authorized install after a trusted artifact has been resolved."""
-    if not any(item["name"] == "plugin.install" for item in tools):
-        return None
-    if re.search(r"(?:不要|无需|不必|禁止|别|仅|只)[^，。；;\r\n]{0,16}(?:安装|装|部署|更新|升级)|(?:do not|don't|without)\s+install", message, re.I):
-        return None
-    if not re.search(r"安装|装上|给.{0,16}装|部署|更新|升级|帮我安排|\binstall\b|\bdeploy\b|\bupdate\b", message, re.I):
-        return None
-    installed = {
-        str(item.get("data", {}).get("call_arguments", {}).get("project") or "").lower()
-        for item in observations if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"
-        and isinstance(item.get("data"), dict)
-        and isinstance(item["data"].get("call_arguments"), dict)
-    }
-    candidates: list[dict[str, Any]] = []
-    for item in observations:
-        if item.get("tool") != "plugin.resolve" or item.get("status") != "succeeded":
-            continue
-        data = item.get("data") if isinstance(item.get("data"), dict) else {}
-        for observation in data.get("observations", []):
-            if not isinstance(observation, dict) or observation.get("kind") != "plugin":
-                continue
-            result = observation.get("observed")
-            if not isinstance(result, dict):
-                continue
-            project = str(result.get("project") or "").lower()
-            artifact = str(result.get("artifact") or "")
-            sha256 = str(result.get("sha256") or "").lower()
-            sha512 = str(result.get("source_sha512") or "").lower()
-            if not project or project in installed or not artifact or not re.search(rf"\b{re.escape(project)}\b", message, re.I):
-                continue
-            integrity = ({"algorithm": "sha256", "value": sha256} if re.fullmatch(r"[a-f0-9]{64}", sha256)
-                         else {"algorithm": "sha512", "value": sha512} if re.fullmatch(r"[a-f0-9]{128}", sha512)
-                         else None)
-            if integrity and data.get("task_id") and item.get("tool_call_id"):
-                candidates.append({
-                    "project": project, "artifact_ref": artifact, "expected_integrity": integrity,
-                })
-    if len(candidates) != 1:
-        return None
-    return {
-        "action": "tool_call", "tool": "plugin.install", "arguments": candidates[0],
-        "reason": "已找到兼容制品，继续执行用户要求的插件安装。",
-    }
-
-
-def _plugin_activation_after_install(
-    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]], instance: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Activate one installed plugin through the existing lifecycle approval."""
-    if re.search(r"(?:不要|别|无需|不必|禁止)[^，。；;\r\n]{0,16}(?:重启|启动|生效)|(?:do not|don't|without)\s+(?:restart|start)", message, re.I):
-        return None
-    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
-        return None
-    installed = [(index, item) for index, item in enumerate(observations)
-                 if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
-    if len(installed) != 1:
-        return None
-    index, install = installed[0]
-    if any(item.get("tool") in {"instance.start", "instance.restart"} for item in observations[index + 1:]):
-        return None
-    data = install.get("data") if isinstance(install.get("data"), dict) else {}
-    args = data.get("call_arguments") if isinstance(data.get("call_arguments"), dict) else {}
-    project = str(args.get("project") or "").strip()
-    if not project or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(project)}(?![A-Za-z0-9_-])", message, re.I):
-        return None
-    state = str(instance.get("state") or "").lower()
-    lifecycle = "instance.restart" if state == "running" else "instance.start" if state == "stopped" else ""
-    target = str(instance.get("id") or "")
-    if not lifecycle or not target or lifecycle not in {item["name"] for item in tools}:
-        return None
-    return {"action": "tool_call", "tool": lifecycle, "arguments": {"target": target},
-            "reason": "插件文件已安装，申请启动服务端并核对实际加载结果。"}
-
-
-def _plugin_post_activation_verification(
-    message: str, tools: list[dict[str, Any]], observations: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Read the installed JAR and startup log after activation."""
-    if not re.search(r"安装|装上|部署|更新|升级|\binstall\b|\bupdate\b", message, re.I):
-        return None
-    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
-        return None
-    installs = [(index, item) for index, item in enumerate(observations)
-                if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
-    if len(installs) != 1:
-        return None
-    install_index, install = installs[0]
-    arguments = (install.get("data") or {}).get("call_arguments", {}) if isinstance(install.get("data"), dict) else {}
-    project = str(arguments.get("project") or "").strip().lower()
-    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials",
-                   "viaversion": "literal:ViaVersion"}.get(project)
-    activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
-                       if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
-    if activation is None:
-        return None
-    later = observations[activation[0] + 1:]
-    names = {item["name"] for item in tools}
-    if not any(item.get("tool") == "files.list" for item in later):
-        if "files.list" in names:
-            return {"action": "tool_call", "tool": "files.list", "arguments": {"path": "plugins", "suffix": ".jar"},
-                    "reason": "启动后核对新版与旧版插件文件。"}
-        return None
-    if not any(item.get("tool") == "files.list" and item.get("status") == "succeeded" for item in later):
-        return None
-    if log_literal:
-        if not any(item.get("tool") == "logs.query" and
-                   (item.get("data") or {}).get("call_arguments", {}).get("filter_query", {}).get("groups") ==
-                   [{"all_of": [log_literal], "any_of": []}]
-                   for item in later if isinstance(item.get("data"), dict)):
-            if "logs.query" in names:
-                return {"action": "tool_call", "tool": "logs.query", "arguments": {
-                    "window_minutes": 60, "max_lines": 500,
-                    "filter_query": {"groups": [{"all_of": [log_literal], "any_of": []}]},
-                }, "reason": "核对服务端启动日志中的插件启用结果。"}
-    elif not any(item.get("tool") == "console.command" and
-                 (item.get("data") or {}).get("call_arguments", {}).get("command") == "plugins"
-                 for item in later if isinstance(item.get("data"), dict)):
-        if "console.command" in names:
-            return {"action": "tool_call", "tool": "console.command", "arguments": {"command": "plugins"},
-                    "reason": "核对运行时是否已加载目标插件。"}
-    return None
-
-
-def _plugin_post_activation_final(
-    message: str, observations: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if re.search(r"同时|以及|\b(?:and|both)\b|(?:和|与|、|，|,)\s*[A-Za-z][A-Za-z0-9_-]{1,63}", message, re.I):
-        return None
-    installs = [(index, item) for index, item in enumerate(observations)
-                if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"]
-    if len(installs) != 1:
-        return None
-    install_index, install = installs[0]
-    arguments = (install.get("data") or {}).get("call_arguments", {}) if isinstance(install.get("data"), dict) else {}
-    project = str(arguments.get("project") or "").strip()
-    artifact = str(arguments.get("artifact_ref") or "").strip()
-    if not project or not artifact or not re.search(rf"(?<![A-Za-z0-9_-]){re.escape(project)}(?![A-Za-z0-9_-])", message, re.I):
-        return None
-    activation = next(((index, item) for index, item in enumerate(observations[install_index + 1:], install_index + 1)
-                       if item.get("tool") in {"instance.start", "instance.restart"} and item.get("status") == "succeeded"), None)
-    if activation is None:
-        return None
-    later = observations[activation[0] + 1:]
-    files = next((item for item in later if item.get("tool") == "files.list" and item.get("status") == "succeeded"), None)
-    log_literal = {"luckperms": "literal:LuckPerms", "essentialsx": "literal:Essentials",
-                   "viaversion": "literal:ViaVersion"}.get(project.lower())
-    logs = next((item for item in later if item.get("tool") == "logs.query" and item.get("status") == "succeeded"
-                 and isinstance(item.get("data"), dict)
-                 and item["data"].get("call_arguments", {}).get("filter_query", {}).get("groups") ==
-                 [{"all_of": [log_literal], "any_of": []}]), None)
-    console = next((item for item in later if item.get("tool") == "console.command" and item.get("status") == "succeeded"
-                    and isinstance(item.get("data"), dict)
-                    and item["data"].get("call_arguments", {}).get("command") == "plugins"), None)
-    if files is None or (logs is None if log_literal else console is None):
-        return None
-    entries: list[str] = []
-    file_data = files.get("data") if isinstance(files.get("data"), dict) else {}
-    for fact in file_data.get("observations", []):
-        if not isinstance(fact, dict) or not isinstance(fact.get("observed"), dict):
-            continue
-        result = fact["observed"]
-        if result.get("schema_version") == "files-list-result/v1" and result.get("path") == "plugins" and result.get("truncated") is False:
-            entries = [str(entry.get("name")) for entry in result.get("entries", []) if isinstance(entry, dict)]
-            break
-    samples: list[str] = []
-    log_data = logs.get("data") if logs is not None and isinstance(logs.get("data"), dict) else {}
-    for fact in log_data.get("observations", []):
-        if not isinstance(fact, dict) or not isinstance(fact.get("observed"), dict):
-            continue
-        result = fact["observed"]
-        if result.get("schema_version") == "logs-query-result/v1" and isinstance(result.get("samples"), list):
-            samples = [str(sample) for sample in result["samples"] if isinstance(sample, str)]
-            break
-    display_name = artifact.split("-", 1)[0] if artifact.split("-", 1)[0].lower() == project.lower() else project
-    if log_literal:
-        log_label = log_literal.split(":", 1)[1]
-        loaded_pattern = (rf"\[{re.escape(log_label)}\]\s+ViaVersion\s+[^\r\n]+\s+is now loaded\b"
-                          if project.lower() == "viaversion"
-                          else rf"\[{re.escape(log_label)}\]\s+Successfully enabled\b")
-        loaded = any(re.search(loaded_pattern, sample, re.I) for sample in samples)
-    else:
-        summaries = (console.get("evidence") or {}).get("summaries", []) if isinstance(console.get("evidence"), dict) else []
-        inventory = "\n".join(str(value) for value in summaries)
-        loaded = bool(re.search(rf"(?:Server\s+)?Plugins\s*\(\d+\)\s*:[^\r\n]*\b{re.escape(project)}\b", inventory, re.I))
-    matching = [name for name in entries if name.lower().endswith(".jar") and name.lower().startswith(project.lower())]
-    verified = artifact in matching and len(matching) == 1 and loaded
-    verb = "启动" if activation[1].get("tool") == "instance.start" else "重启"
-    if verified:
-        evidence_label = "启动日志" if log_literal else "运行时插件列表"
-        answer = f"已安装 {display_name}（{artifact}）。实例{verb}后，插件目录只保留这一个同名 JAR，{evidence_label}确认已加载 {display_name}。"
-    else:
-        answer = f"已执行 {display_name} 的安装和实例{verb}，但启动后核验未能同时确认新版 JAR 唯一存在且插件已加载；本次不能判定安装完全生效。"
-    citations = list(dict.fromkeys(str(item["tool_call_id"]) for item in observations
-                                  if item.get("status") == "succeeded" and isinstance(item.get("tool_call_id"), str)))
-    return {"action": "final", "answer": answer, "citations": citations}
 
 
 def _paper_plugin_guidance_search(
@@ -2030,50 +1816,6 @@ def _agent_entry_route_tools() -> list[dict[str, Any]]:
     ]
 
 
-def _agent_continuation_route_tools(tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    application_tools = tools or []
-    tool_names = [str(item["name"]) for item in application_tools]
-    catalog_summary = "\n".join(
-        f"- {item['name']}: {str(item['description'])[:300]}" for item in application_tools
-    )
-    more_properties: dict[str, Any] = {
-        "reason": {"type": "string", "minLength": 1, "maxLength": 1_000},
-    }
-    more_required = ["reason"]
-    more_description = (
-        "Use when the current successful observations do not yet support a complete answer. "
-        "Briefly state the earliest missing evidence."
-    )
-    if tool_names:
-        more_properties["next_tool"] = {"type": "string", "enum": tool_names}
-        more_required.append("next_tool")
-        more_description += (
-            " Select the exact permitted application function that should obtain it next; "
-            "the next bounded pass will expose only that function. Never select a function "
-            "whose successful observation already covers the same requested fact unless that "
-            "result is explicitly incomplete.\nRegistered application functions:\n" + catalog_summary
-        )
-    return [
-        {
-            "name": "route_evidence_complete",
-            "description": "Use only after pairing every explicit requested subject to a successful observation from a registered function whose description directly covers that subject. One observation cannot cover an unrelated subject. If any subject lacks that pairing, use route_more_tools. This marker has no business arguments; a separate answer-only pass will write the natural response without choosing tools.",
-            "input_schema": {
-                "type": "object", "additionalProperties": False,
-                "properties": {}, "required": [],
-            },
-        },
-        {
-            "name": "route_more_tools",
-            "description": more_description,
-            "input_schema": {
-                "type": "object", "additionalProperties": False,
-                "properties": more_properties,
-                "required": more_required,
-            },
-        },
-    ]
-
-
 def _agent_evidence_final_tool() -> dict[str, Any]:
     """Compatibility exit for the already-selected application-argument pass."""
     return {
@@ -2492,22 +2234,12 @@ class McaiGraph:
         tools = _agent_loop_tools_available_for_observations(tools, observations)
         required_live_tool = _required_live_tool(message, {item["name"] for item in tools}) if round_number == 1 and not observations else None
         request_id = str(payload.get("_requestId") or f"agent-loop-{uuid.uuid4().hex}")
-        pending_install = _plugin_install_after_resolution(message, tools, observations)
-        if pending_install is not None and _validate_agent_loop_decision(pending_install, tools, observations, limits) is None:
-            return {"decision": pending_install, "requestId": request_id,
-                    "providerModel": "resolved-plugin-install", "repairUsed": False}
-        pending_activation = _plugin_activation_after_install(message, tools, observations, instance)
-        if pending_activation is not None and _validate_agent_loop_decision(pending_activation, tools, observations, limits) is None:
-            return {"decision": pending_activation, "requestId": request_id,
-                    "providerModel": "installed-plugin-activation", "repairUsed": False}
-        activation_read = _plugin_post_activation_verification(message, tools, observations)
-        if activation_read is not None and _validate_agent_loop_decision(activation_read, tools, observations, limits) is None:
-            return {"decision": activation_read, "requestId": request_id,
-                    "providerModel": "plugin-activation-verification", "repairUsed": False}
-        activation_final = _plugin_post_activation_final(message, observations)
-        if activation_final is not None and _validate_agent_loop_decision(activation_final, tools, observations, limits) is None:
-            return {"decision": activation_final, "requestId": request_id,
-                    "providerModel": "verified-plugin-activation", "repairUsed": False}
+        plugin_step = next_plugin_decision(message, tools, observations, instance)
+        if plugin_step is not None:
+            decision, provider_model = plugin_step
+            if _validate_agent_loop_decision(decision, tools, observations, limits) is None:
+                return {"decision": decision, "requestId": request_id,
+                        "providerModel": provider_model, "repairUsed": False}
         source_search = _paper_plugin_guidance_search(message, tools, observations)
         if source_search is not None and _validate_agent_loop_decision(source_search, tools, observations, limits) is None:
             return {"decision": source_search, "requestId": request_id,
@@ -4317,11 +4049,6 @@ def _cross_topic_log_repair_schema(required_groups: int) -> dict[str, Any]:
     }
 
 
-def _log_branch_schema() -> dict[str, Any]:
-    terms = {"type": "array", "maxItems": 8, "items": {"type": "string"}}
-    return {"type": "object", "additionalProperties": False, "properties": {"schema_version": {"const": "log-branch/v1"}, "group": {"type": "object", "additionalProperties": False, "properties": {"all_of": terms, "any_of": terms}, "required": ["all_of", "any_of"]}}, "required": ["schema_version", "group"]}
-
-
 def _intent_semantic_frame_schema(assigned_refs: list[str]) -> dict[str, Any]:
     source_refs = {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "pattern": "^src-[0-9]{4}$"}}
     filter_schema = {"type": "object", "additionalProperties": False, "properties": {"field": {"type": "string"}, "operator": {"enum": ["suffix", "contains", "equals"]}, "value": {"type": "string"}}, "required": ["field", "operator", "value"]}
@@ -4790,10 +4517,6 @@ def _parse_json(value: str) -> Any:
         if not match:
             raise
         return json.loads(match.group(0))
-
-
-def _capacity_error(error: Exception) -> bool:
-    return bool(re.search(r"429|503|capacity|rate.?limit|overloaded|temporarily unavailable", str(error), re.I))
 
 
 def _plugin_name_from_intent(intent: str) -> str | None:

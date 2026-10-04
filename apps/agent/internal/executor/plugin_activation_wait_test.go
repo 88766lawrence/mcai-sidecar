@@ -11,17 +11,44 @@ import (
 
 type stagedUpdateProvider struct {
 	*installProvider
-	ready bool
+	ready     bool
+	noUpdates bool
 }
 
 func (p *stagedUpdateProvider) ListFileEntries(_ context.Context, _ string, target string) (provider.FileListing, error) {
-	if target == "/plugins/update" && !p.started {
+	if target == "/plugins/update" && !p.started && !p.noUpdates {
 		return provider.FileListing{Names: []string{"LuckPerms-Bukkit-5.5.71.jar"}, Total: 1}, nil
 	}
 	if target == "/plugins" && p.started {
 		return provider.FileListing{Names: []string{"LuckPerms-Bukkit-5.5.71.jar"}, Total: 1}, nil
 	}
 	return provider.FileListing{Names: []string{}, Total: 0}, nil
+}
+
+func TestPaperStartWaitsForFreshReadyWithoutStagedUpdates(t *testing.T) {
+	p := &stagedUpdateProvider{installProvider: &installProvider{
+		instance: provider.Instance{Ref: "mcs:daemon:instance", State: "stopped", Loader: "paper"},
+	}, ready: true, noUpdates: true}
+	var events []string
+	err := New(t.TempDir(), nil).startInstance(context.Background(), p, p.instance.Ref, func(_, kind, summary string, _ ...map[string]any) {
+		events = append(events, kind+"|"+summary)
+	})
+	if err != nil || !strings.Contains(strings.Join(events, "\n"), "完成本次启动") {
+		t.Fatalf("new plugin startup did not wait for ready: err=%v events=%v", err, events)
+	}
+}
+
+func TestPaperRestartRejectsOldReadyWithoutStagedUpdates(t *testing.T) {
+	p := &stagedUpdateProvider{installProvider: &installProvider{
+		instance: provider.Instance{Ref: "mcs:daemon:instance", State: "running", Loader: "paper"},
+	}, noUpdates: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := New(t.TempDir(), nil).executeStep(ctx, p, protocol.TaskPlan{InstanceRef: p.instance.Ref},
+		protocol.TaskStep{Tool: "instance.restart"}, func(string, string, string, ...map[string]any) {})
+	if err != context.Canceled {
+		t.Fatalf("old ready signal was accepted after restart: %v", err)
+	}
 }
 
 func (p *stagedUpdateProvider) ReadOutput(context.Context, string, int) (string, error) {

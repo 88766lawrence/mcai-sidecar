@@ -600,21 +600,16 @@ func (e *Executor) executeStep(ctx context.Context, p provider.Provider, plan pr
 	case "instance.stop":
 		return e.stopInstance(ctx, p, plan.InstanceRef, emit)
 	case "instance.restart":
-		pending := pendingPluginUpdateJars(ctx, p, plan.InstanceRef)
-		var baselineOutput string
-		var baselineLog []byte
-		if len(pending) > 0 {
-			baselineOutput, _ = p.ReadOutput(ctx, plan.InstanceRef, 256)
-			baselineLog, _ = p.ReadFile(ctx, plan.InstanceRef, "logs/latest.log")
+		instance, err := p.GetInstance(ctx, plan.InstanceRef)
+		if err != nil {
+			return err
 		}
+		probe := captureStartupProbe(ctx, p, plan.InstanceRef, instance)
 		if err := p.Restart(ctx, plan.InstanceRef); err != nil {
 			return err
 		}
 		emit("", "instance", "Restart request accepted by the panel")
-		if len(pending) > 0 {
-			return waitForPluginUpdateActivation(ctx, p, plan.InstanceRef, pending, baselineOutput, string(baselineLog), emit)
-		}
-		return nil
+		return probe.wait(ctx, p, plan.InstanceRef, emit)
 	case "plugin.resolve":
 		return e.resolvePlugin(ctx, p, plan, step, emit)
 	case "web.search":
@@ -662,7 +657,9 @@ func (e *Executor) readLoadedPlugins(ctx context.Context, p provider.Provider, t
 		}
 		return errors.New("the loaded-plugin callback was incomplete")
 	}
-	emit("", "console", fmt.Sprintf("Server Plugins (%d): %s", declared, strings.Join(items, ", ")))
+	emit("", "console", fmt.Sprintf("Server Plugins (%d): %s", declared, strings.Join(items, ", ")), map[string]any{
+		"schema_version": "loaded-plugins-result/v1", "total": declared, "names": items,
+	})
 	return nil
 }
 
@@ -869,29 +866,37 @@ func (e *Executor) startInstance(ctx context.Context, p provider.Provider, insta
 		emit("", "instance", "实例已在启动中，正在等待进入运行状态")
 		return nil
 	}
-	pending := pendingPluginUpdateJars(ctx, p, instanceRef)
-	var baselineOutput string
-	var baselineLog []byte
-	if len(pending) > 0 {
-		baselineOutput, _ = p.ReadOutput(ctx, instanceRef, 256)
-		baselineLog, _ = p.ReadFile(ctx, instanceRef, "logs/latest.log")
-	}
+	probe := captureStartupProbe(ctx, p, instanceRef, instance)
 	if err := p.Start(ctx, instanceRef); err != nil {
 		after, stateErr := p.GetInstance(ctx, instanceRef)
 		if stateErr == nil && (after.State == "running" || after.State == "starting") {
 			emit("", "instance", "面板启动响应异常，但实例已进入启动流程")
-			if len(pending) > 0 {
-				return waitForPluginUpdateActivation(ctx, p, instanceRef, pending, baselineOutput, string(baselineLog), emit)
-			}
-			return nil
+			return probe.wait(ctx, p, instanceRef, emit)
 		}
 		return err
 	}
 	emit("", "instance", "启动请求已由面板接受")
-	if len(pending) > 0 {
-		return waitForPluginUpdateActivation(ctx, p, instanceRef, pending, baselineOutput, string(baselineLog), emit)
+	return probe.wait(ctx, p, instanceRef, emit)
+}
+
+type startupProbe struct {
+	required       bool
+	pending        []string
+	baselineOutput string
+	baselineLog    string
+}
+
+func captureStartupProbe(ctx context.Context, p provider.Provider, ref string, instance provider.Instance) startupProbe {
+	probe := startupProbe{pending: pendingPluginUpdateJars(ctx, p, ref)}
+	loader := strings.ToLower(instance.Loader)
+	platform := strings.ToLower(instance.Platform)
+	probe.required = len(probe.pending) > 0 || slices.Contains([]string{"paper", "spigot", "bukkit"}, loader) || slices.Contains([]string{"paper", "spigot", "bukkit"}, platform)
+	if probe.required {
+		probe.baselineOutput, _ = p.ReadOutput(ctx, ref, 256)
+		log, _ := p.ReadFile(ctx, ref, "logs/latest.log")
+		probe.baselineLog = string(log)
 	}
-	return nil
+	return probe
 }
 
 func pendingPluginUpdateJars(ctx context.Context, p provider.Provider, instanceRef string) []string {
@@ -912,9 +917,12 @@ func pendingPluginUpdateJars(ctx context.Context, p provider.Provider, instanceR
 	return jars
 }
 
-func waitForPluginUpdateActivation(ctx context.Context, p provider.Provider, instanceRef string, pending []string, baselineOutput, baselineLog string, emit EventSink) error {
+func (probe startupProbe) wait(ctx context.Context, p provider.Provider, instanceRef string, emit EventSink) error {
+	if !probe.required {
+		return nil
+	}
 	lister, ok := p.(provider.StructuredFileLister)
-	if !ok {
+	if len(probe.pending) > 0 && !ok {
 		return errors.New("cannot verify staged plugin update without structured file listing")
 	}
 	deadline := time.NewTimer(3 * time.Minute)
@@ -926,20 +934,24 @@ func waitForPluginUpdateActivation(ctx context.Context, p provider.Provider, ins
 		logBytes, logErr := p.ReadFile(ctx, instanceRef, "logs/latest.log")
 		fresh := ""
 		if outputErr == nil {
-			fresh = consoleOutputDelta(baselineOutput, output)
+			fresh = consoleOutputDelta(probe.baselineOutput, output)
 		}
 		if logErr == nil {
-			fresh += "\n" + consoleOutputDelta(baselineLog, string(logBytes))
+			fresh += "\n" + consoleOutputDelta(probe.baselineLog, string(logBytes))
 		}
 		if hasTerminalStartupFailure(fresh) {
-			return errors.New("server failed while applying staged plugin update")
+			return errors.New("server failed during startup")
 		}
 		if isServerReady(fresh) {
+			if len(probe.pending) == 0 {
+				emit("", "instance", "服务端已完成本次启动")
+				return nil
+			}
 			update, updateErr := lister.ListFileEntries(ctx, instanceRef, "/plugins/update")
 			installed, installedErr := lister.ListFileEntries(ctx, instanceRef, "/plugins")
 			if updateErr == nil && installedErr == nil && !update.Truncated && !installed.Truncated {
 				ready := true
-				for _, jar := range pending {
+				for _, jar := range probe.pending {
 					if slices.Contains(update.Names, jar) || !slices.Contains(installed.Names, jar) {
 						ready = false
 						break
@@ -955,7 +967,7 @@ func waitForPluginUpdateActivation(ctx context.Context, p provider.Provider, ins
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return errors.New("server did not finish applying staged plugin update within three minutes")
+			return errors.New("server did not finish startup and pending plugin activation within three minutes")
 		case <-ticker.C:
 		}
 	}
@@ -1676,7 +1688,8 @@ func consoleResultOutput(verb, output string) string {
 		candidate := strings.TrimSpace(strings.TrimPrefix(line, ">"))
 		candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "/"))
 		candidateLower := strings.ToLower(candidate)
-		if candidateLower == verb || strings.HasPrefix(candidateLower, verb+" ") {
+		pluginHeader := (verb == "plugins" || verb == "pl") && regexp.MustCompile(`(?i)^plugins?\s*\(\d+\)\s*:`).MatchString(candidate)
+		if candidateLower == verb || strings.HasPrefix(candidateLower, verb+" ") && !pluginHeader {
 			continue
 		}
 		lines = append(lines, line)
