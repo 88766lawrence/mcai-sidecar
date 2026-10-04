@@ -861,6 +861,10 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	if err != nil || existing.Truncated || existing.Total != len(existing.Names) {
 		return errors.New("cannot verify the complete plugins directory before installation")
 	}
+	newName, err := pluginJarIdentity(contents)
+	if err != nil {
+		return fmt.Errorf("resolved plugin identity: %w", err)
+	}
 	projectKey := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(manifest.Project, "-", ""), "_", ""))
 	var oldJar string
 	for _, name := range existing.Names {
@@ -882,12 +886,6 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	}
 	uploadDir := "plugins"
 	if oldJar != "" {
-		if config, err := p.ReadFile(ctx, plan.InstanceRef, "bukkit.yml"); err == nil {
-			folder := regexp.MustCompile(`(?m)^\s*update-folder:\s*["']?([^\s#"']+)`).FindSubmatch(config)
-			if len(folder) == 2 && string(folder[1]) != "update" {
-				return errors.New("server config uses a nonstandard plugin update folder")
-			}
-		}
 		reader, ok := p.(provider.BinaryFileReader)
 		if !ok {
 			return errors.New("plugin replacement requires reading and backing up the existing JAR")
@@ -900,12 +898,26 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		if err != nil {
 			return fmt.Errorf("existing plugin identity: %w", err)
 		}
-		newName, err := pluginJarIdentity(contents)
-		if err != nil {
-			return fmt.Errorf("replacement plugin identity: %w", err)
-		}
-		if !strings.EqualFold(oldName, newName) || !strings.EqualFold(strings.ReplaceAll(strings.ReplaceAll(oldName, "-", ""), "_", ""), projectKey) {
+		if !strings.EqualFold(oldName, newName) {
 			return fmt.Errorf("existing and replacement JAR plugin identities do not match %s", manifest.Project)
+		}
+		if bytes.Equal(oldBytes, contents) {
+			// No upload means this task owns no server file. Keep rollback from
+			// deleting a pre-existing JAR if a later acceptance check fails.
+			manifest.InstalledPath, manifest.ReplacesPath, manifest.ReplacesSHA256 = "", "", ""
+			if err := e.savePluginManifest(plan.TaskID, manifest); err != nil {
+				return err
+			}
+			_ = os.Remove(filepath.Join(e.pluginTaskDir(sourceTaskID), "artifact.jar"))
+			emit("", "files", fmt.Sprintf("已有插件 /plugins/%s 与请求制品字节一致，无需重复写入或重启（SHA-256：%s）", oldJar, manifest.LocalSHA256),
+				pluginInstallObservation(manifest, newName, "plugins/"+oldJar, true))
+			return nil
+		}
+		if config, err := p.ReadFile(ctx, plan.InstanceRef, "bukkit.yml"); err == nil {
+			folder := regexp.MustCompile(`(?m)^\s*update-folder:\s*["']?([^\s#"']+)`).FindSubmatch(config)
+			if len(folder) == 2 && string(folder[1]) != "update" {
+				return errors.New("server config uses a nonstandard plugin update folder")
+			}
 		}
 		preparer, ok := p.(interface {
 			EnsurePluginUpdateDirectory(context.Context, string) error
@@ -942,12 +954,7 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		return err
 	}
 	manifest.InstalledPath = uploadDir + "/" + manifest.FileName
-	encoded, _ := json.MarshalIndent(manifest, "", "  ")
-	if err := os.MkdirAll(e.pluginTaskDir(plan.TaskID), 0o700); err != nil {
-		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(e.pluginTaskDir(plan.TaskID), "manifest.json"), encoded, 0o600); err != nil {
+	if err := e.savePluginManifest(plan.TaskID, manifest); err != nil {
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
 		return err
 	}
@@ -955,8 +962,7 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 	if err != nil || listing.Truncated || !containsPluginName(listing.Names, manifest.FileName) {
 		e.deleteUploadedPlugin(ctx, p, plan.InstanceRef, manifest.InstalledPath)
 		manifest.InstalledPath = ""
-		encoded, _ = json.MarshalIndent(manifest, "", "  ")
-		_ = os.WriteFile(filepath.Join(e.pluginTaskDir(plan.TaskID), "manifest.json"), encoded, 0o600)
+		_ = e.savePluginManifest(plan.TaskID, manifest)
 		return errors.New("plugin upload completed without file-list evidence")
 	}
 	if reader, ok := p.(provider.BinaryFileReader); ok {
@@ -975,11 +981,31 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		})
 	}
 	if oldJar != "" {
-		emit("", "files", fmt.Sprintf("插件更新已暂存到 /%s，旧版 /plugins/%s 已备份；需获批重启后生效（SHA-256：%s）", manifest.InstalledPath, oldJar, manifest.LocalSHA256))
+		emit("", "files", fmt.Sprintf("插件更新已暂存到 /%s，旧版 /plugins/%s 已备份；需获批重启后生效（SHA-256：%s）", manifest.InstalledPath, oldJar, manifest.LocalSHA256), pluginInstallObservation(manifest, newName, manifest.InstalledPath, false))
 	} else {
-		emit("", "files", fmt.Sprintf("插件已落盘到 /%s，需重启后加载（SHA-256：%s）", manifest.InstalledPath, manifest.LocalSHA256))
+		emit("", "files", fmt.Sprintf("插件已落盘到 /%s，需重启后加载（SHA-256：%s）", manifest.InstalledPath, manifest.LocalSHA256), pluginInstallObservation(manifest, newName, manifest.InstalledPath, false))
 	}
 	return nil
+}
+
+func (e *Executor) savePluginManifest(taskID string, manifest pluginManifest) error {
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(e.pluginTaskDir(taskID), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(e.pluginTaskDir(taskID), "manifest.json"), encoded, 0o600)
+}
+
+func pluginInstallObservation(manifest pluginManifest, name, path string, alreadyPresent bool) map[string]any {
+	return map[string]any{
+		"schema_version": "plugin-install-result/v1", "project": manifest.Project,
+		"plugin_name": name, "artifact": manifest.FileName, "installed_path": path,
+		"replaces_path": manifest.ReplacesPath, "sha256": manifest.LocalSHA256,
+		"already_present": alreadyPresent, "restart_required": !alreadyPresent,
+	}
 }
 
 func containsPluginName(names []string, name string) bool {

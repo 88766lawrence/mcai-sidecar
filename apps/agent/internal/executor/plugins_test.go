@@ -590,7 +590,7 @@ func (p *pluginProvider) DeleteFiles(_ context.Context, _ string, targets []stri
 }
 
 func TestPluginResolveInstallAndRollback(t *testing.T) {
-	contents := []byte("verified-plugin")
+	contents := testPluginJar(t, "Essentials", "verified-plugin")
 	hash256 := sha256.Sum256(contents)
 	hash512 := sha512.Sum512(contents)
 	executor := New(t.TempDir(), nil)
@@ -697,6 +697,42 @@ func TestPluginInstallRejectsDifferentPluginInMatchingFilename(t *testing.T) {
 	}
 }
 
+func TestPluginInstallIdenticalArtifactDoesNotWriteRestartOrOwnExistingJar(t *testing.T) {
+	contents := testPluginJar(t, "Essentials", "same")
+	hash256, hash512 := sha256.Sum256(contents), sha512.Sum512(contents)
+	exec := New(t.TempDir(), nil)
+	exec.pluginResolver = staticPluginResolver{artifact: resolvedPlugin{
+		Project: "essentialsx", VersionID: "same", VersionNumber: "2.21.0",
+		FileName: "EssentialsX-2.21.0.jar", SourceURL: "https://cdn.modrinth.com/data/test.jar",
+		SourceSHA512: hex.EncodeToString(hash512[:]), LocalSHA256: hex.EncodeToString(hash256[:]), Contents: contents,
+		Source: "modrinth", Compatibility: "exact-game-version",
+	}}
+	resolve := protocol.TaskPlan{TaskID: "same-resolve", InstanceRef: "mcs:daemon:instance"}
+	install := protocol.TaskPlan{TaskID: "same-install", InstanceRef: resolve.InstanceRef}
+	p := &pluginProvider{existing: []string{"EssentialsX-2.21.0.jar"}, oldBinary: contents}
+	err := exec.resolvePlugin(context.Background(), p, resolve, protocol.TaskStep{Args: map[string]any{
+		"project": "essentialsx", "loader": "paper", "minecraft_version": "1.21.1",
+	}}, func(string, string, string, ...map[string]any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fact map[string]any
+	err = exec.installPlugin(context.Background(), p, install, protocol.TaskStep{Args: map[string]any{
+		"project": "essentialsx", "source_task_id": resolve.TaskID,
+	}}, func(_, _ string, _ string, observed ...map[string]any) {
+		if len(observed) > 0 {
+			fact = observed[0]
+		}
+	})
+	if err != nil || p.uploadName != "" || fact["already_present"] != true || fact["restart_required"] != false || fact["plugin_name"] != "Essentials" {
+		t.Fatalf("identical artifact was not handled as no-op: err=%v upload=%q fact=%v", err, p.uploadName, fact)
+	}
+	exec.rollbackPlugin(context.Background(), p, install, func(string, string, string, ...map[string]any) {})
+	if len(p.deleted) != 0 {
+		t.Fatalf("no-op rollback deleted an existing JAR: %v", p.deleted)
+	}
+}
+
 func testPluginJar(t *testing.T, name, payload string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -722,7 +758,7 @@ func testPluginJar(t *testing.T, name, payload string) []byte {
 }
 
 func TestPluginMetadataOnlyResolveFetchesVerifiedArtifactDuringInstall(t *testing.T) {
-	contents := []byte("metadata-only-install")
+	contents := testPluginJar(t, "AuthMe", "metadata-only-install")
 	hash512 := sha512.Sum512(contents)
 	artifactRequests := 0
 	var server *httptest.Server
@@ -828,6 +864,14 @@ func TestLoadedPluginInventoryParsesTimestampedPaperCallback(t *testing.T) {
 	declared, names, ok := loadedPluginInventory(fixture)
 	if !ok || declared != 3 || strings.Join(names, ",") != "LuckPerms,ProtocolLib,WorldEdit" {
 		t.Fatalf("unexpected parsed inventory: declared=%d names=%v ok=%v", declared, names, ok)
+	}
+}
+
+func TestPluginCommandReplyHeaderIsNotMistakenForCommandEcho(t *testing.T) {
+	fixture := "plugins\nPlugins (2): LuckPerms, ViaVersion"
+	result := consoleResultOutput("plugins", fixture)
+	if !consoleEvidenceComplete("plugins", fixture) || strings.Contains(result, "plugins\n") {
+		t.Fatalf("plugin header was removed with command echo: %q", result)
 	}
 }
 
