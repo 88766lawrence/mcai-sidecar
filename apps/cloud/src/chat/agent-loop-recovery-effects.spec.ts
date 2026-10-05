@@ -202,7 +202,22 @@ describe("agent loop recovery effects", () => {
     expect(tasks.bindAgentApproval).toHaveBeenLastCalledWith(expect.any(String), "task-install", expect.any(String));
   });
 
-  async function scenario(observation: AgentLoopObservation, recovery: AgentLoopDecision, transientUnavailable = false) {
+  it("explains a negative plugin resolution when terminal model generation is unavailable", async () => {
+    const observation: AgentLoopObservation = {
+      tool_call_id: "call-initial", tool: "plugin.resolve", status: "succeeded", retryable: false, side_effect: "none",
+      data: { call_arguments: { project: "beta" }, observations: [{ observed: {
+        schema_version: "resolved-plugin/v1", resolution: "no-compatible-artifact", project: "beta",
+        checked_sources: ["Modrinth", "Hangar"], requested_minecraft_version: "1.21.1",
+      } }] }, evidence: { ids: ["e1"], summaries: ["no compatible artifact found"] },
+    };
+    const result = await scenario(observation, { action: "final", answer: "unused", citations: [] }, false, "安装 Beta", true);
+    await vi.waitFor(async () => expect((await result.service.messages(result.sessionId, "tenant-1")).at(-1)).toMatchObject({
+      task_phase: "completion", content: expect.stringMatching(/beta：未安装.*Modrinth, Hangar.*1\.21\.1/u),
+    }));
+    expect(result.tasks.create).toHaveBeenCalledTimes(1);
+  });
+
+  async function scenario(observation: AgentLoopObservation, recovery: AgentLoopDecision, transientUnavailable = false, request = "Find the relevant files safely.", unavailable = false) {
     const directory = await mkdtemp(join(tmpdir(), "mcai-agent-recovery-effects-"));
     directories.push(directory);
     const cloud = new CloudStore();
@@ -211,7 +226,7 @@ describe("agent loop recovery effects", () => {
       profile_revision: "rev-1", provider_type: "mcsmanager", collected_at: new Date().toISOString(), tenant_id: "tenant-1", agent_id: "agent-1",
     });
     const records = new Map<string, { id: string; state: string; evidence: unknown[]; plan?: { agent_execution?: { tool_call_id: string } } }>();
-    const firstTask = { id: "task-1", state: "FAILED", evidence: [{ kind: "provider", summary: observation.error?.message ?? "failed" }] };
+    const firstTask = { id: "task-1", state: observation.status === "succeeded" ? "SUCCEEDED" : "FAILED", evidence: [{ kind: "provider", summary: observation.error?.message ?? "failed" }] };
     const secondTask = { id: "task-2", state: "SNAPSHOTTING", evidence: [] };
     let createIndex = 0;
     const tasks = {
@@ -233,10 +248,10 @@ describe("agent loop recovery effects", () => {
     const chatPath = join(directory, "conversations.json");
     const first = new ChatService(cloud, initial, tasks, new AgentRunStore(path), chatPath);
     const session = await first.create("tenant-1", "instance-1");
-    await first.send(session.id, "tenant-1", "Find the relevant files safely.");
+    await first.send(session.id, "tenant-1", request);
     const decideAgentLoop = vi.fn();
     if (transientUnavailable) decideAgentLoop.mockResolvedValueOnce({ status: "unavailable", error: "MODEL_TIMEOUT" });
-    decideAgentLoop.mockResolvedValue({ status: "answered", requestId: "recovery", decision: recovery });
+    decideAgentLoop.mockResolvedValue(unavailable ? { status: "unavailable", error: "AGENT_LOOP_INVALID_RESPONSE" } : { status: "answered", requestId: "recovery", decision: recovery });
     const next = { decideAgentLoop, route: vi.fn(), routeStream: vi.fn() } as unknown as ModelGatewayService;
     const service = new ChatService(cloud, next, tasks, new AgentRunStore(path), chatPath);
     services.push(service);

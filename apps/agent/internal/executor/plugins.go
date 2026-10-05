@@ -34,6 +34,7 @@ var pluginProjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 var pluginJarNamePattern = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9 ._()+-]{0,244}\.jar$`)
 var minecraftReleasePattern = regexp.MustCompile(`(?m)(?:^|[^0-9])(1\.\d+(?:\.\d+)?)(?:[^0-9]|$)`)
 var errNoCompatiblePluginVersion = errors.New("no compatible plugin version")
+var errPluginSearchIncomplete = errors.New("plugin history search incomplete")
 
 type githubPluginSource struct {
 	Owner       string
@@ -165,8 +166,11 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 		}
 		projectID = discovered
 	}
-	endpoint := strings.TrimRight(r.hangarBase, "/") + "/projects/" + url.PathEscape(projectID) + "/versions?limit=25&offset=0"
+	endpoint := strings.TrimRight(r.hangarBase, "/") + "/projects/" + url.PathEscape(projectID) + "/versions?limit=25&offset="
 	var response struct {
+		Pagination struct {
+			Count *int `json:"count"`
+		} `json:"pagination"`
 		Result []struct {
 			ID          int64  `json:"id"`
 			Name        string `json:"name"`
@@ -191,91 +195,101 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			PlatformDependencies map[string][]string `json:"platformDependencies"`
 		} `json:"result"`
 	}
-	if err := r.getHangarJSON(ctx, endpoint, &response); err != nil {
-		return resolvedPlugin{}, err
-	}
 	var lastIncompatibleTag error
-	for _, version := range response.Result {
-		if version.ID <= 0 || version.Name == "" || version.Visibility != "public" || !strings.EqualFold(version.Channel.Name, "Release") {
-			continue
-		}
-		compatible := false
-		for _, candidate := range version.PlatformDependencies["PAPER"] {
-			if candidate == minecraftVersion {
-				compatible = true
-				break
-			}
-		}
-		download, ok := version.Downloads["PAPER"]
-		if !ok {
-			continue
-		}
-		// A reviewed Hangar release may link to its official GitHub tag
-		// instead of declaring every compatible patch version. The exact
-		// asset and explicitly listed Minecraft version are checked below.
-		reviewedTag := strings.EqualFold(version.ReviewState, "reviewed") && download.DownloadURL == "" &&
-			(strings.Contains(download.ExternalURL, "/releases/tag/") || strings.Contains(download.ExternalURL, "/releases/tags/"))
-		if !compatible && !reviewedTag {
-			continue
-		}
-		for _, dependency := range version.PluginDependencies["PAPER"] {
-			if dependency.Required == nil || *dependency.Required {
-				return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
-			}
-		}
-		if download.ExternalURL != "" && download.DownloadURL == "" {
-			if !strings.EqualFold(version.ReviewState, "reviewed") {
-				return resolvedPlugin{}, errors.New("Hangar external release is not reviewed")
-			}
-			artifact, err := r.resolveReviewedHangarGitHubAsset(ctx, project, minecraftVersion, version.ID, version.Name, download.ExternalURL, metadataOnly)
-			if errors.Is(err, errNoCompatiblePluginVersion) && !compatible {
-				lastIncompatibleTag = err
-				continue
-			}
-			return artifact, err
-		}
-		if download.DownloadURL == "" {
-			continue
-		}
-		if !pluginJarNamePattern.MatchString(download.FileInfo.Name) {
-			return resolvedPlugin{}, errors.New("Hangar did not provide a safe JAR filename")
-		}
-		declared256 := strings.ToLower(strings.TrimSpace(download.FileInfo.SHA256Hash))
-		if len(declared256) != 64 || download.FileInfo.SizeBytes <= 0 || download.FileInfo.SizeBytes > 64<<20 {
-			return resolvedPlugin{}, errors.New("Hangar release has incomplete artifact integrity metadata")
-		}
-		if _, err := hex.DecodeString(declared256); err != nil {
-			return resolvedPlugin{}, errors.New("Hangar release has an invalid SHA-256 digest")
-		}
-		artifactURL, err := url.Parse(download.DownloadURL)
-		trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "hangarcdn.papermc.io"
-		trustedTest := r.hangarBase != hangarAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
-		if !trustedOfficial && !trustedTest {
-			return resolvedPlugin{}, errors.New("Hangar returned an untrusted artifact URL")
-		}
-		if metadataOnly {
-			return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
-				FileName: download.FileInfo.Name, SourceURL: download.DownloadURL, LocalSHA256: declared256,
-				Source: "hangar", Compatibility: "exact-game-version"}, nil
-		}
-		contents, err := r.downloadPluginArtifact(ctx, download.DownloadURL)
-		if err != nil {
+	for page := 0; page < 4; page++ {
+		response.Result = nil
+		response.Pagination.Count = nil
+		if err := r.getHangarJSON(ctx, endpoint+strconv.Itoa(page*25), &response); err != nil {
 			return resolvedPlugin{}, err
 		}
-		if int64(len(contents)) != download.FileInfo.SizeBytes {
-			return resolvedPlugin{}, errors.New("Hangar artifact size does not match metadata")
+		for _, version := range response.Result {
+			if version.ID <= 0 || version.Name == "" || version.Visibility != "public" || !strings.EqualFold(version.Channel.Name, "Release") {
+				continue
+			}
+			compatible := false
+			for _, candidate := range version.PlatformDependencies["PAPER"] {
+				if candidate == minecraftVersion {
+					compatible = true
+					break
+				}
+			}
+			download, ok := version.Downloads["PAPER"]
+			if !ok {
+				continue
+			}
+			// A reviewed Hangar release may link to its official GitHub tag
+			// instead of declaring every compatible patch version. The exact
+			// asset and explicitly listed Minecraft version are checked below.
+			reviewedTag := strings.EqualFold(version.ReviewState, "reviewed") && download.DownloadURL == "" &&
+				(strings.Contains(download.ExternalURL, "/releases/tag/") || strings.Contains(download.ExternalURL, "/releases/tags/"))
+			if !compatible && !reviewedTag {
+				continue
+			}
+			for _, dependency := range version.PluginDependencies["PAPER"] {
+				if dependency.Required == nil || *dependency.Required {
+					return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
+				}
+			}
+			if download.ExternalURL != "" && download.DownloadURL == "" {
+				if !strings.EqualFold(version.ReviewState, "reviewed") {
+					return resolvedPlugin{}, errors.New("Hangar external release is not reviewed")
+				}
+				artifact, err := r.resolveReviewedHangarGitHubAsset(ctx, project, minecraftVersion, version.ID, version.Name, download.ExternalURL, metadataOnly)
+				if errors.Is(err, errNoCompatiblePluginVersion) && !compatible {
+					lastIncompatibleTag = err
+					continue
+				}
+				return artifact, err
+			}
+			if download.DownloadURL == "" {
+				continue
+			}
+			if !pluginJarNamePattern.MatchString(download.FileInfo.Name) {
+				return resolvedPlugin{}, errors.New("Hangar did not provide a safe JAR filename")
+			}
+			declared256 := strings.ToLower(strings.TrimSpace(download.FileInfo.SHA256Hash))
+			if len(declared256) != 64 || download.FileInfo.SizeBytes <= 0 || download.FileInfo.SizeBytes > 64<<20 {
+				return resolvedPlugin{}, errors.New("Hangar release has incomplete artifact integrity metadata")
+			}
+			if _, err := hex.DecodeString(declared256); err != nil {
+				return resolvedPlugin{}, errors.New("Hangar release has an invalid SHA-256 digest")
+			}
+			artifactURL, err := url.Parse(download.DownloadURL)
+			trustedOfficial := err == nil && artifactURL.Scheme == "https" && artifactURL.Hostname() == "hangarcdn.papermc.io"
+			trustedTest := r.hangarBase != hangarAPI && err == nil && (artifactURL.Scheme == "http" || artifactURL.Scheme == "https")
+			if !trustedOfficial && !trustedTest {
+				return resolvedPlugin{}, errors.New("Hangar returned an untrusted artifact URL")
+			}
+			if metadataOnly {
+				return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
+					FileName: download.FileInfo.Name, SourceURL: download.DownloadURL, LocalSHA256: declared256,
+					Source: "hangar", Compatibility: "exact-game-version"}, nil
+			}
+			contents, err := r.downloadPluginArtifact(ctx, download.DownloadURL)
+			if err != nil {
+				return resolvedPlugin{}, err
+			}
+			if int64(len(contents)) != download.FileInfo.SizeBytes {
+				return resolvedPlugin{}, errors.New("Hangar artifact size does not match metadata")
+			}
+			actual256 := sha256.Sum256(contents)
+			if hex.EncodeToString(actual256[:]) != declared256 {
+				return resolvedPlugin{}, errors.New("Hangar artifact SHA-256 does not match metadata")
+			}
+			actual512 := sha512.Sum512(contents)
+			return resolvedPlugin{
+				Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
+				FileName: download.FileInfo.Name, SourceURL: download.DownloadURL,
+				SourceSHA512: hex.EncodeToString(actual512[:]), LocalSHA256: declared256,
+				Source: "hangar", Compatibility: "exact-game-version", Contents: contents,
+			}, nil
 		}
-		actual256 := sha256.Sum256(contents)
-		if hex.EncodeToString(actual256[:]) != declared256 {
-			return resolvedPlugin{}, errors.New("Hangar artifact SHA-256 does not match metadata")
+		if len(response.Result) < 25 || response.Pagination.Count != nil && *response.Pagination.Count <= (page+1)*25 {
+			break
 		}
-		actual512 := sha512.Sum512(contents)
-		return resolvedPlugin{
-			Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
-			FileName: download.FileInfo.Name, SourceURL: download.DownloadURL,
-			SourceSHA512: hex.EncodeToString(actual512[:]), LocalSHA256: declared256,
-			Source: "hangar", Compatibility: "exact-game-version", Contents: contents,
-		}, nil
+		if page == 3 {
+			return resolvedPlugin{}, fmt.Errorf("%w: Hangar reached the 100-version history limit", errPluginSearchIncomplete)
+		}
 	}
 	if lastIncompatibleTag != nil {
 		return resolvedPlugin{}, fmt.Errorf("%w: Hangar has no release compatible with Minecraft %s; %v", errNoCompatiblePluginVersion, minecraftVersion, lastIncompatibleTag)
@@ -724,7 +738,11 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 			emit("", "inventory", fmt.Sprintf("已从当前实例日志与文件识别服务端：%s %s", loader, minecraftVersion))
 		}
 	}
+	checkedSources := []string{}
 	progress := func(source, status string) {
+		if !containsPluginName(checkedSources, source) {
+			checkedSources = append(checkedSources, source)
+		}
 		emit("", "source", fmt.Sprintf("%s：%s", source, status))
 	}
 	var artifact resolvedPlugin
@@ -735,8 +753,20 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 		artifact, err = e.pluginResolver.Resolve(ctx, project, loader, minecraftVersion, progress)
 	}
 	if err != nil {
+		resolution := "query-failed"
 		if errors.Is(err, errNoCompatiblePluginVersion) {
-			emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; resolution=no-compatible-artifact; compatibility=incompatible; checked_source=modrinth; requested_loader=%s; requested_minecraft_version=%s", project, loader, minecraftVersion))
+			resolution = "no-compatible-artifact"
+		}
+		if errors.Is(err, errPluginSearchIncomplete) {
+			resolution = "search-incomplete"
+		}
+		// An empty search is negative evidence, not proof that every plugin release is incompatible.
+		emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; resolution=%s; compatibility=unverified; checked_source=%s; requested_loader=%s; requested_minecraft_version=%s", project, resolution, strings.Join(checkedSources, "|"), loader, minecraftVersion), map[string]any{
+			"schema_version": "resolved-plugin/v1", "project": project, "resolution": resolution,
+			"compatibility": "unverified", "checked_sources": checkedSources,
+			"requested_loader": loader, "requested_minecraft_version": minecraftVersion,
+		})
+		if resolution != "query-failed" {
 			return nil
 		}
 		return err
@@ -760,7 +790,12 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), encoded, 0o600); err != nil {
 		return err
 	}
-	emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; version=%s; source=%s; artifact=%s; compatibility=%s; sha256=%s; source_sha512=%s", artifact.Project, artifact.VersionNumber, artifact.Source, artifact.FileName, artifact.Compatibility, artifact.LocalSHA256, artifact.SourceSHA512))
+	emit("", "plugin", fmt.Sprintf("Plugin resolve result: project=%s; version=%s; source=%s; artifact=%s; compatibility=%s; sha256=%s; source_sha512=%s", artifact.Project, artifact.VersionNumber, artifact.Source, artifact.FileName, artifact.Compatibility, artifact.LocalSHA256, artifact.SourceSHA512), map[string]any{
+		"schema_version": "resolved-plugin/v1", "resolution": "resolved", "project": artifact.Project,
+		"version": artifact.VersionNumber, "source": artifact.Source, "artifact": artifact.FileName,
+		"compatibility": artifact.Compatibility, "sha256": artifact.LocalSHA256, "source_sha512": artifact.SourceSHA512,
+		"checked_sources": checkedSources, "requested_loader": loader, "requested_minecraft_version": minecraftVersion,
+	})
 	return nil
 }
 

@@ -36,7 +36,6 @@ from mcai_graph.graph import (
     _paper_fabric_comparison_answer,
     _enforce_log_time_scope,
     _enforce_plugin_compatibility_scope,
-    _enforce_plugin_install_evidence,
     _paper_plugin_guidance_search,
     _explicit_live_decision,
     _plugin_verification_next_read,
@@ -49,7 +48,7 @@ from mcai_graph.graph import (
     _unavailable_instance_action_answer,
 )
 
-from mcai_graph.plugin_workflow import next_plugin_decision
+from mcai_graph.plugin_workflow import next_plugin_decision, finalize_plugin_decision
 
 
 class LogWindowScopeTests(unittest.TestCase):
@@ -96,7 +95,7 @@ class LogWindowScopeTests(unittest.TestCase):
     def test_existing_jar_cannot_be_claimed_as_new_install(self):
         observations = [
             {"tool": "plugin.install", "status": "succeeded", "data": {
-                "call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms.jar"}}},
+                "call_arguments": {"project": "luckperms", "artifact_ref": "LuckPerms.jar"}, "observations": [{"observed": {"schema_version": "plugin-install-result/v1", "plugin_name": "LuckPerms"}}]}},
             {"tool": "plugin.resolve", "status": "succeeded", "data": {
                 "call_arguments": {"project": "EssentialsX"}, "observations": [{
                     "kind": "plugin", "observed": {"project": "essentialsx", "resolution": "no-compatible-artifact",
@@ -105,9 +104,9 @@ class LogWindowScopeTests(unittest.TestCase):
                 "kind": "files", "observed": {"entries": [{"name": "EssentialsX-2.22.0.jar"}]}}]}},
         ]
         decision = {"action": "final", "answer": "LuckPerms 和 EssentialsX 均已安装。", "citations": ["install", "resolve", "files"]}
-        result = _enforce_plugin_install_evidence(decision, "请安装 LuckPerms 和 EssentialsX", observations)
-        self.assertIn("本轮已安装：luckperms", result["answer"])
-        self.assertIn("未安装：essentialsx", result["answer"])
+        result = finalize_plugin_decision(decision, "请安装 LuckPerms 和 EssentialsX", observations)
+        self.assertIn("luckperms：插件文件已安装", result["answer"])
+        self.assertIn("essentialsx：未安装", result["answer"])
         self.assertEqual(result["citations"], decision["citations"])
 
     def test_plugin_install_clears_prior_unresolved_resolution(self):
@@ -119,7 +118,7 @@ class LogWindowScopeTests(unittest.TestCase):
                 "call_arguments": {"project": "essentialsx", "artifact_ref": "EssentialsX.jar"}}},
         ]
         decision = {"action": "final", "answer": "EssentialsX 已安装。", "citations": ["install"]}
-        self.assertEqual(_enforce_plugin_install_evidence(decision, "安装 EssentialsX", observations), decision)
+        self.assertEqual(finalize_plugin_decision(decision, "安装 EssentialsX", observations), decision)
 
     def test_install_request_continues_after_compatible_resolution(self):
         tools = [{"name": "plugin.install"}]

@@ -15,7 +15,7 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from .plugin_workflow import next_plugin_decision
+from .plugin_workflow import next_plugin_decision, finalize_plugin_decision
 
 
 SUPPORTED_OPERATIONS = (
@@ -1642,54 +1642,6 @@ def _enforce_plugin_compatibility_scope(
     return {**decision, "answer": answer.rstrip() + " " + note}
 
 
-def _enforce_plugin_install_evidence(
-    decision: dict[str, Any], message: str, observations: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """An existing JAR cannot stand in for a successful install in this run."""
-    if decision.get("action") != "final" or not re.search(r"安装|装上|帮我安排|install", message, re.I):
-        return decision
-    installed: dict[str, str] = {}
-    unresolved: dict[str, str] = {}
-    for item in observations:
-        if item.get("status") != "succeeded":
-            continue
-        data = item.get("data") if isinstance(item.get("data"), dict) else {}
-        arguments = data.get("call_arguments") if isinstance(data.get("call_arguments"), dict) else {}
-        project = str(arguments.get("project") or "").strip().lower()
-        if item.get("tool") == "plugin.install" and project:
-            installed[project] = str(arguments.get("artifact_ref") or "").strip()
-        if item.get("tool") != "plugin.resolve":
-            continue
-        for observation in data.get("observations", []):
-            if not isinstance(observation, dict) or observation.get("kind") != "plugin":
-                continue
-            result = observation.get("observed")
-            if not isinstance(result, dict) or result.get("resolution") != "no-compatible-artifact":
-                continue
-            resolved_project = str(result.get("project") or project).strip().lower()
-            if resolved_project:
-                unresolved[resolved_project] = str(result.get("requested_minecraft_version") or "").strip()
-    missing = {project: version for project, version in unresolved.items() if project not in installed}
-    if not missing:
-        return decision
-    answer = str(decision.get("answer") or "")
-    # Preserve a final answer that already makes the partial result explicit.
-    if all(re.search(rf"{re.escape(project)}.{{0,90}}(?:未安装|没有安装|未找到|no compatible|not installed)", answer, re.I | re.S)
-           for project in missing):
-        return decision
-    chinese = bool(re.search(r"[\u3400-\u9fff]", message))
-    if chinese:
-        completed = "、".join(f"{project}（{artifact}）" if artifact else project for project, artifact in installed.items())
-        pending = "、".join(f"{project}（目标 Minecraft {version}）" if version else project for project, version in missing.items())
-        corrected = (f"本轮已安装：{completed}。" if completed else "本轮没有完成插件安装。")
-        corrected += f"\n未安装：{pending}。兼容版本解析未找到可用制品；目录里已有的 JAR 不代表本轮安装成功，也不能证明与当前服务端兼容。"
-    else:
-        completed = ", ".join(f"{project} ({artifact})" if artifact else project for project, artifact in installed.items())
-        pending = ", ".join(f"{project} (Minecraft {version})" if version else project for project, version in missing.items())
-        corrected = (f"Installed in this run: {completed}." if completed else "No plugin installation completed in this run.")
-        corrected += f"\nNot installed: {pending}. Resolution found no compatible artifact; an existing JAR does not prove this run installed it or that it is compatible."
-    return {**decision, "answer": corrected}
-
 
 def _max_tokens_for_schema(schema: dict[str, Any]) -> int:
     required = {str(item) for item in schema.get("required", [])}
@@ -2451,7 +2403,7 @@ class McaiGraph:
                     )
                     if terminal_evidence_error is None and not requires_terminal_editor:
                         return {
-                            "decision": _enforce_plugin_install_evidence(
+                            "decision": finalize_plugin_decision(
                                 _enforce_plugin_compatibility_scope(
                                     _enforce_log_time_scope(decision, observations), message, observations,
                                 ), message, observations,
@@ -2611,7 +2563,7 @@ class McaiGraph:
                         }])
             if error is None:
                 return {
-                    "decision": _enforce_plugin_install_evidence(
+                    "decision": finalize_plugin_decision(
                         _enforce_plugin_compatibility_scope(
                             _enforce_log_time_scope(decision, observations), message, observations,
                         ), message, observations,
