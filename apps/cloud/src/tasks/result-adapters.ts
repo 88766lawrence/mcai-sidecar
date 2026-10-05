@@ -330,6 +330,9 @@ function adaptPluginResolve(goal: GoalRequirement, evidence: Evidence[], diagnos
   if (identities.length !== 1) return unavailable(goal, diagnostics, "conflicting_authoritative_facts", "插件解析回调包含互相冲突的结果");
   const observed = JSON.parse(identities[0]) as NonNullable<ReturnType<typeof parsePluginResolveResult>>;
   if (observed.project.toLowerCase() !== goal.target.toLowerCase()) return unavailable(goal, diagnostics, "conflicting_authoritative_facts", "插件解析结果与请求项目不一致");
+  if (observed.resolution === "search-incomplete") {
+    return { ...available(goal, observed, diagnostics), summary: `${observed.project} 历史版本查询达到上限；查询不完整，不能判定不存在兼容版本` };
+  }
   if (observed.resolution === "no-compatible-artifact") {
     return { ...available(goal, observed, diagnostics), summary: `${observed.project} 在 ${observed.checked_source} 未找到适用于 ${observed.requested_loader} ${observed.requested_minecraft_version} 的兼容制品` };
   }
@@ -352,12 +355,12 @@ export function parsePluginResolveResult(line: string) {
   const sha256 = fields.get("sha256") ?? "";
   const sourceSha512 = fields.get("source_sha512") ?? "";
   const resolution = fields.get("resolution") ?? "";
-  if (resolution === "no-compatible-artifact") {
+  if (resolution === "no-compatible-artifact" || resolution === "search-incomplete") {
     const checkedSource = fields.get("checked_source") ?? "";
     const requestedLoader = fields.get("requested_loader") ?? "";
     const requestedMinecraftVersion = fields.get("requested_minecraft_version") ?? "";
-    if (!project || fields.get("compatibility") !== "incompatible" || !checkedSource || !requestedLoader || !/^1\.\d+(?:\.\d+)?$/.test(requestedMinecraftVersion)) return undefined;
-    return { project, resolution, compatibility: "incompatible", checked_source: checkedSource, requested_loader: requestedLoader, requested_minecraft_version: requestedMinecraftVersion };
+    if (!project || !["incompatible", "unverified"].includes(fields.get("compatibility") ?? "") || !checkedSource || !requestedLoader || !/^1\.\d+(?:\.\d+)?$/.test(requestedMinecraftVersion)) return undefined;
+    return { project, resolution, compatibility: fields.get("compatibility")!, checked_source: checkedSource, requested_loader: requestedLoader, requested_minecraft_version: requestedMinecraftVersion };
   }
   const validSha256 = /^[a-f0-9]{64}$/i.test(sha256);
   const validSourceSha512 = /^[a-f0-9]{128}$/i.test(sourceSha512);

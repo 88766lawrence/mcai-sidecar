@@ -23,9 +23,67 @@ def result(item: dict[str, Any], schema: str) -> dict[str, Any] | None:
         return None
     for fact in data.get("observations", []):
         value = fact.get("observed") if isinstance(fact, dict) else None
-        if isinstance(value, dict) and value.get("schema_version") == schema:
+        if isinstance(value, dict) and (value.get("schema_version") == schema or
+                schema == "resolved-plugin/v1" and "schema_version" not in value and value.get("resolution")):
             return value
     return None
+
+
+def plugin_outcome_summary(message: str, observations: list[dict[str, Any]]) -> str | None:
+    """Summarize observed projects, including blocked and unfinished work, without claiming the whole request succeeded."""
+    if not INSTALL_REQUEST.search(message) or INSTALL_PROHIBITED.search(message):
+        return None
+    projects: dict[str, dict[str, Any]] = {}
+    for item in observations:
+        if item.get("tool") not in {"plugin.resolve", "plugin.install"}:
+            continue
+        project = str(arguments(item).get("project") or "").lower()
+        if not project or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,63}", project):
+            continue
+        facts = projects.setdefault(project, {})
+        if item.get("tool") == "plugin.install" and item.get("status") == "succeeded":
+            installed = result(item, "plugin-install-result/v1")
+            if installed:
+                facts["installed"] = installed
+        elif item.get("tool") == "plugin.resolve":
+            resolved = result(item, "resolved-plugin/v1")
+            if resolved:
+                facts["resolved"] = resolved
+    lines = []
+    for project, facts in projects.items():
+        installed, resolved = facts.get("installed"), facts.get("resolved", {})
+        if installed:
+            if installed.get("already_present") is True:
+                lines.append(f"{project}：已有文件与请求制品校验一致，无需重复安装或重启；这不代表本轮重新核验了加载状态。")
+            else:
+                project_observations = [item for item in observations if item.get("tool") != "plugin.install"
+                                        or str(arguments(item).get("project") or "").lower() == project]
+                verification = next_plugin_decision("安装 " + project, [], project_observations, {})
+                lines.append(verification[0]["answer"] if verification and verification[0].get("action") == "final"
+                             else f"{project}：插件文件已安装；尚未确认完成启动和实际加载核验。")
+        elif resolved.get("resolution") in {"no-compatible-artifact", "search-incomplete", "query-failed"}:
+            version = str(resolved.get("requested_minecraft_version") or "")
+            sources = resolved.get("checked_sources")
+            source_text = "、".join(str(s) for s in sources) if isinstance(sources, list) and sources else str(resolved.get("checked_source") or "已检查来源")
+            reason = {"no-compatible-artifact": f"在 {source_text} 未找到适用于目标 Minecraft {version} 的兼容制品",
+                      "search-incomplete": "历史版本查询达到上限，查询不完整，不能判定不存在兼容版本",
+                      "query-failed": "来源查询或制品校验失败，不能判定兼容版本是否存在"}[resolved["resolution"]]
+            lines.append(f"{project}：未安装；{reason}。")
+        elif resolved:
+            lines.append(f"{project}：已找到制品，但没有本轮安装成功的证据。")
+    return "已核对的插件结果：\n" + "\n".join(lines) if lines else None
+
+
+def finalize_plugin_decision(decision: dict[str, Any], message: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
+    if decision.get("action") != "final":
+        return decision
+    installed = {str(arguments(item).get("project") or "").lower() for item in observations
+                 if item.get("tool") == "plugin.install" and item.get("status") == "succeeded"}
+    blocked = any(str(arguments(item).get("project") or "").lower() not in installed and result(item, "resolved-plugin/v1") and
+                  result(item, "resolved-plugin/v1").get("resolution") in {"no-compatible-artifact", "search-incomplete", "query-failed"}
+                  for item in observations if item.get("tool") == "plugin.resolve")
+    summary = plugin_outcome_summary(message, observations) if blocked else None
+    return {**decision, "answer": summary} if summary else decision
 
 
 def _call(tool: str, args: dict[str, Any], reason: str, label: str):

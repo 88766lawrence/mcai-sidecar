@@ -234,6 +234,9 @@ function renderPluginFacts(values: unknown[], chinese: boolean) {
   const unique = new Map(facts.map((fact) => [stablePluginFact(fact), fact]));
   if (unique.size !== 1) return undefined;
   const fact = [...unique.values()][0];
+  if (fact.resolution === "search-incomplete") return chinese
+    ? `${fact.project}：历史版本查询达到上限，查询不完整，不能判定不存在兼容版本。`
+    : `${fact.project}: the history search limit was reached; compatibility remains unresolved.`;
   if (fact.resolution === "no-compatible-artifact") return chinese
     ? `${fact.project}：在可信来源 ${displaySource(fact.checked_source ?? "")} 中未找到适用于 ${fact.requested_loader} ${fact.requested_minecraft_version} 的兼容制品，因此没有可提供的制品版本或校验值。`
     : `${fact.project}: no compatible artifact for ${fact.requested_loader} ${fact.requested_minecraft_version} was found in the trusted source ${displaySource(fact.checked_source ?? "")}; therefore no artifact version or checksum is available.`;
@@ -251,10 +254,10 @@ function renderPluginFacts(values: unknown[], chinese: boolean) {
 function parsePluginMetadataFact(value: unknown): PluginMetadataFact | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  if (record.resolution === "no-compatible-artifact") {
+  if (record.resolution === "no-compatible-artifact" || record.resolution === "search-incomplete") {
     const required = ["project", "compatibility", "checked_source", "requested_loader", "requested_minecraft_version"] as const;
-    if (required.some((key) => typeof record[key] !== "string" || !(record[key] as string).trim()) || record.compatibility !== "incompatible") return undefined;
-    return { project: String(record.project), compatibility: "incompatible", resolution: "no-compatible-artifact", checked_source: String(record.checked_source), requested_loader: String(record.requested_loader), requested_minecraft_version: String(record.requested_minecraft_version) };
+    if (required.some((key) => typeof record[key] !== "string" || !(record[key] as string).trim()) || !["incompatible", "unverified"].includes(String(record.compatibility))) return undefined;
+    return { project: String(record.project), compatibility: String(record.compatibility), resolution: record.resolution, checked_source: String(record.checked_source), requested_loader: String(record.requested_loader), requested_minecraft_version: String(record.requested_minecraft_version) };
   }
   const required = ["project", "version", "source", "artifact", "compatibility"] as const;
   if (required.some((key) => typeof record[key] !== "string" || !(record[key] as string).trim())) return undefined;

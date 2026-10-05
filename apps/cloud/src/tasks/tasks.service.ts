@@ -375,7 +375,11 @@ export class TasksService {
         : "indeterminate";
     const errorCode = evidence.find((item) => item.code)?.code ?? `TASK_${task.state}`;
     const retryable = status !== "succeeded" && /(?:TIMEOUT|UNAVAILABLE|DISCONNECTED|HTTP_5\d\d|PROVIDER)/iu.test(errorCode);
-    const sideEffect: AgentLoopObservation["side_effect"] = task.risk === "read" ? "none" : status === "succeeded" ? "applied" : "possible";
+    const alreadyPresent = status === "succeeded" && bound.call.tool === "plugin.install" && evidence.some((item) => {
+      const fact = item.observed as Record<string, unknown> | undefined;
+      return fact?.schema_version === "plugin-install-result/v1" && fact.already_present === true;
+    });
+    const sideEffect: AgentLoopObservation["side_effect"] = task.risk === "read" || alreadyPresent ? "none" : status === "succeeded" ? "applied" : "possible";
     const qa0144ReadResult = status === "succeeded" ? projectQa0144ReadResult({
       tool: bound.call.tool,
       arguments: bound.call.arguments,

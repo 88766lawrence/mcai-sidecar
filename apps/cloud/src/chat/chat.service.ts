@@ -22,6 +22,7 @@ import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATAL
 import { AgentRunStore } from "../agents/agent-run.store";
 import { groundedQa0144WebFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
+import { renderPluginOutcomeFinal } from "./plugin-outcome-final";
 import { renderVerifiedFileDownloadFinal } from "../tasks/file-download-final";
 
 const defaultSystemPrompt = [
@@ -388,12 +389,14 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     const concreteFailureAnswer = renderConcreteAgentFailure(run.original_user_message, restoredObservations);
     const partialFailureAnswer = restoredObservations.some((item) => item.status === "succeeded" && item.side_effect === "applied")
       ? concreteFailureAnswer : undefined;
-    const answer = partialFailureAnswer ?? cannotProceedAnswer ?? groundedAnswer ?? completedWebSearchAnswer ?? concreteFailureAnswer ?? (result.status === "answered"
+    const pluginOutcome = renderPluginOutcomeFinal(run.original_user_message, restoredObservations);
+    const pluginAnswer = pluginOutcome && (pluginOutcome.blocked || result.status === "unavailable") ? pluginOutcome.answer : undefined;
+    const answer = pluginAnswer ?? partialFailureAnswer ?? cannotProceedAnswer ?? groundedAnswer ?? completedWebSearchAnswer ?? concreteFailureAnswer ?? (result.status === "answered"
       ? "我没有重复执行相同操作；目前无法继续安全完成这条请求。"
       : observation.status === "succeeded"
         ? "已取得真实工具结果，但暂时无法生成可靠的最终说明。"
         : "这次操作没有取得可用结果，因此无法确认目标已经完成。");
-    await this.agentRuns.finish(run.run_id, !cannotProceedAnswer && (groundedAnswer || completedWebSearchAnswer) ? "SUCCEEDED" : "FAILED", { answer, observation_status: observation.status });
+    await this.agentRuns.finish(run.run_id, !pluginAnswer && !cannotProceedAnswer && (groundedAnswer || completedWebSearchAnswer) ? "SUCCEEDED" : "FAILED", { answer, observation_status: observation.status });
     const finishedRun = await this.agentRuns.get(run.run_id, tenantId);
     if (!finishedRun || finishedRun.status === "CANCELLED") return;
     let terminalTaskId = taskId;
