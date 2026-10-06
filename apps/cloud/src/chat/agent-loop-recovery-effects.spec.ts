@@ -217,6 +217,31 @@ describe("agent loop recovery effects", () => {
     expect(result.tasks.create).toHaveBeenCalledTimes(1);
   });
 
+  it("does not publish unsupported model advice even when it cites a retrieved source", async () => {
+    const url = "https://docs.example.org/plugins";
+    const observation: AgentLoopObservation = {
+      tool_call_id: "call-initial", tool: "web.search", status: "succeeded", retryable: false, side_effect: "none",
+      data: { qa0144_read_result: { schema_version: "qa0144-read-result/v1", output_schema_id: "web-search-result/v1", value: {
+        schema_version: "web-search-result/v1", provider: "fixture", query: "plugin compatibility", results: [{
+          title: "Plugin release docs", url, snippet: "Search snippet", date: "", page: {
+            status: "read", url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64),
+            passages: ["Check the release notes for the exact supported server version."],
+          },
+        }],
+      } } }, evidence: { ids: ["e-web"], summaries: ["retrieved source"] },
+    };
+    const result = await scenario(observation, {
+      action: "final", answer: `Every plugin is compatible with every version. ${url}`, citations: ["call-initial"],
+    }, false, "搜索插件兼容建议");
+    await vi.waitFor(async () => {
+      const message = (await result.service.messages(result.sessionId, "tenant-1")).at(-1);
+      expect(message?.task_phase).toBe("completion");
+      expect(message?.content).toContain("Check the release notes for the exact supported server version.");
+      expect(message?.content).not.toContain("Every plugin is compatible");
+    });
+    expect(result.tasks.create).toHaveBeenCalledTimes(1);
+  });
+
   async function scenario(observation: AgentLoopObservation, recovery: AgentLoopDecision, transientUnavailable = false, request = "Find the relevant files safely.", unavailable = false) {
     const directory = await mkdtemp(join(tmpdir(), "mcai-agent-recovery-effects-"));
     directories.push(directory);

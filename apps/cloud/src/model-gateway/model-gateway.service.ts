@@ -3,7 +3,7 @@ import type { ChatRoute, ConversationMessage, IntentCandidateV2, IntentSemanticF
 import { buildIntentSemanticFramePlan, INTENT_CAPABILITIES, mergeIntentSemanticFrames, type IntentIRValidationError } from "../tasks/intent-ir";
 import { validateConfirmedWriteWireShape, type ConfirmedWriteProposalDecision } from "../tasks/confirmed-write-proposal";
 import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATALOG, validateAgentLoopDecision, type AgentLoopDecision, type AgentLoopObservation } from "../chat/agent-loop";
-import { groundedQa0144WebFinal } from "../tasks/qa0144-read-observation";
+import { hasObservedWebLinks } from "../tasks/qa0144-read-observation";
 
 interface GatewayResponse {
   status: "answered" | "unconfigured" | "unavailable";
@@ -105,7 +105,7 @@ export class ModelGatewayService {
         : rawDecision;
       const groundedAnswer = userFacingDecision?.action === "final"
         && typeof userFacingDecision.answer === "string"
-        && groundedQa0144WebFinal(userFacingDecision.answer, input.observations ?? [])
+        && hasObservedWebLinks(userFacingDecision.answer, input.observations ?? [])
         ? userFacingDecision.answer : undefined;
       const decisionForValidation = groundedAnswer
         ? { ...(userFacingDecision ?? {}), answer: groundedAnswer.replace(/https?:\/\/\S+/giu, "source-link") }

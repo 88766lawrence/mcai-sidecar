@@ -93,16 +93,49 @@ function readResultForObservation(item: AgentLoopObservation): Qa0144ReadResult 
   };
 }
 
-export function groundedQa0144WebFinal(answer: string, observations: AgentLoopObservation[]) {
-  if (!answer || answer.length > 4_000 || observations.length === 0) return false;
-  const searches = observations.filter((item) => item.tool === "web.search" && item.status === "succeeded");
-  if (searches.length === 0) return false;
-  const results = searches.map((item) => plainObject(item.data) ? item.data.qa0144_read_result : undefined);
-  if (results.some((item) => !plainObject(item) || item.output_schema_id !== "web-search-result/v1"
-    || !plainObject(item.value) || !Array.isArray(item.value.results))) return false;
-  const allowed = results.flatMap((item) => ((item as Qa0144ReadResult).value.results as Record<string, unknown>[]).map((result) => String(result.url)));
+// URL membership is only a structural citation check, never proof of a claim.
+export function hasObservedWebLinks(answer: string, observations: AgentLoopObservation[]) {
+  const urls = observations.filter((item) => item.tool === "web.search" && item.status === "succeeded")
+    .flatMap((item) => {
+      const read = readResultForObservation(item);
+      return read && Array.isArray(read.value.results) ? read.value.results.filter(plainObject).map((result) => String(result.url)) : [];
+    });
   const cited = answer.match(/https?:\/\/[^\s)\]}>，。；、]+/giu) ?? [];
-  return cited.length > 0 && cited.every((url) => allowed.includes(url));
+  return cited.length > 0 && cited.every((url) => urls.includes(url));
+}
+
+export function validatedWebSourcePage(value: unknown, resultUrl: string) {
+  if (!plainObject(value) || !["read", "unavailable", "not-read"].includes(String(value.status))) return undefined;
+  if (value.status !== "read") return { status: String(value.status) };
+  if (!bounded(value.url, 1, 2_048) || !safeUrl(String(value.url))
+    || new URL(String(value.url)).hostname !== new URL(resultUrl).hostname
+    || !bounded(value.fetched_at, 1, 40) || !Number.isFinite(Date.parse(String(value.fetched_at)))
+    || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(value.sha256)
+    || !Array.isArray(value.passages) || value.passages.length < 1 || value.passages.length > 3
+    || !value.passages.every((text) => bounded(text, 30, 700))) return undefined;
+  return { status: "read", url: value.url, fetched_at: value.fetched_at, sha256: value.sha256, passages: value.passages as string[] };
+}
+
+export function renderWebSourceFinal(message: string, observations: AgentLoopObservation[]) {
+  if (!observations.length || observations.some((item) => item.tool !== "web.search" || item.status !== "succeeded")) return undefined;
+  const results = observations.flatMap((item) => {
+    const projected = readResultForObservation(item);
+    return projected && Array.isArray(projected.value.results) ? projected.value.results.filter(plainObject) : [];
+  });
+  const unique = [...new Map(results.map((result) => [result.url, result])).values()];
+  const read = unique.flatMap((result) => {
+    if (typeof result.url !== "string" || !safeUrl(result.url)) return [];
+    const page = validatedWebSourcePage(result.page, result.url);
+    return page?.status === "read" && page.passages ? [{ result, page }] : [];
+  }).slice(0, 3);
+  const chinese = /[\u3400-\u9fff]/u.test(message);
+  const literal = (text: string) => text.replace(/[\\`*_{}\[\]()<>!#]/gu, "\\$&");
+  if (!read.length) return (chinese ? "已找到候选链接，但未取得可核验的相关正文；以下仅为检索结果，不能据此确认版本兼容或操作建议：\n" : "Candidate links were discovered, but no relevant page text was retrieved. These results do not verify compatibility or instructions:\n")
+    + unique.slice(0, 3).map((result) => `${literal(String(result.title))}\n${String(result.url)}`).join("\n\n");
+  return (chinese ? "已读取来源正文，以下为与查询相关的原文摘录（仅代表所读段落，未据此确认某个插件的版本兼容性）：\n\n" : "Retrieved source passages relevant to the query (limited excerpts; these do not verify a specific plugin's version compatibility):\n\n")
+    + read.map(({ result, page }) => `[${literal(String(result.title))}](${String(page.url).replace(/\)/gu, "%29")})\n`
+      + page.passages!.map((text) => `> ${literal(text)}`).join("\n>\n")
+      + (chinese ? `\n读取时间：${page.fetched_at}` : `\nRetrieved: ${page.fetched_at}`)).join("\n\n");
 }
 
 function validConfig(value: Record<string, unknown>, args: Record<string, unknown>) {

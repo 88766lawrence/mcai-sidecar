@@ -1,9 +1,10 @@
 module github.com/mcai/sidecar-agent
 
-go 1.23
+go 1.23.0
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	golang.org/x/net v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

@@ -117,7 +117,7 @@ describe("QA0144 autonomous web search continuation", () => {
     await third.onModuleInit();
     await vi.waitFor(async () => expect((await third.messages(session.id, "tenant-1")).at(-1)).toMatchObject({
       task_phase: "completion",
-      content: expect.stringMatching(/摘要不足.*https:\/\/docs\.example\.test\/runtime/su),
+      content: expect.stringMatching(/未取得可核验.*https:\/\/docs\.example\.test\/runtime/su),
     }), { timeout: 5_000, interval: 25 });
     const messages = await third.messages(session.id, "tenant-1");
     expect(tasks.create).toHaveBeenCalledTimes(2);

@@ -33,6 +33,7 @@ type webSearchResult struct {
 	Link    string `json:"link"`
 	Snippet string `json:"snippet"`
 	Date    string `json:"date,omitempty"`
+	Page    *webSourcePage `json:"page,omitempty"`
 }
 
 type webSearchResponse struct {
@@ -111,6 +112,10 @@ func newPublicWebSearchClient() *http.Client {
 }
 
 func newWebSearcherFromEnv() webSearcher {
+	return &sourceReadingWebSearcher{discovery: &siteFirstWebSearcher{fallback: newDiscoveryWebSearcherFromEnv(), client: newPublicWebSearchClient()}, client: newPublicWebSearchClient()}
+}
+
+func newDiscoveryWebSearcherFromEnv() webSearcher {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("MCAI_SEARCH_PROVIDER")))
 	if provider == "" || provider == "auto" {
 		return &fallbackWebSearcher{
@@ -183,7 +188,7 @@ func (e *Executor) executeWebSearch(ctx context.Context, step protocol.TaskStep,
 	lines := make([]string, 0, len(response.Results))
 	for index, result := range response.Results {
 		items = append(items, map[string]any{
-			"title": result.Title, "url": result.Link, "snippet": result.Snippet, "date": result.Date,
+			"title": result.Title, "url": result.Link, "snippet": result.Snippet, "date": result.Date, "page": result.Page,
 		})
 		lines = append(lines, fmt.Sprintf("%d. %s — %s", index+1, result.Title, result.Link))
 	}
