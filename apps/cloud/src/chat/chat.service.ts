@@ -20,7 +20,7 @@ import { classifyOperationalLanguage, extractActionbarConsoleCommand, extractBro
 import { answerEvidenceQuestion, guardDirectWithoutEvidence, isEvidenceQuestion, safeTaskAnswer, safeUserText } from "./user-safe-response";
 import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATALOG, bindAgentToolCallToObservations, canonicalAgentToolCallKey, type AgentLoopObservation, type AgentLoopToolCall } from "./agent-loop";
 import { AgentRunStore } from "../agents/agent-run.store";
-import { renderWebSourceFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
+import { publicSourceSearchCompletion, renderWebSourceFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
 import { renderPluginOutcomeFinal } from "./plugin-outcome-final";
 import { renderVerifiedFileDownloadFinal } from "../tasks/file-download-final";
@@ -319,7 +319,9 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       observations: restoredObservations,
       round: run.round_count + 1,
     };
-    let result = exhausted ? { status: "unavailable" as const, error: "AGENT_LOOP_BUDGET_EXHAUSTED" } : await this.modelGateway.decideAgentLoop(decisionInput);
+    const publicSearch = publicSourceSearchCompletion(run.original_user_message, restoredObservations);
+    let result = publicSearch ? { status: "answered" as const, decision: publicSearch.decision, requestId: run.run_id }
+      : exhausted ? { status: "unavailable" as const, error: "AGENT_LOOP_BUDGET_EXHAUSTED" } : await this.modelGateway.decideAgentLoop(decisionInput);
     // The observation is already durable and the tool must never be replayed.
     // One bounded retry only asks the model to decide from the same facts when
     // the decision endpoint is transiently unavailable.
@@ -389,7 +391,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       : observation.status === "succeeded"
         ? "已取得真实工具结果，但暂时无法生成可靠的最终说明。"
         : "这次操作没有取得可用结果，因此无法确认目标已经完成。");
-    await this.agentRuns.finish(run.run_id, !pluginAnswer && !cannotProceedAnswer && (groundedAnswer || completedWebSearchAnswer) ? "SUCCEEDED" : "FAILED", { answer, observation_status: observation.status });
+    await this.agentRuns.finish(run.run_id, (!publicSearch || publicSearch.verified) && !pluginAnswer && !cannotProceedAnswer && (groundedAnswer || completedWebSearchAnswer) ? "SUCCEEDED" : "FAILED", { answer, observation_status: observation.status });
     const finishedRun = await this.agentRuns.get(run.run_id, tenantId);
     if (!finishedRun || finishedRun.status === "CANCELLED") return;
     let terminalTaskId = taskId;

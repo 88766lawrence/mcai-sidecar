@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AgentLoopObservation } from "../chat/agent-loop";
-import { renderWebSourceFinal, validatedWebSourcePage, projectQa0144ReadResult, renderQa0144ReadFinal } from "./qa0144-read-observation";
+import { publicSourceSearchCompletion, renderWebSourceFinal, validatedWebSourcePage, projectQa0144ReadResult, renderQa0144ReadFinal } from "./qa0144-read-observation";
 
 const seal = (value: Record<string, unknown>) => ({
   ...value,
@@ -98,4 +98,22 @@ describe("QA0144 typed read observations", () => {
     expect(answer).toContain("Check installation release notes");
     expect(answer).toContain("Before updating, back up");
   });
+  it("limits early completion to public searches and retains explicit combined operations", () => {
+    const url = "https://docs.example.org/plugins";
+    const web = observed("web.search", "web-search-result/v1", { schema_version: "web-search-result/v1", results: [{ title: "Docs", url, snippet: "Snippet", date: "", page: { status: "read", url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64), passages: ["Check the release notes for the exact supported server version."] } }] }, "web");
+    expect(publicSourceSearchCompletion("搜索官方安装文档，先别安装", [web])?.decision.action).toBe("final");
+    expect(publicSourceSearchCompletion("搜索官方插件然后安装", [web])).toBeUndefined();
+    expect(publicSourceSearchCompletion("Search docs and install the plugin", [web])).toBeUndefined();
+    expect(publicSourceSearchCompletion("找到并安装插件", [web])).toBeUndefined();
+  });
+
+  it("uses successful page evidence when an auxiliary search fails", () => {
+    const url = "https://docs.example.org/plugins";
+    const web = observed("web.search", "web-search-result/v1", { schema_version: "web-search-result/v1", results: [{ title: "Docs", url, snippet: "Snippet", date: "", page: { status: "read", url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64), passages: ["Check the release notes for the exact supported server version."] } }] }, "web");
+    const failed = { ...web, tool_call_id: "failed", status: "failed" as const, data: undefined };
+    expect(publicSourceSearchCompletion("搜索文档", [web, failed])?.verified).toBe(true);
+    expect(renderWebSourceFinal("搜索文档", [web, failed])).toContain("Check the release notes");
+    expect(publicSourceSearchCompletion("搜索文档", [failed])?.decision.action).toBe("cannot_proceed");
+  });
+
 });

@@ -232,7 +232,7 @@ describe("agent loop recovery effects", () => {
     };
     const result = await scenario(observation, {
       action: "final", answer: `Every plugin is compatible with every version. ${url}`, citations: ["call-initial"],
-    }, false, "搜索插件兼容建议");
+    }, false, "搜索插件兼容建议", false, 0);
     await vi.waitFor(async () => {
       const message = (await result.service.messages(result.sessionId, "tenant-1")).at(-1);
       expect(message?.task_phase).toBe("completion");
@@ -242,7 +242,21 @@ describe("agent loop recovery effects", () => {
     expect(result.tasks.create).toHaveBeenCalledTimes(1);
   });
 
-  async function scenario(observation: AgentLoopObservation, recovery: AgentLoopDecision, transientUnavailable = false, request = "Find the relevant files safely.", unavailable = false) {
+  it("closes a failed public search without dispatching an unrelated download or artifact lookup", async () => {
+    const observation: AgentLoopObservation = { ...failed("WEB_SEARCH_FAILED", false), tool: "web.search" };
+    const result = await scenario(observation, {
+      action: "tool_call", tool: "file.download", arguments: { url: "https://docs.example.org/page", target: "downloads/page.html" }, reason: "Download the page instead.",
+    }, false, "搜索官方安装文档，先别安装", false, 0);
+    await vi.waitFor(async () => {
+      const message = (await result.service.messages(result.sessionId, "tenant-1")).at(-1);
+      expect(message?.task_phase).toBe("completion");
+      expect(message?.content).toContain("网页检索失败");
+    });
+    expect(result.tasks.create).toHaveBeenCalledTimes(1);
+    expect(result.model.decideAgentLoop).not.toHaveBeenCalled();
+  });
+
+  async function scenario(observation: AgentLoopObservation, recovery: AgentLoopDecision, transientUnavailable = false, request = "Find the relevant files safely.", unavailable = false, expectedDecisionCalls = 1) {
     const directory = await mkdtemp(join(tmpdir(), "mcai-agent-recovery-effects-"));
     directories.push(directory);
     const cloud = new CloudStore();
@@ -281,7 +295,7 @@ describe("agent loop recovery effects", () => {
     const service = new ChatService(cloud, next, tasks, new AgentRunStore(path), chatPath);
     services.push(service);
     await service.onModuleInit();
-    await vi.waitFor(() => expect(next.decideAgentLoop).toHaveBeenCalledTimes(transientUnavailable ? 2 : 1));
+    await vi.waitFor(() => expect(next.decideAgentLoop).toHaveBeenCalledTimes(transientUnavailable ? 2 : expectedDecisionCalls));
     await new Promise((resolve) => setTimeout(resolve, 300));
     return { service, model: next as unknown as { decideAgentLoop: ReturnType<typeof vi.fn> }, tasks: tasks as unknown as { create: ReturnType<typeof vi.fn>; complete: ReturnType<typeof vi.fn> }, sessionId: session.id };
   }
