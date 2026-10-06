@@ -86,4 +86,16 @@ describe("QA0144 typed read observations", () => {
       expect(validatedWebSourcePage(invalid, url)).toBeUndefined();
     }
   });
+
+  it("prefers a follow-up query without erasing an earlier successful read", () => {
+    const make = (url: string, status: string, passage: string) => ({ title: "Source", url, snippet: "Discovery", date: "", page: status === "read"
+      ? { status, url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64), passages: [passage] } : { status } });
+    const oldUrl = "https://docs.example.org/install", newUrl = "https://docs.example.org/updating";
+    const first = observed("web.search", "web-search-result/v1", { schema_version: "web-search-result/v1", results: [make(oldUrl, "read", "Check installation release notes for the exact supported version.")] }, "first");
+    const second = observed("web.search", "web-search-result/v1", { schema_version: "web-search-result/v1", results: [make(newUrl, "read", "Before updating, back up configuration and plugin files together."), make(oldUrl, "not-read", "")] }, "second");
+    const answer = renderWebSourceFinal("搜索更新建议", [first, second])!;
+    expect(answer.indexOf(newUrl)).toBeLessThan(answer.indexOf(oldUrl));
+    expect(answer).toContain("Check installation release notes");
+    expect(answer).toContain("Before updating, back up");
+  });
 });
