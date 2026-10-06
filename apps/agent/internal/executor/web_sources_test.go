@@ -43,7 +43,7 @@ func TestSourceReaderKeepsSnippetSeparateAndRecordsReadFailure(t *testing.T) {
 }
 
 func TestSourceReaderDoesNotClipLongQualifiedParagraphs(t *testing.T) {
-	long := strings.Repeat("plugin version ", 40) + "does not support the requested old version."
+	long := strings.Repeat("plugin version ", 60) + "does not support the requested old version."
 	if got := sourcePassages("plugin versions", []string{long}); len(got) != 0 {
 		t.Fatalf("qualified long paragraph was clipped: %v", got)
 	}

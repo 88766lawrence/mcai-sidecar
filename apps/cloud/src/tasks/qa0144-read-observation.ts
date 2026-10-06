@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentLoopObservation, AgentLoopToolName } from "../chat/agent-loop";
+import type { AgentLoopDecision, AgentLoopObservation, AgentLoopToolName } from "../chat/agent-loop";
 
 const digestDomain = "read-tool-result/v1\0";
 
@@ -112,13 +112,13 @@ export function validatedWebSourcePage(value: unknown, resultUrl: string) {
     || !bounded(value.fetched_at, 1, 40) || !Number.isFinite(Date.parse(String(value.fetched_at)))
     || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(value.sha256)
     || !Array.isArray(value.passages) || value.passages.length < 1 || value.passages.length > 3
-    || !value.passages.every((text) => bounded(text, 30, 700))) return undefined;
+    || !value.passages.every((text) => bounded(text, 30, 1_200))) return undefined;
   return { status: "read", url: value.url, fetched_at: value.fetched_at, sha256: value.sha256, passages: value.passages as string[] };
 }
 
 export function renderWebSourceFinal(message: string, observations: AgentLoopObservation[]) {
-  if (!observations.length || observations.some((item) => item.tool !== "web.search" || item.status !== "succeeded")) return undefined;
-  const results = [...observations].reverse().flatMap((item) => {
+  if (!observations.length || observations.some((item) => item.tool !== "web.search")) return undefined;
+  const results = [...observations].reverse().filter((item) => item.status === "succeeded").flatMap((item) => {
     const projected = readResultForObservation(item);
     return projected && Array.isArray(projected.value.results) ? projected.value.results.filter(plainObject) : [];
   });
@@ -139,12 +139,34 @@ export function renderWebSourceFinal(message: string, observations: AgentLoopObs
   }).slice(0, 3);
   const chinese = /[\u3400-\u9fff]/u.test(message);
   const literal = (text: string) => text.replace(/[\\`*_{}\[\]()<>!#]/gu, "\\$&");
+  if (!unique.length) return chinese ? "本轮网页检索失败，没有取得可核验的来源；无法确认所询问的文档、版本或建议。" : "The web lookup failed; no verifiable source was retrieved, so the requested documentation, versions or advice could not be confirmed.";
   if (!read.length) return (chinese ? "已找到候选链接，但未取得可核验的相关正文；以下仅为检索结果，不能据此确认版本兼容或操作建议：\n" : "Candidate links were discovered, but no relevant page text was retrieved. These results do not verify compatibility or instructions:\n")
     + unique.slice(0, 3).map((result) => `${literal(String(result.title))}\n${String(result.url)}`).join("\n\n");
   return (chinese ? "已读取来源正文，以下为与查询相关的原文摘录（仅代表所读段落，未据此确认某个插件的版本兼容性）：\n\n" : "Retrieved source passages relevant to the query (limited excerpts; these do not verify a specific plugin's version compatibility):\n\n")
     + read.map(({ result, page }) => `[${literal(String(result.title))}](${String(page.url).replace(/\)/gu, "%29")})\n`
       + page.passages!.map((text) => `> ${literal(text)}`).join("\n>\n")
       + (chinese ? `\n读取时间：${page.fetched_at}` : `\nRetrieved: ${page.fetched_at}`)).join("\n\n");
+}
+
+export function publicSourceSearchCompletion(message: string, observations: AgentLoopObservation[]): { decision: AgentLoopDecision; verified: boolean } | undefined {
+  if (!/(?:搜索|检索|网上|网络|文档|\b(?:search|web|documentation|docs|look up)\b)/iu.test(message)
+    || !observations.length || observations.some((item) => item.tool !== "web.search")) return undefined;
+  const affirmative = message.replace(/(?:先别|不要|不必|无需|别|不)\s*(?:安装|下载|重启|更新|修改|配置|执行)/gu, "")
+    .replace(/(?:do not|don't|without)\s+(?:install|download|restart|update|modify|configure|execute)/giu, "");
+  if (/(?:并|然后|接着|再|帮我|替我).{0,24}(?:安装|装上|部署|重启|停服|开服|修改|执行|下载)|把.{0,60}(?:改成|设置成)|\b(?:and|then|afterwards)\s+(?:install|deploy|restart|stop|start|configure|change|set|update|download|execute)\b/iu.test(affirmative)) return undefined;
+  const pages = observations.filter((item) => item.status === "succeeded").flatMap((item) => {
+    const read = readResultForObservation(item);
+    return read && Array.isArray(read.value.results) ? read.value.results.filter(plainObject) : [];
+  });
+  // Older agents only supply discovery snippets; their existing continuation
+  // remains available. The new source-reading pipeline is already bounded.
+  if (!pages.some((page) => page.page != null) && observations.some((item) => item.status === "succeeded")) return undefined;
+  const answer = renderWebSourceFinal(message, observations);
+  if (!answer) return undefined;
+  const verified = pages.some((page) => typeof page.url === "string" && validatedWebSourcePage(page.page, page.url)?.status === "read");
+  return { verified, decision: verified
+    ? { action: "final", answer, citations: observations.filter((item) => item.status === "succeeded").map((item) => item.tool_call_id) }
+    : { action: "cannot_proceed", answer } };
 }
 
 function validConfig(value: Record<string, unknown>, args: Record<string, unknown>) {

@@ -229,7 +229,7 @@ func sourcePassages(query string, blocks []string) []string {
 	for i, b := range blocks {
 		b = strings.Join(strings.Fields(b), " ")
 		// Preserve complete bounded paragraphs, rather than clipping a qualification.
-		if utf8.RuneCountInString(b) < 30 || utf8.RuneCountInString(b) > 350 || seen[b] || sourceContextReference.MatchString(b) {
+		if utf8.RuneCountInString(b) < 30 || utf8.RuneCountInString(b) > 600 || seen[b] || sourceContextReference.MatchString(b) {
 			continue
 		}
 		seen[b] = true
