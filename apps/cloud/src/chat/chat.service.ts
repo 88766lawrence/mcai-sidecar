@@ -20,7 +20,7 @@ import { classifyOperationalLanguage, extractActionbarConsoleCommand, extractBro
 import { answerEvidenceQuestion, guardDirectWithoutEvidence, isEvidenceQuestion, safeTaskAnswer, safeUserText } from "./user-safe-response";
 import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATALOG, bindAgentToolCallToObservations, canonicalAgentToolCallKey, type AgentLoopObservation, type AgentLoopToolCall } from "./agent-loop";
 import { AgentRunStore } from "../agents/agent-run.store";
-import { groundedQa0144WebFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
+import { renderWebSourceFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
 import { renderPluginOutcomeFinal } from "./plugin-outcome-final";
 import { renderVerifiedFileDownloadFinal } from "../tasks/file-download-final";
@@ -371,19 +371,12 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       ? canonicalReadAnswer : undefined;
     const canonicalDownloadAnswer = renderVerifiedFileDownloadFinal(run.original_user_message, restoredObservations);
     const webOnly = restoredObservations.length > 0 && restoredObservations.every((item) => item.tool === "web.search");
-    const officialPaperAdvice = webOnly ? renderOfficialPaperPluginGuidance(run.original_user_message, restoredObservations) : undefined;
-    // A search-result projection is evidence, not an answer. Preserve a grounded
-    // model final when available; otherwise close honestly with observed links.
-    // Prefer verified structured facts for exact inventories, config writes,
-    // and numeric metrics. Search advice is limited to vetted official guides.
-    // Other completed tool results retain the model's evidence-bound synthesis.
-    const groundedModelAnswer = modelFinalAnswer
-      && (!webOnly || groundedQa0144WebFinal(modelFinalAnswer, restoredObservations))
-      ? modelFinalAnswer
-      : undefined;
-    const groundedAnswer = verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? officialPaperAdvice ?? groundedModelAnswer
-      ?? (webOnly ? undefined : canonicalReadAnswer ?? canonicalDownloadAnswer);
-    const cannotProceedAnswer = !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
+    // URLs alone cannot prove a model's claims. Pure searches close with fetched
+    // passages and their provenance, or an explicit discovery-only result.
+    const sourceAnswer = webOnly ? renderWebSourceFinal(run.original_user_message, restoredObservations) : undefined;
+    const groundedAnswer = verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? sourceAnswer
+      ?? (webOnly ? undefined : modelFinalAnswer ?? canonicalReadAnswer ?? canonicalDownloadAnswer);
+    const cannotProceedAnswer = !sourceAnswer && !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
       ? result.decision.answer
       : undefined;
     const concreteFailureAnswer = renderConcreteAgentFailure(run.original_user_message, restoredObservations);
@@ -417,11 +410,11 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
-    const trustedDownloadAnswer = !cannotProceedAnswer && !groundedModelAnswer && !canonicalReadAnswer
+    const trustedDownloadAnswer = !cannotProceedAnswer && !modelFinalAnswer && !canonicalReadAnswer
       && Boolean(canonicalDownloadAnswer) && answer === canonicalDownloadAnswer;
     list.push({
       id: `message_${randomUUID()}`, session_id: session.id, role: "assistant",
-      content: trustedDownloadAnswer ? answer : safeUserText(answer, "任务已结束，但目前无法用可靠证据确认结果。"), route: "tool",
+      content: trustedDownloadAnswer || (sourceAnswer && answer === sourceAnswer) ? answer : safeUserText(answer, "任务已结束，但目前无法用可靠证据确认结果。"), route: "tool",
       task_id: terminalTaskId, task_phase: "completion",
       trace: [{ stage: "review", label: "AI 依据真实工具结果形成回答", result: observation.status }],
       created_at: new Date().toISOString(),
@@ -954,25 +947,6 @@ function renderCompletedWebSearch(message: string, observations: AgentLoopObserv
   return chinese
     ? `现有搜索结果摘要不足以可靠确认问题中的具体结论；我不会根据查询词猜测。已检索来源：\n${sources}`
     : `The available search-result snippets are insufficient to confirm the specific conclusion reliably, so I will not infer it from the query. Sources searched:\n${sources}`;
-}
-
-export function renderOfficialPaperPluginGuidance(message: string, observations: AgentLoopObservation[]): string | undefined {
-  if (!/\bPaper\b/iu.test(message) || !/(?:插件|plugin)/iu.test(message)
-    || !/(?:兼容|compatib)/iu.test(message)
-    || observations.length === 0 || observations.some((item) => item.tool !== "web.search" || item.status !== "succeeded")) return undefined;
-  const urls = new Set(observations.flatMap((item) => {
-    const projected = (item.data as { qa0144_read_result?: { output_schema_id?: string; value?: { results?: Array<{ url?: string }> } } } | undefined)?.qa0144_read_result;
-    return projected?.output_schema_id === "web-search-result/v1" && Array.isArray(projected.value?.results)
-      ? projected.value.results.flatMap((result) => typeof result.url === "string" ? [result.url] : []) : [];
-  }));
-  const adding = "https://docs.papermc.io/paper/adding-plugins/";
-  const updating = "https://docs.papermc.io/paper/updating/";
-  if (!urls.has(adding) || !urls.has(updating)) return undefined;
-  const version = /\b1\.\d+(?:\.\d+)?\b/u.exec(message)?.[0];
-  const scope = version ? ` ${version}` : "";
-  return /[\u3400-\u9fff]/u.test(message)
-    ? `Paper${scope} 的插件兼容建议：\n- 从可信来源获取插件，并在插件发布页核对目标版本与服务端版本；PaperMC 推荐 Hangar，也列出 Modrinth 等来源。[添加插件](${adding})\n- 更新前备份世界、配置和插件；不要在服务器运行时直接覆盖 JAR。更新后重启并查看启动日志中的插件加载错误。[更新指南](${updating})\n- 这些是通用步骤；某个插件是否兼容仍需核对该插件的发布说明和实际加载日志。`
-    : `Paper${scope} plugin compatibility guidance:\n- Use trusted sources and check the plugin release against the server version; PaperMC recommends Hangar and also lists Modrinth. [Adding plugins](${adding})\n- Back up worlds, configuration, and plugin files before updating. Do not replace JARs on a running server; restart and inspect startup logs. [Updating guide](${updating})\n- Verify each specific plugin against its release notes and actual loading logs.`;
 }
 
 export function agentRunBudgetExhausted(run: Pick<AgentRunRecord, "round_count" | "tool_call_count" | "created_at">, now: number) {

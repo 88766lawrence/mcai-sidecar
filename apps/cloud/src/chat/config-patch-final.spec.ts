@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentLoopObservation } from "./agent-loop";
-import { renderConcreteAgentFailure, renderOfficialPaperPluginGuidance, renderPerformanceFinal, renderReadThenPatchFinal } from "./chat.service";
+import { renderConcreteAgentFailure, renderPerformanceFinal, renderReadThenPatchFinal } from "./chat.service";
 
 const read: AgentLoopObservation = {
   tool_call_id: "read", tool: "config.inspect", status: "succeeded", retryable: false,
@@ -73,23 +73,3 @@ describe("performance evidence final", () => {
   });
 });
 
-describe("Paper plugin source guidance", () => {
-  it("limits advice to vetted official guides present in search results", () => {
-    const search: AgentLoopObservation = { ...read, tool: "web.search", data: {
-      qa0144_read_result: { output_schema_id: "web-search-result/v1", value: { results: [
-        { url: "https://docs.papermc.io/paper/adding-plugins/" },
-        { url: "https://docs.papermc.io/paper/updating/" },
-      ] } },
-    } };
-    const answer = renderOfficialPaperPluginGuidance("查一下网上 Paper 1.21.1 的插件兼容建议", [search]);
-    expect(answer).toContain("Paper 1.21.1");
-    expect(answer).toContain("Hangar");
-    expect(answer).toContain("更新前备份");
-    expect(answer).not.toContain("必须重新编译");
-    expect(renderOfficialPaperPluginGuidance("查一下网上 Paper 1.21.1 的插件兼容建议", [
-      { ...search, data: { qa0144_read_result: { output_schema_id: "web-search-result/v1", value: { results: [
-        { url: "https://docs.papermc.io/paper/updating/" },
-      ] } } } },
-    ])).toBeUndefined();
-  });
-});

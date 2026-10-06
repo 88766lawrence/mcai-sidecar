@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { AgentLoopObservation } from "../chat/agent-loop";
-import { groundedQa0144WebFinal, projectQa0144ReadResult, renderQa0144ReadFinal } from "./qa0144-read-observation";
+import { renderWebSourceFinal, validatedWebSourcePage, projectQa0144ReadResult, renderQa0144ReadFinal } from "./qa0144-read-observation";
 
 const seal = (value: Record<string, unknown>) => ({
   ...value,
@@ -56,16 +56,34 @@ describe("QA0144 typed read observations", () => {
     expect(answer).toContain("日志匹配 0 条");
   });
 
-  it("allows only URLs that came from the completed search observation", () => {
+  it("renders fetched passages instead of treating a cited URL as proof of a claim", () => {
+    const url = "https://docs.example.org/plugins";
+    const page = { status: "read", url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64), passages: ["Check the release notes for the exact supported server version."] };
     const web = observed("web.search", "web-search-result/v1", {
-      provider: "fixture", query: "Paper Java requirements", results: [
-        { title: "Paper docs", url: "https://docs.papermc.io/paper/getting-started/", snippet: "Java requirements", date: "2026-08-01" },
-      ], schema_version: "web-search-result/v1",
+      provider: "fixture", query: "plugin compatibility", results: [{ title: "Plugin docs", url, snippet: "A different search snippet", date: "", page }], schema_version: "web-search-result/v1",
     }, "web");
-    expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [web])).toBe(true);
-    expect(groundedQa0144WebFinal("See https://example.invalid/claim", [web])).toBe(false);
-    const config = observed("config.inspect", "config-inspect-result/v1", { path: "server.properties", entries: [] }, "config");
-    expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [web, config])).toBe(true);
-    expect(groundedQa0144WebFinal("See https://docs.papermc.io/paper/getting-started/", [{ ...web, status: "failed" }])).toBe(false);
+    const answer = renderWebSourceFinal("搜索插件兼容建议", [web]);
+    expect(answer).toContain(page.passages[0]);
+    expect(answer).toContain(url);
+    expect(answer).not.toContain("A different search snippet");
+    expect(answer).toContain("未据此确认");
+    expect(renderWebSourceFinal("混合读取", [web, { ...web, tool: "config.inspect" }])).toBeUndefined();
+  });
+
+  it("reports discovery-only evidence when reading fails", () => {
+    const web = observed("web.search", "web-search-result/v1", {
+      provider: "fixture", query: "plugin compatibility", results: [{ title: "Plugin docs", url: "https://docs.example.org/plugins", snippet: "Claimed compatible", date: "", page: { status: "unavailable" } }], schema_version: "web-search-result/v1",
+    }, "web");
+    expect(renderWebSourceFinal("搜索兼容建议", [web])).toContain("未取得可核验");
+    expect(renderWebSourceFinal("搜索兼容建议", [web])).not.toContain("Claimed compatible");
+  });
+
+  it("rejects forged page provenance, digests and empty passages", () => {
+    const url = "https://docs.example.org/plugins";
+    const page = { status: "read", url, fetched_at: "2026-10-06T12:00:00Z", sha256: "a".repeat(64), passages: ["Check the release notes for the exact supported server version."] };
+    expect(validatedWebSourcePage(page, url)).toBeDefined();
+    for (const invalid of [{ ...page, url: "https://other.example.org/plugins" }, { ...page, sha256: "bad" }, { ...page, passages: [] }, { ...page, fetched_at: "invalid" }]) {
+      expect(validatedWebSourcePage(invalid, url)).toBeUndefined();
+    }
   });
 });

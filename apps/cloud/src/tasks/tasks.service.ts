@@ -21,7 +21,7 @@ import { extractRuntimeConsoleRead } from "./runtime-console-read";
 import { matchRegisteredCapability } from "./capability-registry";
 import { validateAgentToolCall, type AgentLoopObservation, type AgentLoopToolCall } from "../chat/agent-loop";
 import { AgentRunStore } from "../agents/agent-run.store";
-import { projectQa0144ReadResult } from "./qa0144-read-observation";
+import { projectQa0144ReadResult, validatedWebSourcePage } from "./qa0144-read-observation";
 
 const transitions: Record<TaskState, TaskState[]> = {
   DRAFTED: ["POLICY_CHECKED", "REJECTED", "WAITING"],
@@ -1409,7 +1409,7 @@ function inferObserved(expected: unknown, summary: string): string | undefined {
 function parseWebSearchEvidence(summary: string, expectedQuery: string) {
   const marker = "\nEvidence: ";
   const start = summary.lastIndexOf(marker);
-  if (start < 0 || summary.length - start > 20_000 || !expectedQuery) return undefined;
+  if (start < 0 || summary.length - start > 40_000 || !expectedQuery) return undefined;
   let value: unknown;
   try { value = JSON.parse(summary.slice(start + marker.length)); } catch { return undefined; }
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -1428,7 +1428,9 @@ function parseWebSearchEvidence(summary: string, expectedQuery: string) {
       const url = new URL(result.url);
       if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) return undefined;
     } catch { return undefined; }
-    return { title: result.title, url: result.url, snippet: result.snippet, date: result.date };
+    const page = result.page == null ? undefined : validatedWebSourcePage(result.page, result.url);
+    if (result.page != null && !page) return undefined;
+    return { title: result.title, url: result.url, snippet: result.snippet, date: result.date, ...(page ? { page } : {}) };
   });
   if (results.some((item) => !item)) return undefined;
   return { schema_version: "web-search-result/v1", query: expectedQuery, provider: record.provider, results };
