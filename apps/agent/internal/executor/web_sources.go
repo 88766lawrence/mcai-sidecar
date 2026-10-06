@@ -71,6 +71,12 @@ func sourceScore(query, text string) int {
 		seen[word] = true
 		if strings.Contains(text, word) {
 			score++
+			// Specific operational subjects carry more weight than a shared
+			// product name; otherwise every page in a product's docs ties.
+			switch word {
+			case "updat", "compatib", "install", "configur", "back":
+				score++
+			}
 		}
 	}
 	return score
