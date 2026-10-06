@@ -48,3 +48,16 @@ func TestSourceReaderDoesNotClipLongQualifiedParagraphs(t *testing.T) {
 		t.Fatalf("qualified long paragraph was clipped: %v", got)
 	}
 }
+
+func TestSourceScoreMatchesInflectionsAndRejectsDanglingReferences(t *testing.T) {
+	if sourceScore("Paper plugin updates backup", "/paper/updating/") < 2 {
+		t.Fatal("update did not match updating")
+	}
+	if sourceScore("compatibility installation", "compatible install instructions") < 2 {
+		t.Fatal("common forms were not matched")
+	}
+	got := sourcePassages("plugin updates", []string{"By doing this, plugin updates work without downtime or restarts."})
+	if len(got) != 0 {
+		t.Fatalf("context-free reference became advice: %v", got)
+	}
+}

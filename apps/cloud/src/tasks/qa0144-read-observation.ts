@@ -118,11 +118,20 @@ export function validatedWebSourcePage(value: unknown, resultUrl: string) {
 
 export function renderWebSourceFinal(message: string, observations: AgentLoopObservation[]) {
   if (!observations.length || observations.some((item) => item.tool !== "web.search" || item.status !== "succeeded")) return undefined;
-  const results = observations.flatMap((item) => {
+  const results = [...observations].reverse().flatMap((item) => {
     const projected = readResultForObservation(item);
     return projected && Array.isArray(projected.value.results) ? projected.value.results.filter(plainObject) : [];
   });
-  const unique = [...new Map(results.map((result) => [result.url, result])).values()];
+  const preferred = new Map<unknown, Record<string, unknown>>();
+  for (const result of results) {
+    const previous = preferred.get(result.url);
+    // Prefer the most recent query; an unread duplicate must not erase an
+    // earlier verified page retrieval.
+    const previousRead = typeof previous?.url === "string" && validatedWebSourcePage(previous.page, previous.url)?.status === "read";
+    const currentRead = typeof result.url === "string" && validatedWebSourcePage(result.page, result.url)?.status === "read";
+    if (!previous || (!previousRead && currentRead)) preferred.set(result.url, result);
+  }
+  const unique = [...preferred.values()];
   const read = unique.flatMap((result) => {
     if (typeof result.url !== "string" || !safeUrl(result.url)) return [];
     const page = validatedWebSourcePage(result.page, result.url);

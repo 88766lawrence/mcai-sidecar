@@ -35,6 +35,16 @@ type sourceReadingWebSearcher struct {
 var sourceDeveloperQuery = regexp.MustCompile(`(?i)\b(?:dev|developer|development|coding|api)\b|开发|编程`)
 
 var sourceWords = regexp.MustCompile(`[\p{L}\p{N}][\p{L}\p{N}.-]{2,}`)
+var sourceContextReference = regexp.MustCompile(`(?i)^(?:by doing this|this (?:feature|allows|means|method)|these (?:steps|changes|features)|therefore|thus)\b`)
+
+func sourceTerm(word string) string {
+	for _, stem := range []string{"updat", "compatib", "install", "configur", "back"} {
+		if strings.HasPrefix(word, stem) {
+			return stem
+		}
+	}
+	return strings.TrimSuffix(word, "s")
+}
 
 func sourceResultScore(query string, result webSearchResult) int {
 	score := sourceScore(query, result.Title+" "+result.Link)
@@ -54,7 +64,7 @@ func sourceScore(query, text string) int {
 	score := 0
 	seen := map[string]bool{}
 	for _, word := range sourceWords.FindAllString(strings.ToLower(query), -1) {
-		word = strings.TrimSuffix(word, "s")
+		word = sourceTerm(word)
 		if seen[word] || strings.Contains(word, ".") || word == "site" {
 			continue
 		}
@@ -213,7 +223,7 @@ func sourcePassages(query string, blocks []string) []string {
 	for i, b := range blocks {
 		b = strings.Join(strings.Fields(b), " ")
 		// Preserve complete bounded paragraphs, rather than clipping a qualification.
-		if utf8.RuneCountInString(b) < 30 || utf8.RuneCountInString(b) > 350 || seen[b] {
+		if utf8.RuneCountInString(b) < 30 || utf8.RuneCountInString(b) > 350 || seen[b] || sourceContextReference.MatchString(b) {
 			continue
 		}
 		seen[b] = true
