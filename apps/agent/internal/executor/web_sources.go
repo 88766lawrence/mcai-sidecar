@@ -32,7 +32,22 @@ type sourceReadingWebSearcher struct {
 	client    *http.Client
 }
 
+var sourceDeveloperQuery = regexp.MustCompile(`(?i)\b(?:dev|developer|development|coding|api)\b|开发|编程`)
+
 var sourceWords = regexp.MustCompile(`[\p{L}\p{N}][\p{L}\p{N}.-]{2,}`)
+
+func sourceResultScore(query string, result webSearchResult) int {
+	score := sourceScore(query, result.Title+" "+result.Link)
+	// Operational instructions should not rank API development pages above
+	// installation/update guides merely because they share a product name.
+	if !sourceDeveloperQuery.MatchString(query) {
+		u, _ := url.Parse(result.Link)
+		if u != nil && (strings.Contains(u.Path, "/dev/") || strings.Contains(u.Path, "/development/") || strings.Contains(u.Path, "/api/")) {
+			score -= 3
+		}
+	}
+	return score
+}
 
 func sourceScore(query, text string) int {
 	text = strings.ToLower(text)
@@ -59,7 +74,7 @@ func (s *sourceReadingWebSearcher) Search(ctx context.Context, query string) (we
 	// Copy cached discoveries before attaching fresh retrieval metadata.
 	r.Results = append([]webSearchResult(nil), relevantWebSearchResults(query, r.Results)...)
 	sort.SliceStable(r.Results, func(i, j int) bool {
-		return sourceScore(query, r.Results[i].Title) > sourceScore(query, r.Results[j].Title)
+		return sourceResultScore(query, r.Results[i]) > sourceResultScore(query, r.Results[j])
 	})
 	ctx, cancel := context.WithTimeout(ctx, 7*time.Second)
 	defer cancel()
