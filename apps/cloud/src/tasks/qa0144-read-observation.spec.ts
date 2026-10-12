@@ -17,6 +17,14 @@ function observed(tool: AgentLoopObservation["tool"], outputSchemaId: string, va
 }
 
 describe("QA0144 typed read observations", () => {
+  it("rejects fetched evidence outside the user's explicit source rule", () => {
+    const url="https://hangar.example.org/plugin";
+    const item=observed("web.search","web-search-result/v1",{schema_version:"web-search-result/v1",query:"Paper update",provider:"fixture",results:[{title:"Plugin updater",url,snippet:"unrestricted discovery",date:"",page:{status:"read",url,fetched_at:"2026-10-12T15:00:00Z",sha256:"a".repeat(64),passages:["This unrelated plugin updater can update installed plugins."]}}]},"read-outside");
+    const request="搜索 Paper 更新，只参考 docs.example.org。";
+    expect(renderWebSourceFinal(request,[item])).not.toContain("hangar.example.org");
+    expect(publicSourceSearchCompletion(request,[item])).toMatchObject({verified:false,decision:{action:"cannot_proceed"}});
+  });
+
   it("accepts an exact sealed file listing and preserves total versus filtered count", () => {
     const value = seal({
       entries: [{ name: "A.jar" }, { name: "B.JAR" }, { name: "C.jar" }, { name: "D.jar" }],
