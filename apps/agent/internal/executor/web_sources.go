@@ -52,9 +52,12 @@ func sourceResultScore(query string, result webSearchResult) int {
 	// installation/update guides merely because they share a product name.
 	if !sourceDeveloperQuery.MatchString(query) {
 		u, _ := url.Parse(result.Link)
-		if u != nil && (strings.Contains(u.Path, "/dev/") || strings.Contains(u.Path, "/development/") || strings.Contains(u.Path, "/api/")) {
+		if u != nil && (strings.Contains(u.Path, "/dev/") || strings.Contains(u.Path, "/development/") || strings.Contains(u.Path, "/api/") || strings.Contains(strings.ToLower(u.Path), "/wiki/creating-") || strings.Contains(strings.ToLower(u.Path), "/wiki/basic-api-")) {
 			score -= 3
 		}
+	}
+	if !strings.Contains(strings.ToLower(query), "network") && !strings.Contains(query, "网络") && strings.Contains(strings.ToLower(result.Link), "network-installation") {
+		score -= 3
 	}
 	return score
 }
@@ -74,10 +77,14 @@ func sourceScore(query, text string) int {
 			// Specific operational subjects carry more weight than a shared
 			// product name; otherwise every page in a product's docs ties.
 			switch word {
-			case "updat", "compatib", "install", "configur", "back":
+			case "updat", "compatib", "install", "configur", "back", "version":
 				score++
 			}
 		}
+	}
+	// Preserve version table field context rather than generic product prose.
+	if strings.Contains(strings.ToLower(query), "version") && strings.Contains(text, "version:") {
+		score += 4
 	}
 	return score
 }
@@ -140,7 +147,7 @@ func (s *sourceReadingWebSearcher) read(ctx context.Context, query, link string)
 	if err != nil || len(body) > maxWebSearchResponseBytes || !utf8.Valid(body) {
 		return failed
 	}
-	blocks := strings.Split(string(body), "\n")
+	blocks := sourceTextBlocks(string(body))
 	if media == "text/html" {
 		blocks = sourceHTMLBlocks(string(body))
 	}
@@ -171,6 +178,19 @@ func sourceHTMLBlocks(raw string) []string {
 		}
 	}
 	find(doc)
+	var content func(*html.Node)
+	content = func(n *html.Node) {
+		for _, a := range n.Attr {
+			if a.Key == "id" && a.Val == "wiki-body" {
+				root = n
+				return
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			content(c)
+		}
+	}
+	content(doc)
 	var blocks []string
 	var text func(*html.Node) string
 	text = func(n *html.Node) string {
@@ -206,6 +226,39 @@ func sourceHTMLBlocks(raw string) []string {
 			case "script", "style", "nav", "header", "footer", "aside", "form", "noscript", "svg":
 				return
 			}
+			if n.Data == "table" {
+				var headers []string
+				var rows func(*html.Node)
+				rows = func(row *html.Node) {
+					if row.Type == html.ElementNode && row.Data == "tr" {
+						var cells []string
+						isHeader := false
+						for c := row.FirstChild; c != nil; c = c.NextSibling {
+							if c.Type == html.ElementNode && (c.Data == "th" || c.Data == "td") {
+								cells = append(cells, strings.Join(strings.Fields(text(c)), " "))
+								isHeader = isHeader || c.Data == "th"
+							}
+						}
+						if isHeader {
+							headers = cells
+							return
+						}
+						if len(cells) == len(headers) && len(headers) > 0 {
+							var fields []string
+							for i, c := range cells {
+								fields = append(fields, headers[i]+": "+c)
+							}
+							blocks = append(blocks, strings.Join(fields, "; "))
+						}
+						return
+					}
+					for c := row.FirstChild; c != nil; c = c.NextSibling {
+						rows(c)
+					}
+				}
+				rows(n)
+				return
+			}
 			if n.Data == "p" || n.Data == "li" || n.Data == "pre" {
 				blocks = append(blocks, strings.Join(strings.Fields(text(n)), " "))
 				return
@@ -234,6 +287,10 @@ func sourcePassages(query string, blocks []string) []string {
 		}
 		seen[b] = true
 		score := sourceScore(query, b)
+		q := strings.ToLower(query)
+		if !strings.Contains(q, "network") && !strings.Contains(q, "proxy") && !strings.Contains(query, "网络") && !strings.Contains(query, "代理") && (strings.Contains(strings.ToLower(b), "proxy") || strings.Contains(strings.ToLower(b), "network of servers")) {
+			score -= 3
+		}
 		if score == 0 {
 			continue
 		}
@@ -249,4 +306,44 @@ func sourcePassages(query string, blocks []string) []string {
 		result = append(result, c.text)
 	}
 	return result
+}
+
+// Group wrapped plaintext/Markdown paragraphs; a line break is not a sentence
+// boundary. Keep full paragraphs and list items rather than dropping short
+// wrapped lines or extracting disconnected sentence fragments.
+func sourceTextBlocks(raw string) []string {
+	var blocks []string
+	var paragraph []string
+	flush := func() {
+		if len(paragraph) > 0 {
+			blocks = append(blocks, strings.Join(paragraph, " "))
+			paragraph = nil
+		}
+	}
+	fenced := false
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			flush()
+			fenced = !fenced
+			continue
+		}
+		if fenced {
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "#") || line == "---" || line == "--------" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "![") || strings.HasPrefix(line, "[![") || strings.HasPrefix(line, "![]") {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "- ") {
+			flush()
+		}
+		paragraph = append(paragraph, line)
+	}
+	flush()
+	return blocks
 }
