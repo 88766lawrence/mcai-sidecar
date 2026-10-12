@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ type sourceReadingWebSearcher struct {
 }
 
 var sourceDeveloperQuery = regexp.MustCompile(`(?i)\b(?:dev|developer|development|coding|api)\b|开发|编程`)
+
+var sourceVersionRow = regexp.MustCompile(`(?i)version:\s*([0-9]+)(?:\.([0-9]+))?`)
 
 var sourceVersionWord = regexp.MustCompile(`(?i)(?:^|[^a-z])versions?(?:$|[^a-z])`)
 
@@ -100,6 +103,16 @@ func sourceScore(query, text string) int {
 	// Preserve version table field context rather than generic product prose.
 	if strings.Contains(strings.ToLower(query), "version") && strings.Contains(text, "version:") {
 		score += 4
+		if row := sourceVersionRow.FindStringSubmatch(text); len(row) > 0 {
+			major, _ := strconv.Atoi(row[1])
+			minor, _ := strconv.Atoi(row[2])
+			// Select newer version rows first when a generic version query
+			// cannot fit the complete table into its bounded source excerpts.
+			score += major*100 + minor
+		}
+	}
+	if strings.Contains(strings.ToLower(query), "location") && strings.Contains(text, "location:") {
+		score += 8
 	}
 	return score
 }
@@ -295,6 +308,18 @@ func sourceHTMLBlocks(raw string) []string {
 				rows(n)
 				return
 			}
+			if n.Data == "ul" || n.Data == "ol" {
+				var items []string
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					if c.Type == html.ElementNode && c.Data == "li" {
+						items = append(items, strings.Join(strings.Fields(text(c)), " "))
+					}
+				}
+				if len(items) > 0 {
+					blocks = append(blocks, prefix(strings.Join(items, "; ")))
+				}
+				return
+			}
 			if n.Data == "p" || n.Data == "li" || n.Data == "pre" {
 				body := strings.Join(strings.Fields(text(n)), " ")
 				if utf8.RuneCountInString(body) >= 30 {
@@ -319,6 +344,13 @@ func sourcePassages(query string, blocks []string) []string {
 	var all []candidate
 	seen := map[string]bool{}
 	for i, b := range blocks {
+		body := b
+		if i := strings.LastIndex(body, "\n"); i >= 0 {
+			body = body[i+1:]
+		}
+		if sourceContextReference.MatchString(body) || strings.HasSuffix(strings.TrimSpace(body), ":") {
+			continue
+		}
 		b = strings.Join(strings.Fields(b), " ")
 		// Preserve complete bounded paragraphs, rather than clipping a qualification.
 		if utf8.RuneCountInString(b) < 30 || utf8.RuneCountInString(b) > 600 || seen[b] || sourceContextReference.MatchString(b) {

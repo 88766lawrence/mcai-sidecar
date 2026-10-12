@@ -103,3 +103,21 @@ func TestSourceRankingKeepsRequestedProductAndRuntimeGuideAheadOfChangelogs(t *t
 		t.Fatalf("short decoration/footer included: %v", got)
 	}
 }
+
+func TestSourcePassagesSelectLocationAndNewerVersionRowsWithoutDanglingSteps(t *testing.T) {
+	got := sourcePassages("configuration file location", []string{"The main configuration file can be found at these locations.", "Platform: Bukkit; Location: /plugins/Example/config.yml", "Descriptions / contexts.json\nThe contexts.json file is alongside the main configuration file.", "Configuration file locations contain platform-specific configuration values."})
+	if len(got) == 0 || !strings.Contains(strings.Join(got, " "), "Location:") {
+		t.Fatalf("location evidence omitted: %v", got)
+	}
+	got = sourcePassages("Java version requirements", []string{"Requirements\nPaper Version: 1.7; Recommended Java Version: Java 8", "Requirements\nPaper Version: 1.12; Recommended Java Version: Java 11", "Requirements\nPaper Version: 1.16; Recommended Java Version: Java 16", "Requirements\nPaper Version: 1.20; Recommended Java Version: Java 21"})
+	if !strings.Contains(strings.Join(got, " "), "Java 21") {
+		t.Fatalf("newer requirements omitted: %v", got)
+	}
+	if len(sourcePassages("plugin update", []string{"Update plugins\nBy doing this, plugin updates work without restarts.", "Backup\nThe main things to back up are:"})) != 0 {
+		t.Fatal("dangling body survived its heading")
+	}
+	got = sourceHTMLBlocks(`<main><h2>Backup</h2><ul><li>Your worlds</li><li>Your plugin configuration files</li></ul></main>`)
+	if len(got) != 1 || !strings.Contains(got[0], "Your worlds; Your plugin configuration files") {
+		t.Fatalf("backup checklist dropped: %v", got)
+	}
+}
