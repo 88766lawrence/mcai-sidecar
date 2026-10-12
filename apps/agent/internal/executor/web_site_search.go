@@ -77,7 +77,9 @@ func (s *siteFirstWebSearcher) siteSearch(ctx context.Context, query string, sit
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return siteDocumentScore(query, candidates[i].Link) > siteDocumentScore(query, candidates[j].Link)
+		left, _ := url.Parse(candidates[i].Link)
+		right, _ := url.Parse(candidates[j].Link)
+		return siteDocumentScore(query, left.Path) > siteDocumentScore(query, right.Path)
 	})
 	result := relevantWebSearchResults(query, candidates)
 	unique := result[:0]

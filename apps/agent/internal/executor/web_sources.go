@@ -52,6 +52,14 @@ func sourceResultScore(query string, result webSearchResult) int {
 	score := sourceScore(query, result.Title+" "+result.Link)
 	q := strings.ToLower(query)
 	p := strings.ToLower(result.Link)
+	if u, err := url.Parse(result.Link); err == nil {
+		namespace := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")[0]
+		if namespace != "" && sourceScore(query, namespace) > 0 {
+			score += 2
+		}
+		score += siteDocumentScore(query, u.Path) - sourceScore(query, u.Path)
+	}
+
 	if strings.Contains(q, "grant") && strings.Contains(q, "permission") && strings.Contains(p, "permission-commands") {
 		score += 3
 	}
@@ -188,7 +196,7 @@ func sourceHTMLBlocks(raw string) []string {
 	var content func(*html.Node)
 	content = func(n *html.Node) {
 		for _, a := range n.Attr {
-			if a.Key == "id" && a.Val == "wiki-body" {
+			if (a.Key == "id" && a.Val == "wiki-body") || (a.Key == "class" && webSearchHasClass(a.Val, "sl-markdown-content")) {
 				root = n
 				return
 			}
@@ -288,7 +296,10 @@ func sourceHTMLBlocks(raw string) []string {
 				return
 			}
 			if n.Data == "p" || n.Data == "li" || n.Data == "pre" {
-				blocks = append(blocks, prefix(strings.Join(strings.Fields(text(n)), " ")))
+				body := strings.Join(strings.Fields(text(n)), " ")
+				if utf8.RuneCountInString(body) >= 30 {
+					blocks = append(blocks, prefix(body))
+				}
 				return
 			}
 		}

@@ -90,3 +90,16 @@ func TestSourceReaderRetainsSectionContextAndMarkdownLocationTable(t *testing.T)
 		t.Fatal("product name falsely matched version topic")
 	}
 }
+
+func TestSourceRankingKeepsRequestedProductAndRuntimeGuideAheadOfChangelogs(t *testing.T) {
+	q := "Paper Java version requirements"
+	guide := webSearchResult{Title: "docs.papermc.io — /paper/getting-started", Link: "https://docs.papermc.io/paper/getting-started"}
+	other := webSearchResult{Title: "docs.papermc.io — /adventure/version-history", Link: "https://docs.papermc.io/adventure/version-history"}
+	if sourceResultScore(q, guide) <= sourceResultScore(q, other) {
+		t.Fatal("unrelated namespace outranked runtime guide")
+	}
+	got := sourceHTMLBlocks(`<main><div class="sl-markdown-content"><h2>Versions</h2><p>Check the documented Java version requirements before starting.</p><p>Tip</p></div><p>Copyright unrelated product version footer text.</p></main>`)
+	if len(got) != 1 || strings.Contains(got[0], "Copyright") {
+		t.Fatalf("short decoration/footer included: %v", got)
+	}
+}
