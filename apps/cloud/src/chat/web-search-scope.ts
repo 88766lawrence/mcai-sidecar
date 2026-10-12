@@ -17,9 +17,12 @@ export function requestedWebSearchSite(message: string) {
 
 export function applyUserWebSearchScope(decision: AgentLoopDecision, message: string): AgentLoopDecision {
   const site = requestedWebSearchSite(message);
-  if (!site || decision.action !== "tool_call" || decision.tool !== "web.search" || typeof decision.arguments.query !== "string") return decision;
-  const query = decision.arguments.query.replace(/\bsite:[^\s]+/giu, "").trim();
-  return { ...decision, arguments: { ...decision.arguments, query: `${query} site:${site}` } };
+  if (decision.action !== "tool_call" || decision.tool !== "web.search" || typeof decision.arguments.query !== "string") return decision;
+  let query = site ? decision.arguments.query.replace(/\bsite:[^\s]+/giu, "").trim() : decision.arguments.query;
+  // Preserve a backup goal explicitly requested in Chinese when translation
+  // otherwise drops it. This expands a read-only query; it authorizes no action.
+  if (message.includes("备份") && !/\bback(?:up|ups|ing)?\b/iu.test(query)) query += " backup";
+  return { ...decision, arguments: { ...decision.arguments, query: site ? `${query} site:${site}` : query } };
 }
 
 export function webSearchUrlWithinScope(url: string, message: string) {

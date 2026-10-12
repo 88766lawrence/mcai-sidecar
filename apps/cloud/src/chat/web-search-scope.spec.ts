@@ -5,6 +5,9 @@ describe("user web search scope", () => {
  it("replaces a conflicting model site with the user's source rule", () => {
   expect(applyUserWebSearchScope({ action: "tool_call", tool: "web.search", arguments: { query: "Paper backup site:hangar.papermc.io" }, reason: "search" }, "搜索更新步骤，只参考 docs.papermc.io。" )).toMatchObject({ arguments: { query: "Paper backup site:docs.papermc.io" } });
  });
+ it("preserves the requested backup topic when model translation omits it", () => {
+  expect(applyUserWebSearchScope({action:"tool_call",tool:"web.search",arguments:{query:"updating plugins Paper"},reason:"search"},"搜索更新和备份，只参考 docs.papermc.io")).toMatchObject({arguments:{query:"updating plugins Paper backup site:docs.papermc.io"}});
+ });
  it("matches host and path boundaries without accepting lookalikes", () => {
   const request="search site:docs.example.org/manual";
   expect(requestedWebSearchSite(request)).toBe("docs.example.org/manual");
