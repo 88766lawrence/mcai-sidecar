@@ -29,10 +29,10 @@ const (
 )
 
 type webSearchResult struct {
-	Title   string `json:"title"`
-	Link    string `json:"link"`
-	Snippet string `json:"snippet"`
-	Date    string `json:"date,omitempty"`
+	Title   string         `json:"title"`
+	Link    string         `json:"link"`
+	Snippet string         `json:"snippet"`
+	Date    string         `json:"date,omitempty"`
 	Page    *webSourcePage `json:"page,omitempty"`
 }
 
@@ -112,7 +112,7 @@ func newPublicWebSearchClient() *http.Client {
 }
 
 func newWebSearcherFromEnv() webSearcher {
-	return &sourceReadingWebSearcher{discovery: &siteFirstWebSearcher{fallback: newDiscoveryWebSearcherFromEnv(), client: newPublicWebSearchClient()}, client: newPublicWebSearchClient()}
+	return &sourceReadingWebSearcher{discovery: &siteFirstWebSearcher{fallback: &projectDocsWebSearcher{fallback: newDiscoveryWebSearcherFromEnv(), client: newPublicWebSearchClient(), api: "https://api.github.com"}, client: newPublicWebSearchClient()}, client: newPublicWebSearchClient()}
 }
 
 func newDiscoveryWebSearcherFromEnv() webSearcher {
