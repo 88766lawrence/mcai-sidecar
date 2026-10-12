@@ -76,3 +76,30 @@ func TestSourceReaderKeepsVersionTableHeaders(t *testing.T) {
 		t.Fatalf("table context lost: %v", got)
 	}
 }
+
+func TestSourceReaderRetainsSectionContextAndMarkdownLocationTable(t *testing.T) {
+	got := sourcePassages("configuration location", sourceTextBlocks("# Configuration\n\n| Platform | Location |\n|---|---|\n| Bukkit | /plugins/Example/config.yml |\n"))
+	if len(got) != 1 || !strings.Contains(got[0], "Platform: Bukkit; Location: /plugins/Example/config.yml") {
+		t.Fatalf("location table lost: %v", got)
+	}
+	got = sourcePassages("packet limiter", sourceHTMLBlocks(`<main><h2>Packet limiter</h2><h3>max-pps</h3><p>Use this option to limit the packets per second allowed for each player.</p></main>`))
+	if len(got) != 1 || !strings.Contains(got[0], "Packet limiter / max-pps") {
+		t.Fatalf("section context lost: %v", got)
+	}
+	if sourceScore("Paper supported versions", "/adventure/platform/viaversion/") != 0 {
+		t.Fatal("product name falsely matched version topic")
+	}
+}
+
+func TestSourceRankingKeepsRequestedProductAndRuntimeGuideAheadOfChangelogs(t *testing.T) {
+	q := "Paper Java version requirements"
+	guide := webSearchResult{Title: "docs.papermc.io — /paper/getting-started", Link: "https://docs.papermc.io/paper/getting-started"}
+	other := webSearchResult{Title: "docs.papermc.io — /adventure/version-history", Link: "https://docs.papermc.io/adventure/version-history"}
+	if sourceResultScore(q, guide) <= sourceResultScore(q, other) {
+		t.Fatal("unrelated namespace outranked runtime guide")
+	}
+	got := sourceHTMLBlocks(`<main><div class="sl-markdown-content"><h2>Versions</h2><p>Check the documented Java version requirements before starting.</p><p>Tip</p></div><p>Copyright unrelated product version footer text.</p></main>`)
+	if len(got) != 1 || strings.Contains(got[0], "Copyright") {
+		t.Fatalf("short decoration/footer included: %v", got)
+	}
+}

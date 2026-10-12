@@ -1,3 +1,4 @@
+import { webSearchUrlWithinScope } from "../chat/web-search-scope";
 import { createHash } from "node:crypto";
 import type { AgentLoopDecision, AgentLoopObservation, AgentLoopToolName } from "../chat/agent-loop";
 
@@ -120,7 +121,7 @@ export function renderWebSourceFinal(message: string, observations: AgentLoopObs
   if (!observations.length || observations.some((item) => item.tool !== "web.search")) return undefined;
   const results = [...observations].reverse().filter((item) => item.status === "succeeded").flatMap((item) => {
     const projected = readResultForObservation(item);
-    return projected && Array.isArray(projected.value.results) ? projected.value.results.filter(plainObject) : [];
+    return projected && Array.isArray(projected.value.results) ? projected.value.results.filter(plainObject).filter((result) => typeof result.url === "string" && webSearchUrlWithinScope(result.url, message)) : [];
   });
   const preferred = new Map<unknown, Record<string, unknown>>();
   for (const result of results) {
@@ -163,7 +164,7 @@ export function publicSourceSearchCompletion(message: string, observations: Agen
   if (!pages.some((page) => page.page != null) && observations.some((item) => item.status === "succeeded")) return undefined;
   const answer = renderWebSourceFinal(message, observations);
   if (!answer) return undefined;
-  const verified = pages.some((page) => typeof page.url === "string" && validatedWebSourcePage(page.page, page.url)?.status === "read");
+  const verified = pages.some((page) => typeof page.url === "string" && webSearchUrlWithinScope(page.url, message) && validatedWebSourcePage(page.page, page.url)?.status === "read");
   return { verified, decision: verified
     ? { action: "final", answer, citations: observations.filter((item) => item.status === "succeeded").map((item) => item.tool_call_id) }
     : { action: "cannot_proceed", answer } };

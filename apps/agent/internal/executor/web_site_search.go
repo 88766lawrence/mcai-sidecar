@@ -64,7 +64,7 @@ func (s *siteFirstWebSearcher) siteSearch(ctx context.Context, query string, sit
 		}
 		for _, entry := range m.URLs {
 			u, err := url.Parse(entry.Location)
-			if err != nil || !strings.EqualFold(u.Hostname(), site.Hostname()) || validatePublicDownloadURL(u) != nil || sourceScore(query, u.Path) < 2 {
+			if err != nil || !strings.EqualFold(u.Hostname(), site.Hostname()) || validatePublicDownloadURL(u) != nil || siteDocumentScore(query, u.Path) < 2 {
 				continue
 			}
 			candidates = append(candidates, webSearchResult{Title: boundedWebText(u.Hostname()+" — "+u.Path, 300), Link: u.String(), Snippet: "Discovered in the requested site's sitemap; page passages are separate retrieval evidence.", Date: boundedWebText(entry.Date, 100)})
@@ -77,7 +77,9 @@ func (s *siteFirstWebSearcher) siteSearch(ctx context.Context, query string, sit
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return sourceResultScore(query, candidates[i]) > sourceResultScore(query, candidates[j])
+		left, _ := url.Parse(candidates[i].Link)
+		right, _ := url.Parse(candidates[j].Link)
+		return siteDocumentScore(query, left.Path) > siteDocumentScore(query, right.Path)
 	})
 	result := relevantWebSearchResults(query, candidates)
 	unique := result[:0]
@@ -125,4 +127,16 @@ func (s *siteFirstWebSearcher) sitemap(ctx context.Context, link, host string) (
 	}
 	err = xml.Unmarshal(b, &m)
 	return m, err
+}
+
+// Runtime requirements often live in a getting-started/installation guide;
+// the path itself may not contain the requested language/runtime name.
+func siteDocumentScore(query, path string) int {
+	score := sourceScore(query, path)
+	q := strings.ToLower(query)
+	p := strings.ToLower(path)
+	if (strings.Contains(q, "java") || strings.Contains(q, "requirement") || strings.Contains(query, "要求")) && (strings.Contains(p, "getting-started") || strings.Contains(p, "java-install")) {
+		score += 2
+	}
+	return score
 }

@@ -41,7 +41,9 @@ describe("QA0144 autonomous web search continuation", () => {
     const firstStore = new CloudStore(); populate(firstStore);
     const first = new ChatService(firstStore, initialModel, tasks, new AgentRunStore(runPath), chatPath);
     const session = await first.create("tenant-1", "instance-1");
-    await first.send(session.id, "tenant-1", "Find the documented runtime requirement and cite it.");
+    await first.send(session.id, "tenant-1", "Find the documented runtime requirement and cite it. Only use docs.example.test.");
+
+    expect(tasks.create).toHaveBeenCalledWith(expect.objectContaining({ agentToolCall: expect.objectContaining({ arguments: { query: "runtime requirements site:docs.example.test" } }) }));
 
     const continuedModel = {
       decideAgentLoop: vi.fn().mockResolvedValue({ status: "answered", requestId: "continued", decision: {
@@ -59,7 +61,7 @@ describe("QA0144 autonomous web search continuation", () => {
     expect(messages.some((item) => item.task_phase === "completion")).toBe(false);
     expect(tasks.create).toHaveBeenLastCalledWith(expect.objectContaining({
       preferredTool: "web.search",
-      agentToolCall: expect.objectContaining({ arguments: { query: "runtime requirement major version" } }),
+      agentToolCall: expect.objectContaining({ arguments: { query: "runtime requirement major version site:docs.example.test" } }),
     }));
     await restarted.onModuleDestroy();
   });

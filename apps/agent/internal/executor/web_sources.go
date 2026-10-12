@@ -34,7 +34,9 @@ type sourceReadingWebSearcher struct {
 
 var sourceDeveloperQuery = regexp.MustCompile(`(?i)\b(?:dev|developer|development|coding|api)\b|开发|编程`)
 
-var sourceWords = regexp.MustCompile(`[\p{L}\p{N}][\p{L}\p{N}.-]{2,}`)
+var sourceVersionWord = regexp.MustCompile(`(?i)(?:^|[^a-z])versions?(?:$|[^a-z])`)
+
+var sourceWords = regexp.MustCompile(`[\p{L}\p{N}][\p{L}\p{N}.]{2,}`)
 var sourceContextReference = regexp.MustCompile(`(?i)^(?:by doing this|this (?:feature|allows|means|method)|these (?:steps|changes|features)|therefore|thus)\b`)
 
 func sourceTerm(word string) string {
@@ -48,6 +50,19 @@ func sourceTerm(word string) string {
 
 func sourceResultScore(query string, result webSearchResult) int {
 	score := sourceScore(query, result.Title+" "+result.Link)
+	q := strings.ToLower(query)
+	p := strings.ToLower(result.Link)
+	if u, err := url.Parse(result.Link); err == nil {
+		namespace := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")[0]
+		if namespace != "" && sourceScore(query, namespace) > 0 {
+			score += 2
+		}
+		score += siteDocumentScore(query, u.Path) - sourceScore(query, u.Path)
+	}
+
+	if strings.Contains(q, "grant") && strings.Contains(q, "permission") && strings.Contains(p, "permission-commands") {
+		score += 3
+	}
 	// Operational instructions should not rank API development pages above
 	// installation/update guides merely because they share a product name.
 	if !sourceDeveloperQuery.MatchString(query) {
@@ -72,7 +87,7 @@ func sourceScore(query, text string) int {
 			continue
 		}
 		seen[word] = true
-		if strings.Contains(text, word) {
+		if strings.Contains(text, word) && (word != "version" || sourceVersionWord.MatchString(text)) {
 			score++
 			// Specific operational subjects carry more weight than a shared
 			// product name; otherwise every page in a product's docs ties.
@@ -181,7 +196,7 @@ func sourceHTMLBlocks(raw string) []string {
 	var content func(*html.Node)
 	content = func(n *html.Node) {
 		for _, a := range n.Attr {
-			if a.Key == "id" && a.Val == "wiki-body" {
+			if (a.Key == "id" && a.Val == "wiki-body") || (a.Key == "class" && webSearchHasClass(a.Val, "sl-markdown-content")) {
 				root = n
 				return
 			}
@@ -192,6 +207,19 @@ func sourceHTMLBlocks(raw string) []string {
 	}
 	content(doc)
 	var blocks []string
+	headings := make(map[int]string)
+	prefix := func(block string) string {
+		var context []string
+		for i := 1; i <= 6; i++ {
+			if headings[i] != "" {
+				context = append(context, headings[i])
+			}
+		}
+		if len(context) > 0 {
+			return strings.Join(context, " / ") + "\n" + block
+		}
+		return block
+	}
 	var text func(*html.Node) string
 	text = func(n *html.Node) string {
 		if n.Type == html.ElementNode {
@@ -226,6 +254,14 @@ func sourceHTMLBlocks(raw string) []string {
 			case "script", "style", "nav", "header", "footer", "aside", "form", "noscript", "svg":
 				return
 			}
+			if len(n.Data) == 2 && n.Data[0] == 'h' && n.Data[1] >= '1' && n.Data[1] <= '6' {
+				level := int(n.Data[1] - '0')
+				for i := level; i <= 6; i++ {
+					delete(headings, i)
+				}
+				headings[level] = strings.Join(strings.Fields(text(n)), " ")
+				return
+			}
 			if n.Data == "table" {
 				var headers []string
 				var rows func(*html.Node)
@@ -248,7 +284,7 @@ func sourceHTMLBlocks(raw string) []string {
 							for i, c := range cells {
 								fields = append(fields, headers[i]+": "+c)
 							}
-							blocks = append(blocks, strings.Join(fields, "; "))
+							blocks = append(blocks, prefix(strings.Join(fields, "; ")))
 						}
 						return
 					}
@@ -260,7 +296,10 @@ func sourceHTMLBlocks(raw string) []string {
 				return
 			}
 			if n.Data == "p" || n.Data == "li" || n.Data == "pre" {
-				blocks = append(blocks, strings.Join(strings.Fields(text(n)), " "))
+				body := strings.Join(strings.Fields(text(n)), " ")
+				if utf8.RuneCountInString(body) >= 30 {
+					blocks = append(blocks, prefix(body))
+				}
 				return
 			}
 		}
@@ -314,13 +353,27 @@ func sourcePassages(query string, blocks []string) []string {
 func sourceTextBlocks(raw string) []string {
 	var blocks []string
 	var paragraph []string
+	headings := make(map[int]string)
+	prefix := func(block string) string {
+		var context []string
+		for i := 1; i <= 6; i++ {
+			if headings[i] != "" {
+				context = append(context, headings[i])
+			}
+		}
+		if len(context) > 0 {
+			return strings.Join(context, " / ") + "\n" + block
+		}
+		return block
+	}
 	flush := func() {
 		if len(paragraph) > 0 {
-			blocks = append(blocks, strings.Join(paragraph, " "))
+			blocks = append(blocks, prefix(strings.Join(paragraph, " ")))
 			paragraph = nil
 		}
 	}
 	fenced := false
+	var tableHeaders []string
 	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
@@ -331,7 +384,48 @@ func sourceTextBlocks(raw string) []string {
 		if fenced {
 			continue
 		}
-		if line == "" || strings.HasPrefix(line, "#") || line == "---" || line == "--------" {
+		if strings.HasPrefix(line, "#") {
+			flush()
+			level := len(line) - len(strings.TrimLeft(line, "#"))
+			if level <= 6 {
+				for i := level; i <= 6; i++ {
+					delete(headings, i)
+				}
+				headings[level] = strings.TrimSpace(line[level:])
+			}
+			tableHeaders = nil
+			continue
+		}
+		if strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") {
+			flush()
+			cells := strings.Split(strings.Trim(line, "|"), "|")
+			for i := range cells {
+				cells[i] = strings.TrimSpace(cells[i])
+			}
+			if len(tableHeaders) == 0 {
+				tableHeaders = cells
+				continue
+			}
+			divider := true
+			for _, cell := range cells {
+				if strings.Trim(cell, "-: ") != "" {
+					divider = false
+				}
+			}
+			if divider {
+				continue
+			}
+			if len(cells) == len(tableHeaders) {
+				var fields []string
+				for i, cell := range cells {
+					fields = append(fields, tableHeaders[i]+": "+cell)
+				}
+				blocks = append(blocks, prefix(strings.Join(fields, "; ")))
+			}
+			continue
+		}
+		tableHeaders = nil
+		if line == "" || line == "---" || line == "--------" {
 			flush()
 			continue
 		}

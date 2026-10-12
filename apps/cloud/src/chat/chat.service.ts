@@ -1,3 +1,4 @@
+import { applyUserWebSearchScope } from "./web-search-scope";
 import { BadRequestException, Injectable, NotFoundException, Optional, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -331,7 +332,10 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
         || result.error === "AGENT_TERMINAL_REVIEW_INVALID")) {
       result = await this.modelGateway.decideAgentLoop(decisionInput);
     }
-    if (result.status === "answered") await this.agentRuns.recordDecision(run.run_id, run.round_count + 1, result.decision);
+    if (result.status === "answered") {
+      result = { ...result, decision: applyUserWebSearchScope(result.decision, run.original_user_message) };
+      await this.agentRuns.recordDecision(run.run_id, run.round_count + 1, result.decision);
+    }
     else await this.agentRuns.recordDecisionError(run.run_id, run.round_count + 1, { code: result.error, exhausted });
     const durableRun = await this.agentRuns.get(run.run_id, tenantId);
     if (!durableRun || durableRun.status === "CANCELLED") return;
@@ -587,7 +591,10 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     if (!activeAfterDecision || activeAfterDecision.status === "CANCELLED") {
       throw new NotFoundException("Session was deleted while the request was running");
     }
-    if (agentLoopResult.status === "answered") await this.agentRuns.recordDecision(pendingAgentRun.run_id, 1, agentLoopResult.decision);
+    if (agentLoopResult.status === "answered") {
+      agentLoopResult = { ...agentLoopResult, decision: applyUserWebSearchScope(agentLoopResult.decision, content) };
+      await this.agentRuns.recordDecision(pendingAgentRun.run_id, 1, agentLoopResult.decision);
+    }
     else {
       await this.agentRuns.recordDecisionError(pendingAgentRun.run_id, 1, { code: agentLoopResult.error });
       await this.agentRuns.finish(pendingAgentRun.run_id, "FAILED", { code: agentLoopResult.error, stage: "initial_decision" });

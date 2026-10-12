@@ -141,7 +141,7 @@ func (s *projectDocsWebSearcher) projectDocs(ctx context.Context, query, brand s
 			continue
 		}
 		for _, e := range tree.Entries {
-			if e.Type != "blob" || !strings.HasSuffix(strings.ToLower(e.Path), ".md") || sourceScore(query, e.Path) < 2 {
+			if e.Type != "blob" || !strings.HasSuffix(strings.ToLower(e.Path), ".md") || projectDocLinkScore(query, e.Path) < 2 {
 				continue
 			}
 			parts := strings.Split(e.Path, "/")
@@ -217,6 +217,9 @@ func projectDocLinkScore(query, path string) int {
 	p := strings.ToLower(path)
 	if (strings.Contains(q, "version") || strings.Contains(q, "support") || strings.Contains(q, "版本") || strings.Contains(q, "兼容")) && strings.Contains(p, "install") {
 		score += 2
+	}
+	if strings.Contains(q, "grant") && strings.Contains(q, "permission") && strings.Contains(p, "permission-commands") {
+		score += 3
 	}
 	return score
 }
