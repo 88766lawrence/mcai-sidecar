@@ -1,3 +1,5 @@
+import { intrinsicToolPolicy } from "@mcai/contracts";
+import { requestAllowsMutation } from "../chat/agent-request-boundary";
 import { Injectable } from "@nestjs/common";
 import type { ChatRoute, ConversationMessage, IntentCandidateV2, IntentSemanticFrameBatch, IntentSourceCatalog, ServerProfile, TaskRecord } from "@mcai/contracts";
 import { buildIntentSemanticFramePlan, INTENT_CAPABILITIES, mergeIntentSemanticFrames, type IntentIRValidationError } from "../tasks/intent-ir";
@@ -81,7 +83,8 @@ export class ModelGatewayService {
             id: input.instance.instance_id, name: input.instance.name, platform: input.instance.platform,
             minecraftVersion: input.instance.minecraft_version, loader: input.instance.loader, state: input.instance.state,
           },
-          toolCatalog: AGENT_LOOP_TOOL_CATALOG,
+          toolCatalog: AGENT_LOOP_TOOL_CATALOG.filter((entry) => requestAllowsMutation(input.message)
+            || entry.name === "console.command" || !intrinsicToolPolicy(entry.name, {}).mutates),
           observations: input.observations ?? [],
           round: input.round ?? 1,
           limits: { maxRounds: AGENT_LOOP_MAX_ROUNDS, maxToolCalls: AGENT_LOOP_MAX_TOOL_CALLS },

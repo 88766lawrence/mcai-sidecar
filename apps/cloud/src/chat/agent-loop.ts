@@ -10,7 +10,7 @@ export const AGENT_LOOP_TOOL_CATALOG = [
     type: "object", additionalProperties: false, required: ["command"],
     properties: { command: { type: "string", minLength: 1, maxLength: 256 } },
   }),
-  tool("config.inspect", "Read exact keys and their current values from one instance configuration file. Inspect first when a requested change depends on the existing value or the exact file path.", {
+  tool("config.inspect", "Read exact keys and their current values from one instance configuration file. For Java servers, view-distance, simulation-distance, white-list, online-mode, motd and max-players belong to the root server.properties file. Read all requested keys together. Inspect first when a change depends on the existing value.", {
     type: "object", additionalProperties: false, required: ["path", "keys"],
     properties: { path: { type: "string" }, keys: { type: "array", minItems: 1, maxItems: 32, items: { type: "string" } } },
   }),

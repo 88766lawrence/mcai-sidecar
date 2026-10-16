@@ -73,3 +73,11 @@ describe("performance evidence final", () => {
   });
 });
 
+
+it("reports every verified property in a multi-key patch without model synthesis", () => {
+ const values={...read,data:{qa0144_read_result:{output_schema_id:"config-inspect-result/v1",value:{path:"server.properties",entries:[{key:"view-distance",present:true,value:"7"},{key:"simulation-distance",present:true,value:"5"}]}}}};
+ const changes={...patch,data:{call_arguments:{path:"server.properties",patch:[{op:"replace",key:"view-distance",value:"10"},{op:"replace",key:"simulation-distance",value:"10"}]}}};
+ const result=renderReadThenPatchFinal("恢复视距和模拟距离",[values,changes]);
+ expect(result).toContain("view-distance 原值为「7」");expect(result).toContain("simulation-distance 原值为「5」");expect(result?.match(/改为「10」/gu)).toHaveLength(2);
+ expect(renderReadThenPatchFinal("恢复配置",[values,{...changes,evidence:{ids:[],summaries:[]}}])).toBeUndefined();
+});

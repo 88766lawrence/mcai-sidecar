@@ -82,3 +82,16 @@ export function renderPluginOutcomeFinal(request: string, observations: AgentLoo
   }
   return lines.length ? { answer: (chinese ? "已核对的插件结果：\n" : "Observed plugin outcomes:\n") + lines.join("\n"), blocked } : undefined;
 }
+
+/** Metadata lookup is complete without downloading or installing dependencies. */
+export function renderPluginLookupFinal(request: string, observations: AgentLoopObservation[]) {
+  if (!/(?:查|找|搜索|版本|来源|\b(?:find|lookup|search|version|source)\b)/iu.test(request)) return undefined;
+  const resolved = observations.filter((item) => item.tool === "plugin.resolve" && item.status === "succeeded").flatMap(facts)
+    .filter((fact) => fact.schema_version === "resolved-plugin/v1" && fact.resolution === "resolved");
+  const lines = resolved.flatMap((fact) => {
+    if (typeof fact.source_url !== "string" || !/^https:\/\//u.test(fact.source_url) || !fact.version || !fact.project) return [];
+    const deps = Array.isArray(fact.required_dependencies) ? fact.required_dependencies.filter((x) => typeof x === "string") : [];
+    return [`${fact.project} ${fact.version}：${fact.requested_loader} / Minecraft ${fact.requested_minecraft_version}（来源声明兼容）。\n下载来源：${fact.source_url}${deps.length ? `\n必需依赖：${deps.join(", ")}（仅列出，未安装）` : ""}`];
+  });
+  return lines.length ? lines.join("\n\n") + "\n本次仅查询，未安装。" : undefined;
+}

@@ -1,3 +1,4 @@
+import { constrainAgentRequest, requestAllowsMutation } from "./agent-request-boundary";
 import { applyUserWebSearchScope } from "./web-search-scope";
 import { BadRequestException, Injectable, NotFoundException, Optional, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
@@ -23,7 +24,7 @@ import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATAL
 import { AgentRunStore } from "../agents/agent-run.store";
 import { publicSourceSearchCompletion, renderWebSourceFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
-import { renderPluginOutcomeFinal } from "./plugin-outcome-final";
+import { renderPluginOutcomeFinal, renderPluginLookupFinal } from "./plugin-outcome-final";
 import { renderVerifiedFileDownloadFinal } from "../tasks/file-download-final";
 
 const defaultSystemPrompt = [
@@ -333,7 +334,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       result = await this.modelGateway.decideAgentLoop(decisionInput);
     }
     if (result.status === "answered") {
-      result = { ...result, decision: applyUserWebSearchScope(result.decision, run.original_user_message) };
+      result = { ...result, decision: constrainAgentRequest(applyUserWebSearchScope(result.decision, run.original_user_message), run.original_user_message, this.store.instances.get(session.instance_ref)?.platform) };
       await this.agentRuns.recordDecision(run.run_id, run.round_count + 1, result.decision);
     }
     else await this.agentRuns.recordDecisionError(run.run_id, run.round_count + 1, { code: result.error, exhausted });
@@ -380,9 +381,10 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     // URLs alone cannot prove a model's claims. Pure searches close with fetched
     // passages and their provenance, or an explicit discovery-only result.
     const sourceAnswer = webOnly ? renderWebSourceFinal(run.original_user_message, restoredObservations) : undefined;
-    const groundedAnswer = verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? sourceAnswer
+    const pluginLookup = !requestAllowsMutation(run.original_user_message) ? renderPluginLookupFinal(run.original_user_message, restoredObservations) : undefined;
+    const groundedAnswer = pluginLookup ?? verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? sourceAnswer
       ?? (webOnly ? undefined : modelFinalAnswer ?? canonicalReadAnswer ?? canonicalDownloadAnswer);
-    const cannotProceedAnswer = !sourceAnswer && !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
+    const cannotProceedAnswer = !pluginLookup && !sourceAnswer && !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
       ? result.decision.answer
       : undefined;
     const concreteFailureAnswer = renderConcreteAgentFailure(run.original_user_message, restoredObservations);
@@ -592,7 +594,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException("Session was deleted while the request was running");
     }
     if (agentLoopResult.status === "answered") {
-      agentLoopResult = { ...agentLoopResult, decision: applyUserWebSearchScope(agentLoopResult.decision, content) };
+      agentLoopResult = { ...agentLoopResult, decision: constrainAgentRequest(applyUserWebSearchScope(agentLoopResult.decision, content), content, instance.platform) };
       await this.agentRuns.recordDecision(pendingAgentRun.run_id, 1, agentLoopResult.decision);
     }
     else {
@@ -878,24 +880,26 @@ export function renderReadThenPatchFinal(message: string, observations: AgentLoo
   if (!patched) return undefined;
   const writeData = patched.data as { call_arguments?: { path?: string; patch?: Array<{ op?: string; key?: string; value?: unknown }> } } | undefined;
   const write = writeData?.call_arguments;
-  if (!write || !Array.isArray(write.patch) || write.patch.length !== 1 || !write.path) return undefined;
-  const change = write.patch[0];
-  if (change?.op !== "replace" || !["string", "number", "boolean"].includes(typeof change.value)
-    || !/^[A-Za-z0-9._-]{1,128}$/u.test(change.key ?? "")
-    || /password|secret|token|api[_-]?key/iu.test(change.key ?? "")) return undefined;
+  if (!write || !Array.isArray(write.patch) || !write.patch.length || write.patch.length > 16 || !write.path) return undefined;
+  if (new Set(write.patch.map((change) => change.key)).size !== write.patch.length || write.patch.some((change) =>
+    change?.op !== "replace" || !["string", "number", "boolean"].includes(typeof change.value)
+      || !/^[A-Za-z0-9._-]{1,128}$/u.test(change.key ?? "") || /password|secret|token|api[_-]?key/iu.test(change.key ?? ""))) return undefined;
   const inspected = observations.slice(0, observations.indexOf(patched)).reverse().find((item) => item.tool === "config.inspect");
   const readData = inspected?.data as { qa0144_read_result?: { output_schema_id?: string; value?: { path?: string; entries?: Array<{ key?: string; present?: boolean; value?: unknown }> } } } | undefined;
   const read = readData?.qa0144_read_result;
-  const before = read?.output_schema_id === "config-inspect-result/v1" && read.value?.path === write.path
-    ? read.value.entries?.find((entry) => entry.key === change.key && entry.present === true)
-    : undefined;
   const verified = patched.evidence?.summaries?.some((summary) => /Patched .+ verified sha256:/iu.test(summary));
   if (!verified) return undefined;
   const restarted = observations.slice(observations.indexOf(patched) + 1).some((item) => item.tool === "instance.restart");
-  const oldValue = before && typeof before.value === "string" ? before.value : undefined;
-  return /[\u3400-\u9fff]/u.test(message)
-    ? `${oldValue === undefined ? "" : `已读取 ${write.path}：${change.key} 原值为「${oldValue}」。`}已将文件中的 ${change.key} 改为「${String(change.value)}」，写入后校验成功。${restarted ? "实例重启已完成。" : ""}`
-    : `${oldValue === undefined ? "" : `Read ${write.path}: ${change.key} was "${oldValue}". `}Changed ${change.key} to "${String(change.value)}" in ${write.path} and verified the write.${restarted ? " The instance restart completed." : ""}`;
+  const chinese = /[\u3400-\u9fff]/u.test(message);
+  const lines = write.patch.map((change) => {
+    const before = read?.output_schema_id === "config-inspect-result/v1" && read.value?.path === write.path
+      ? read.value?.entries?.find((entry) => entry.key === change.key && entry.present === true) : undefined;
+    const oldValue = before && typeof before.value === "string" ? before.value : undefined;
+    return chinese
+      ? `${oldValue === undefined ? "" : `已读取 ${write.path}：${change.key} 原值为「${oldValue}」。`}已将文件中的 ${change.key} 改为「${String(change.value)}」，写入后校验成功。`
+      : `${oldValue === undefined ? "" : `Read ${write.path}: ${change.key} was "${oldValue}". `}Changed ${change.key} to "${String(change.value)}" in ${write.path} and verified the write.`;
+  });
+  return lines.join("\n") + (restarted ? chinese ? "实例重启已完成。" : " The instance restart completed." : "");
 }
 
 export function renderPerformanceFinal(message: string, observations: AgentLoopObservation[]): string | undefined {

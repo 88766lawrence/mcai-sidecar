@@ -10,13 +10,13 @@ import { aggregateOperationAction, highestRisk, intrinsicToolPolicy } from "@mca
 import { extractRuntimeConsoleRead } from "./runtime-console-read";
 
 const mutationVerbs = [
-  /(?:帮我|请|给我|替我|自己)?\s*(?:安装|下载|部署|更新|升级|修改|更改|设置|设为|调整|开启|关闭|启动|停止|重启|删除|移除|添加|执行|运行|发送|广播|公告|修复|配置|换成|改成|调成|切成)/i,
+  /(?:帮我|请|给我|替我|自己)?\s*(?:安装|装上|下载|部署|更新|升级|修改|更改|设置|设为|设成|恢复|改回|调整|开启|关闭|启动|停止|重启|删除|移除|添加|执行|运行|发送|广播|公告|修复|配置|换成|改成|调成|切成)/i,
   /\b(?:install|download|deploy|update|upgrade|modify|change|set|enable|disable|start|stop|restart|delete|remove|add|execute|run|announce|broadcast|say|fix|configure|turn|make)\b/i,
 ];
 
 const knowledgeSignals = /(?:怎么做|如何做|教程|原理|区别|是什么|意味着什么|什么意思|请说明|解释|一般|示例|是否会|会不会|what\s+is|what\s+does|how\s+(?:do|does|to)|difference\s+between|what\s+does\b.+\bmean|^\s*if\b)/i;
 const observationReportSignals = /(?:哪些|多少|几个|几项|名称|名单|数量|总数|版本|状态|告诉我|给出|返回|汇总|列出|查看|查询|读取|核对|检查|\b(?:which|what|how\s+many|names?|list|count|total|status|version|tell|show|report|return|summari[sz]e|read|query|inspect|check)\b)/i;
-const negationSignals = /(?:不要|不用|不得|禁止|无需|不必|别|不可|避免|do\s+not|don't|without|never)/i;
+const negationSignals = /(?:不要|不用|不得|禁止|无需|不必|别|不可|避免|不执行|不安装|不修改|do\s+not|don't|without|never)/i;
 const operationalTargets = /(?:服务器|服务端|实例|控制台|插件|模组|配置|文件|日志|白名单|难度|天气|时间|游戏模式|规则|玩家|存档|备份|诊断包|资源|数据包|世界|内存|性能|paper|fabric|forge|spigot|server|instance|console|plugin|mod|config|file|logs?|whitelist|difficulty|weather|gamemode|gamerule|backup|archive|snapshot|datapack|world|resource|memory|ram|performance|tps|mspt)/i;
 const descriptivePrefix = /^\s*(?:the|this|that|my|our|your|yesterday|today|currently|previously|日志|log|output|error)\b\s*[:：]?/i;
 const englishImperativePrefix = /^\s*(?:please\s+)?(?!the\b|this\b|that\b|my\b|our\b|your\b|it\b|if\b|when\b|why\b|what\b|how\b|yesterday\b|today\b)[a-z][a-z-]*\b/i;

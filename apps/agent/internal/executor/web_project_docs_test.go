@@ -121,3 +121,38 @@ func TestSourcePassagesSelectLocationAndNewerVersionRowsWithoutDanglingSteps(t *
 		t.Fatalf("backup checklist dropped: %v", got)
 	}
 }
+
+func TestDiscoveredRepositoryHomepageProvidesDocsWithoutGuessingOwner(t *testing.T) {
+	var paths []string
+	s := &projectDocsWebSearcher{api: "https://api.github.com", client: &http.Client{Transport: searchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.Host+r.URL.Path)
+		body := `{}`
+		switch r.URL.Host + r.URL.Path {
+		case "api.github.com/repos/publisher/tool":
+			body = `{"full_name":"publisher/tool","homepage":"https://tool.example.org/","fork":false}`
+		case "tool.example.org/sitemap.xml":
+			body = `<urlset><url><loc>https://tool.example.org/docs/Command-Usage</loc></url><url><loc>https://foreign.example.net/commands</loc></url></urlset>`
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})}}
+	docs := s.linkedRepositoryDocs(context.Background(), "tool profiler start stop official documentation", []webSearchResult{{Link: "https://github.com/publisher/tool"}, {Link: "https://github.com/evil/unrelated"}})
+	if len(docs) != 1 || docs[0].Link != "https://tool.example.org/docs/Command-Usage" || !strings.Contains(docs[0].Snippet, "publisher/tool") {
+		t.Fatalf("wrong linked docs: %+v paths=%v", docs, paths)
+	}
+	if got := s.linkedRepositoryDocs(context.Background(), "another product documentation", []webSearchResult{{Link: "https://github.com/publisher/tool"}}); len(got) != 0 {
+		t.Fatal("unrequested repository used")
+	}
+}
+
+func TestDiscoveredPublisherDocumentExcludesThirdPartyWhenAlreadyFound(t *testing.T) {
+	s := &projectDocsWebSearcher{api: "https://api.github.com", client: &http.Client{Transport: searchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.github.com" {
+			t.Fatal("should not rediscover an already found document")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"full_name":"publisher/tool","homepage":"https://tool.example.org/"}`)), Request: r}, nil
+	})}}
+	docs := s.linkedRepositoryDocs(context.Background(), "tool profiler official documentation", []webSearchResult{{Link: "https://blog.example.net/tool"}, {Link: "https://tool.example.org/docs/Command-Usage"}, {Link: "https://github.com/publisher/tool"}})
+	if len(docs) != 1 || docs[0].Link != "https://tool.example.org/docs/Command-Usage" {
+		t.Fatalf("wrong publisher docs: %+v", docs)
+	}
+}

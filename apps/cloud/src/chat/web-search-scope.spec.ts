@@ -22,3 +22,7 @@ describe("user web search scope", () => {
   expect(applyUserWebSearchScope(d,"只参考 docs.example.org")).toBe(d);
  });
 });
+
+it("retains the user's official-documentation requirement in discovery",()=>{
+ expect(applyUserWebSearchScope({action:"tool_call",tool:"web.search",arguments:{query:"tool profiler start stop"},reason:"search"},"查询官方文档如何采样")).toMatchObject({arguments:{query:"tool profiler start stop official documentation"}});
+});

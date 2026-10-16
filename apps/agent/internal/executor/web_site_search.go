@@ -138,5 +138,8 @@ func siteDocumentScore(query, path string) int {
 	if (strings.Contains(q, "java") || strings.Contains(q, "requirement") || strings.Contains(query, "要求")) && (strings.Contains(p, "getting-started") || strings.Contains(p, "java-install")) {
 		score += 2
 	}
+	if (strings.Contains(q, "profiler") || strings.Contains(q, "command") || strings.Contains(q, "采样") || strings.Contains(q, "命令")) && (strings.Contains(p, "command-usage") || strings.Contains(p, "commands")) {
+		score += 4
+	}
 	return score
 }
