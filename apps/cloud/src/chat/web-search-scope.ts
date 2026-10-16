@@ -22,6 +22,7 @@ export function applyUserWebSearchScope(decision: AgentLoopDecision, message: st
   // Preserve a backup goal explicitly requested in Chinese when translation
   // otherwise drops it. This expands a read-only query; it authorizes no action.
   if (message.includes("备份") && !/\bback(?:up|ups|ing)?\b/iu.test(query)) query += " backup";
+  if (/(?:官方|\bofficial\b)/iu.test(message) && !/\bofficial\b/iu.test(query)) query += " official documentation";
   return { ...decision, arguments: { ...decision.arguments, query: site ? `${query} site:${site}` : query } };
 }
 

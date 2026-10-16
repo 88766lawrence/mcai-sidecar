@@ -143,3 +143,16 @@ func TestDiscoveredRepositoryHomepageProvidesDocsWithoutGuessingOwner(t *testing
 		t.Fatal("unrequested repository used")
 	}
 }
+
+func TestDiscoveredPublisherDocumentExcludesThirdPartyWhenAlreadyFound(t *testing.T) {
+	s := &projectDocsWebSearcher{api: "https://api.github.com", client: &http.Client{Transport: searchRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.github.com" {
+			t.Fatal("should not rediscover an already found document")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"full_name":"publisher/tool","homepage":"https://tool.example.org/"}`)), Request: r}, nil
+	})}}
+	docs := s.linkedRepositoryDocs(context.Background(), "tool profiler official documentation", []webSearchResult{{Link: "https://blog.example.net/tool"}, {Link: "https://tool.example.org/docs/Command-Usage"}, {Link: "https://github.com/publisher/tool"}})
+	if len(docs) != 1 || docs[0].Link != "https://tool.example.org/docs/Command-Usage" {
+		t.Fatalf("wrong publisher docs: %+v", docs)
+	}
+}

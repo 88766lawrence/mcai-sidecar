@@ -274,6 +274,19 @@ func (s *projectDocsWebSearcher) linkedRepositoryDocs(ctx context.Context, query
 		if err != nil || site.Scheme != "https" || validatePublicDownloadURL(site) != nil {
 			continue
 		}
+		// A discovered document on the publisher-declared host is preferable
+		// to spending the retrieval budget rediscovering that same URL.
+		var existing []webSearchResult
+		for _, candidate := range results {
+			linked, err := url.Parse(candidate.Link)
+			if err == nil && linked.Scheme == "https" && strings.EqualFold(linked.Hostname(), site.Hostname()) && validatePublicDownloadURL(linked) == nil {
+				candidate.Snippet = "Document on the homepage host declared by repository " + fullName + "; page passages require a separate read."
+				existing = append(existing, candidate)
+			}
+		}
+		if len(existing) > 0 {
+			return existing
+		}
 		searcher := siteFirstWebSearcher{client: s.client}
 		docs := searcher.siteSearch(ctx, query, site)
 		for i := range docs {
