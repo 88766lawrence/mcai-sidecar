@@ -1,3 +1,4 @@
+import { requestAllowsMutation } from "../chat/agent-request-boundary";
 import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AGENT_MESSAGE_SCHEMA_VERSION, classifyConsoleCommandOutcome, highestRisk, intrinsicToolPolicy, policyTarget, type ConsoleCommandOutcome, type PendingAgentApprovalRecord, type ServerProfile, type TaskPlan, type TaskRecord, type TaskState } from "@mcai/contracts";
@@ -108,6 +109,7 @@ export class TasksService {
     if (input.agentToolCall) {
       const checked = validateAgentToolCall(input.agentToolCall, input.instanceRef, instance.profile_revision);
       if (!checked.ok) throw new BadRequestException(`${checked.code}: ${checked.message}`);
+      if (checked.value.policy.mutates && !requestAllowsMutation(intent)) throw new BadRequestException("AGENT_REQUEST_READ_ONLY: mutation was not requested");
       plan = buildAgentDirectExecutionPlan(input.instanceRef, instance.profile_revision, intent, input.agentToolCall.toolCallId, checked.value);
     }
     const playerMessageCommand = extractTitleConsoleCommand(intent) ?? extractActionbarConsoleCommand(intent) ?? extractBroadcastConsoleCommand(intent) ?? extractTransientPlayerEffectCommand(intent);

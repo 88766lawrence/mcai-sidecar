@@ -49,3 +49,9 @@ describe("typed plugin outcome fallback", () => {
     expect(renderPluginOutcomeFinal("安装 Alpha 和 Beta", [files, inventory, installed, lifecycle, blocked("beta")])?.answer).toContain("尚未确认");
   });
 });
+
+it("renders version and download source from metadata without dependency approval", async () => {
+ const { renderPluginLookupFinal } = await import("./plugin-outcome-final");
+ const result=renderPluginLookupFinal("查适配版本和来源，不要安装", [{tool:"plugin.resolve",status:"succeeded",data:{observations:[{observed:{schema_version:"resolved-plugin/v1",resolution:"resolved",project:"example",version:"7.0",requested_loader:"paper",requested_minecraft_version:"1.21.1",source_url:"https://cdn.modrinth.com/example.jar",required_dependencies:["dependency"]}}]}}] as any);
+ expect(result).toContain("example 7.0"); expect(result).toContain("https://cdn.modrinth.com/example.jar"); expect(result).toContain("未安装");
+});

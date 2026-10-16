@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -51,7 +52,16 @@ func (s *projectDocsWebSearcher) Search(ctx context.Context, query string) (webS
 			return webSearchResponse{Provider: "project-repository-docs", Results: results}, nil
 		}
 	}
-	return s.fallback.Search(ctx, query)
+	response, err := s.fallback.Search(ctx, query)
+	if err == nil && !strings.Contains(strings.ToLower(query), "site:") {
+		docsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		linked := s.linkedRepositoryDocs(docsCtx, query, response.Results)
+		cancel()
+		if len(linked) > 0 {
+			return webSearchResponse{Provider: "repository-linked-documentation", Results: linked}, nil
+		}
+	}
+	return response, err
 }
 
 func (s *projectDocsWebSearcher) getJSON(ctx context.Context, path string, out any) error {
@@ -222,4 +232,56 @@ func projectDocLinkScore(query, path string) int {
 		score += 3
 	}
 	return score
+}
+
+// Follow a repository publisher's declared homepage from an actual discovered
+// repository, rather than guessing a product's owner or documentation URL.
+func (s *projectDocsWebSearcher) linkedRepositoryDocs(ctx context.Context, query string, results []webSearchResult) []webSearchResult {
+	seen := map[string]bool{}
+	calls := 0
+	for _, result := range results {
+		u, err := url.Parse(result.Link)
+		if err != nil || u.Scheme != "https" || u.Host != "github.com" {
+			continue
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 || !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(parts[0]) {
+			continue
+		}
+		name := parts[1]
+		if !regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`).MatchString(name) || !regexp.MustCompile(`(?i)(?:^|[^a-z0-9_-])`+regexp.QuoteMeta(name)+`(?:$|[^a-z0-9_-])`).MatchString(query) {
+			continue
+		}
+		fullName := parts[0] + "/" + name
+		if seen[fullName] {
+			continue
+		}
+		seen[fullName] = true
+		if calls >= 2 {
+			break
+		}
+		calls++
+		var repo struct {
+			FullName string `json:"full_name"`
+			Homepage string `json:"homepage"`
+			Fork     bool   `json:"fork"`
+			Archived bool   `json:"archived"`
+		}
+		if s.getJSON(ctx, "/repos/"+fullName, &repo) != nil || repo.Fork || repo.Archived || !strings.EqualFold(repo.FullName, fullName) {
+			continue
+		}
+		site, err := url.Parse(repo.Homepage)
+		if err != nil || site.Scheme != "https" || validatePublicDownloadURL(site) != nil {
+			continue
+		}
+		searcher := siteFirstWebSearcher{client: s.client}
+		docs := searcher.siteSearch(ctx, query, site)
+		for i := range docs {
+			docs[i].Snippet = "Discovered in the sitemap of the homepage declared by repository " + fullName + "; source text requires a separate read."
+		}
+		if len(docs) > 0 {
+			return docs
+		}
+	}
+	return nil
 }

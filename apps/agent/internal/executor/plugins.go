@@ -58,16 +58,17 @@ var hangarProjectAliases = map[string]string{
 }
 
 type resolvedPlugin struct {
-	Project       string
-	VersionID     string
-	VersionNumber string
-	FileName      string
-	SourceURL     string
-	SourceSHA512  string
-	LocalSHA256   string
-	Source        string
-	Compatibility string
-	Contents      []byte
+	Project              string
+	VersionID            string
+	VersionNumber        string
+	FileName             string
+	SourceURL            string
+	SourceSHA512         string
+	LocalSHA256          string
+	Source               string
+	Compatibility        string
+	Contents             []byte
+	RequiredDependencies []string
 }
 
 type pluginResolver interface {
@@ -225,9 +226,13 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			if !compatible && !reviewedTag {
 				continue
 			}
+			var requiredDependencies []string
 			for _, dependency := range version.PluginDependencies["PAPER"] {
 				if dependency.Required == nil || *dependency.Required {
-					return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
+					if !metadataOnly {
+						return resolvedPlugin{}, fmt.Errorf("Hangar release %s declares required plugin dependency %s that needs separate approval", version.Name, dependency.Name)
+					}
+					requiredDependencies = append(requiredDependencies, dependency.Name)
 				}
 			}
 			if download.ExternalURL != "" && download.DownloadURL == "" {
@@ -239,6 +244,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 					lastIncompatibleTag = err
 					continue
 				}
+				artifact.RequiredDependencies = requiredDependencies
 				return artifact, err
 			}
 			if download.DownloadURL == "" {
@@ -263,7 +269,7 @@ func (r *officialPluginResolver) resolveHangar(ctx context.Context, project, loa
 			if metadataOnly {
 				return resolvedPlugin{Project: project, VersionID: strconv.FormatInt(version.ID, 10), VersionNumber: version.Name,
 					FileName: download.FileInfo.Name, SourceURL: download.DownloadURL, LocalSHA256: declared256,
-					Source: "hangar", Compatibility: "exact-game-version"}, nil
+					Source: "hangar", Compatibility: "exact-game-version", RequiredDependencies: requiredDependencies}, nil
 			}
 			contents, err := r.downloadPluginArtifact(ctx, download.DownloadURL)
 			if err != nil {
@@ -477,9 +483,13 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 		return resolvedPlugin{}, fmt.Errorf("%w: Modrinth has no %s version compatible with %s", errNoCompatiblePluginVersion, project, minecraftVersion)
 	}
 	version := versions[0]
+	var requiredDependencies []string
 	for _, dependency := range version.Dependencies {
 		if dependency.DependencyType == "required" && dependency.ProjectID != "" {
-			return resolvedPlugin{}, fmt.Errorf("plugin requires dependency %s; dependency installation must be approved first", dependency.ProjectID)
+			if !metadataOnly {
+				return resolvedPlugin{}, fmt.Errorf("plugin requires dependency %s; dependency installation must be approved first", dependency.ProjectID)
+			}
+			requiredDependencies = append(requiredDependencies, dependency.ProjectID)
 		}
 	}
 	if version.ID == "" || version.VersionNumber == "" {
@@ -521,7 +531,7 @@ func (r *officialPluginResolver) resolveModrinth(ctx context.Context, project, l
 	if metadataOnly {
 		return resolvedPlugin{Project: project, VersionID: version.ID, VersionNumber: version.VersionNumber,
 			FileName: selected.Filename, SourceURL: selected.URL, SourceSHA512: declared,
-			Source: "modrinth", Compatibility: "exact-game-version"}, nil
+			Source: "modrinth", Compatibility: "exact-game-version", RequiredDependencies: requiredDependencies}, nil
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL.String(), nil)
 	if err != nil {
@@ -705,18 +715,19 @@ func (r *officialPluginResolver) getJSON(ctx context.Context, endpoint string, o
 }
 
 type pluginManifest struct {
-	Project        string `json:"project"`
-	VersionID      string `json:"version_id"`
-	VersionNumber  string `json:"version_number"`
-	FileName       string `json:"file_name"`
-	SourceURL      string `json:"source_url"`
-	SourceSHA512   string `json:"source_sha512"`
-	LocalSHA256    string `json:"local_sha256"`
-	Source         string `json:"source"`
-	Compatibility  string `json:"compatibility"`
-	InstalledPath  string `json:"installed_path,omitempty"`
-	ReplacesPath   string `json:"replaces_path,omitempty"`
-	ReplacesSHA256 string `json:"replaces_sha256,omitempty"`
+	RequiredDependencies []string `json:"required_dependencies,omitempty"`
+	Project              string   `json:"project"`
+	VersionID            string   `json:"version_id"`
+	VersionNumber        string   `json:"version_number"`
+	FileName             string   `json:"file_name"`
+	SourceURL            string   `json:"source_url"`
+	SourceSHA512         string   `json:"source_sha512"`
+	LocalSHA256          string   `json:"local_sha256"`
+	Source               string   `json:"source"`
+	Compatibility        string   `json:"compatibility"`
+	InstalledPath        string   `json:"installed_path,omitempty"`
+	ReplacesPath         string   `json:"replaces_path,omitempty"`
+	ReplacesSHA256       string   `json:"replaces_sha256,omitempty"`
 }
 
 func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan protocol.TaskPlan, step protocol.TaskStep, emit EventSink) error {
@@ -785,6 +796,7 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 		Project: artifact.Project, VersionID: artifact.VersionID, VersionNumber: artifact.VersionNumber,
 		FileName: artifact.FileName, SourceURL: artifact.SourceURL, SourceSHA512: artifact.SourceSHA512,
 		LocalSHA256: artifact.LocalSHA256, Source: artifact.Source, Compatibility: artifact.Compatibility,
+		RequiredDependencies: artifact.RequiredDependencies,
 	}
 	encoded, _ := json.MarshalIndent(manifest, "", "  ")
 	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), encoded, 0o600); err != nil {
@@ -795,6 +807,7 @@ func (e *Executor) resolvePlugin(ctx context.Context, p provider.Provider, plan 
 		"version": artifact.VersionNumber, "source": artifact.Source, "artifact": artifact.FileName,
 		"compatibility": artifact.Compatibility, "sha256": artifact.LocalSHA256, "source_sha512": artifact.SourceSHA512,
 		"checked_sources": checkedSources, "requested_loader": loader, "requested_minecraft_version": minecraftVersion,
+		"source_url": artifact.SourceURL, "required_dependencies": artifact.RequiredDependencies,
 	})
 	return nil
 }
@@ -857,6 +870,11 @@ func (e *Executor) installPlugin(ctx context.Context, p provider.Provider, plan 
 		sourceTaskID = plan.TaskID
 	}
 	manifest, contents, err := e.loadPluginArtifact(sourceTaskID)
+	// Resolving metadata never approves dependency installation. Keep this gate
+	// before the download as well as before any instance filesystem changes.
+	if len(manifest.RequiredDependencies) > 0 {
+		return fmt.Errorf("plugin requires separately verified dependencies: %s", strings.Join(manifest.RequiredDependencies, ", "))
+	}
 	if err != nil && strings.Contains(err.Error(), "artifact is missing") {
 		resolver, ok := e.pluginResolver.(pluginMetadataResolver)
 		if !ok {

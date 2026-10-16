@@ -1,3 +1,4 @@
+import { constrainAgentRequest, requestAllowsMutation } from "./agent-request-boundary";
 import { applyUserWebSearchScope } from "./web-search-scope";
 import { BadRequestException, Injectable, NotFoundException, Optional, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
@@ -23,7 +24,7 @@ import { AGENT_LOOP_MAX_ROUNDS, AGENT_LOOP_MAX_TOOL_CALLS, AGENT_LOOP_TOOL_CATAL
 import { AgentRunStore } from "../agents/agent-run.store";
 import { publicSourceSearchCompletion, renderWebSourceFinal, renderQa0144ReadFinal } from "../tasks/qa0144-read-observation";
 import { AtomicJsonFile } from "../store/atomic-json-file";
-import { renderPluginOutcomeFinal } from "./plugin-outcome-final";
+import { renderPluginOutcomeFinal, renderPluginLookupFinal } from "./plugin-outcome-final";
 import { renderVerifiedFileDownloadFinal } from "../tasks/file-download-final";
 
 const defaultSystemPrompt = [
@@ -333,7 +334,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       result = await this.modelGateway.decideAgentLoop(decisionInput);
     }
     if (result.status === "answered") {
-      result = { ...result, decision: applyUserWebSearchScope(result.decision, run.original_user_message) };
+      result = { ...result, decision: constrainAgentRequest(applyUserWebSearchScope(result.decision, run.original_user_message), run.original_user_message, this.store.instances.get(session.instance_ref)?.platform) };
       await this.agentRuns.recordDecision(run.run_id, run.round_count + 1, result.decision);
     }
     else await this.agentRuns.recordDecisionError(run.run_id, run.round_count + 1, { code: result.error, exhausted });
@@ -380,7 +381,8 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
     // URLs alone cannot prove a model's claims. Pure searches close with fetched
     // passages and their provenance, or an explicit discovery-only result.
     const sourceAnswer = webOnly ? renderWebSourceFinal(run.original_user_message, restoredObservations) : undefined;
-    const groundedAnswer = verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? sourceAnswer
+    const pluginLookup = !requestAllowsMutation(run.original_user_message) ? renderPluginLookupFinal(run.original_user_message, restoredObservations) : undefined;
+    const groundedAnswer = pluginLookup ?? verifiedConfigChange ?? verifiedPerformance ?? canonicalInventoryAnswer ?? sourceAnswer
       ?? (webOnly ? undefined : modelFinalAnswer ?? canonicalReadAnswer ?? canonicalDownloadAnswer);
     const cannotProceedAnswer = !sourceAnswer && !verifiedConfigChange && result.status === "answered" && result.decision.action === "cannot_proceed"
       ? result.decision.answer
@@ -592,7 +594,7 @@ export class ChatService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException("Session was deleted while the request was running");
     }
     if (agentLoopResult.status === "answered") {
-      agentLoopResult = { ...agentLoopResult, decision: applyUserWebSearchScope(agentLoopResult.decision, content) };
+      agentLoopResult = { ...agentLoopResult, decision: constrainAgentRequest(applyUserWebSearchScope(agentLoopResult.decision, content), content, instance.platform) };
       await this.agentRuns.recordDecision(pendingAgentRun.run_id, 1, agentLoopResult.decision);
     }
     else {

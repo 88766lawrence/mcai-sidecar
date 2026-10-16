@@ -109,3 +109,35 @@ func TestPluginResolutionAbsenceRecordsEveryCheckedSource(t *testing.T) {
 		t.Fatalf("wrong checked sources: %v %v", fact, err)
 	}
 }
+
+func TestMetadataDependencyLookupDoesNotDownloadOrAuthorizeInstall(t *testing.T) {
+	downloads := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/version") {
+			fmt.Fprintf(w, `[{"id":"release","version_number":"7.0","dependencies":[{"project_id":"required-project","dependency_type":"required"}],"files":[{"url":%q,"filename":"Example.jar","primary":true,"hashes":{"sha512":"%s"}}]}]`, server.URL+"/artifact.jar", strings.Repeat("a", 128))
+		} else {
+			downloads++
+			w.Write([]byte("unexpected download"))
+		}
+	}))
+	defer server.Close()
+	e := New(t.TempDir(), nil)
+	e.pluginResolver = &officialPluginResolver{httpClient: server.Client(), apiBase: server.URL}
+	plan := protocol.TaskPlan{TaskID: "metadata-deps", InstanceRef: "mcs:daemon:instance"}
+	var fact map[string]any
+	if err := e.resolvePlugin(context.Background(), &pluginProvider{}, plan, protocol.TaskStep{Args: map[string]any{"project": "example", "loader": "paper", "minecraft_version": "1.21.1"}}, func(_, kind, _ string, observed ...map[string]any) {
+		if kind == "plugin" && len(observed) > 0 {
+			fact = observed[0]
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fact["resolution"] != "resolved" || fact["source_url"] != server.URL+"/artifact.jar" || len(fact["required_dependencies"].([]string)) != 1 {
+		t.Fatalf("missing lookup metadata: %+v", fact)
+	}
+	err := e.installPlugin(context.Background(), &pluginProvider{}, plan, protocol.TaskStep{}, func(string, string, string, ...map[string]any) {})
+	if err == nil || !strings.Contains(err.Error(), "separately verified dependencies") || downloads != 0 {
+		t.Fatalf("metadata lookup authorized install or download: %v downloads=%d", err, downloads)
+	}
+}
